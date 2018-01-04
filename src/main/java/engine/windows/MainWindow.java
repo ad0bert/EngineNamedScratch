@@ -14,7 +14,6 @@ public class MainWindow {
         this.glWindow = GLWindow.create(new GLCapabilities(GLProfile.get(GLProfile.GL2)));
         this.glWindow.addKeyListener(inputSystem);
         this.glWindow.addMouseListener(inputSystem);
-        // this.glWindow.addMouseMotionListener(inputSystem);
         this.glWindow.setSize(sizeX, sizeY);
         this.glWindow.setDefaultCloseOperation(WindowClosingMode.DISPOSE_ON_CLOSE);
     }

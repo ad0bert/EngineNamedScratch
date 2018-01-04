@@ -18,13 +18,14 @@ public class MessageServiceImpl implements IMessageService {
 
         // broadcast
         if (messageObject.getReciverId() == null) {
-            for (int i = 0; i < broadCastList.size(); ++i) {
-                broadCastList.get(i).reciveMessage(messageObject);
+            for (int i = 0; i < this.broadCastList.size(); ++i) {
+                this.broadCastList.get(i).reciveMessage(messageObject);
             }
             return;
         }
         // get group
-        Map<Integer, IMessageReciver> serviceGroup = serviceMap.get((messageObject.getReciverId().intValue() >> 8) & 0xFF);
+        Map<Integer, IMessageReciver> serviceGroup = this.serviceMap
+                .get((messageObject.getReciverId().intValue() >> 8) & 0xFF);
         if (serviceGroup == null) {
             return;
         }
@@ -48,24 +49,24 @@ public class MessageServiceImpl implements IMessageService {
             return false;
         }
         // add everything to broadcast list
-        broadCastList.add(toRegister);
+        this.broadCastList.add(toRegister);
         // only broadcast
         if (id == null) {
             return true;
         }
-        if (serviceMap.get((id.intValue() >> 8) & 0xFF) == null) {
-            serviceMap.put((id.intValue() >> 8) & 0xFF, new HashMap<Integer, IMessageReciver>());
+        if (this.serviceMap.get((id.intValue() >> 8) & 0xFF) == null) {
+            this.serviceMap.put((id.intValue() >> 8) & 0xFF, new HashMap<Integer, IMessageReciver>());
         }
-        serviceMap.get((id.intValue() >> 8) & 0xFF).put(id.intValue() & 0xFF, toRegister);
+        this.serviceMap.get((id.intValue() >> 8) & 0xFF).put(id.intValue() & 0xFF, toRegister);
         return true;
     }
 
     @Override
     public boolean unregister(IMessageReciver toDeRegister, Integer id) {
         boolean ok = false;
-        ok = broadCastList.remove(toDeRegister);
-        if (serviceMap.get((id.intValue() >> 8) & 0xFF) != null) {
-            serviceMap.get((id.intValue() >> 8) & 0xFF).remove(id.intValue() & 0xFF);
+        ok = this.broadCastList.remove(toDeRegister);
+        if (this.serviceMap.get((id.intValue() >> 8) & 0xFF) != null) {
+            this.serviceMap.get((id.intValue() >> 8) & 0xFF).remove(id.intValue() & 0xFF);
         }
         return ok;
     }

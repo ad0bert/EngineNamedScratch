@@ -12,20 +12,25 @@ public class MessageObject {
     }
 
     public Object getSender() {
-        return sender;
+        return this.sender;
     }
+
     public void setSender(Object sender) {
         this.sender = sender;
     }
+
     public Integer getReciverId() {
-        return reciverId;
+        return this.reciverId;
     }
+
     public void setReciverId(Integer reciverId) {
         this.reciverId = reciverId;
     }
+
     public Object getTransportedObject() {
-        return transportedObject;
+        return this.transportedObject;
     }
+
     public void setTransportedObject(Object transportedObject) {
         this.transportedObject = transportedObject;
     }
