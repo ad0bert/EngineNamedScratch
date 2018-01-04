@@ -1,0 +1,6 @@
+Version 0.0.1
+Init Version Contains:
+- Messaging system
+- Some rendering
+Bugs:
+No texture rendered on mac os
