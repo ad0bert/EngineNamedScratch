@@ -1,21 +1,22 @@
 package test.render;
 
-import com.jogamp.opengl.GLCapabilities;
 import com.jogamp.opengl.GLEventListener;
-import com.jogamp.opengl.GLProfile;
-import com.jogamp.opengl.awt.GLCanvas;
 
 import engine.render.CubeRendering;
+import engine.render.PointRendering;
 
-public class TestRenderer extends GLCanvas {
-    private static final long serialVersionUID = 1L;
+public class TestRenderer {
+    public enum ObjectType {
+        Cube, Point
+    }
 
-    public TestRenderer() {
-        super(new GLCapabilities(GLProfile.get(GLProfile.GL2)));
-        GLEventListener toRender = new CubeRendering();
-        addGLEventListener(toRender);
-        setFocusable(false);
-        setEnabled(false);
-        setSize(400, 400);
+    public static GLEventListener createObject(ObjectType object) {
+        switch (object) {
+        case Cube:
+            return new CubeRendering();
+        case Point:
+            return new PointRendering();
+        }
+        return null;
     }
 }

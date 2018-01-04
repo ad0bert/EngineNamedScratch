@@ -1,15 +1,14 @@
 package engine.systems;
 
-import java.awt.event.KeyEvent;
-import java.awt.event.KeyListener;
-import java.awt.event.MouseEvent;
-import java.awt.event.MouseListener;
-import java.awt.event.MouseMotionListener;
+import com.jogamp.newt.event.KeyEvent;
+import com.jogamp.newt.event.KeyListener;
+import com.jogamp.newt.event.MouseEvent;
+import com.jogamp.newt.event.MouseListener;
 
 import engine.messageing.MessageObject;
 import engine.messageing.interfaces.IMessageService;
 
-public class InputSystem implements KeyListener, MouseListener, MouseMotionListener {
+public class InputSystem implements KeyListener, MouseListener {
     private final IMessageService service;
 
     public InputSystem(IMessageService service) {
@@ -17,21 +16,16 @@ public class InputSystem implements KeyListener, MouseListener, MouseMotionListe
     }
 
     private void sendObject(Object toSend) {
-        service.send(new MessageObject(this, null, toSend));
-    }
-
-    @Override
-    public void keyPressed(KeyEvent event) {
-        sendObject(event);
-    }
-
-    @Override
-    public void keyReleased(KeyEvent event) {
-        sendObject(event);
+        this.service.send(new MessageObject(this, null, toSend));
     }
 
     @Override
     public void mouseClicked(MouseEvent event) {
+        sendObject(event);
+    }
+
+    @Override
+    public void mouseDragged(MouseEvent event) {
         sendObject(event);
     }
 
@@ -46,6 +40,11 @@ public class InputSystem implements KeyListener, MouseListener, MouseMotionListe
     }
 
     @Override
+    public void mouseMoved(MouseEvent event) {
+        sendObject(event);
+    }
+
+    @Override
     public void mousePressed(MouseEvent event) {
         sendObject(event);
     }
@@ -56,17 +55,18 @@ public class InputSystem implements KeyListener, MouseListener, MouseMotionListe
     }
 
     @Override
-    public void keyTyped(KeyEvent event) {
+    public void mouseWheelMoved(MouseEvent event) {
         sendObject(event);
     }
 
     @Override
-    public void mouseDragged(MouseEvent event) {
+    public void keyPressed(KeyEvent event) {
         sendObject(event);
     }
 
     @Override
-    public void mouseMoved(MouseEvent event) {
+    public void keyReleased(KeyEvent event) {
         sendObject(event);
     }
+
 }

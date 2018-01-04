@@ -1,17 +1,25 @@
 package engine.windows;
 
-import javax.swing.JFrame;
+import com.jogamp.nativewindow.WindowClosingProtocol.WindowClosingMode;
+import com.jogamp.newt.opengl.GLWindow;
+import com.jogamp.opengl.GLCapabilities;
+import com.jogamp.opengl.GLProfile;
 
 import engine.systems.InputSystem;
 
-public class MainWindow extends JFrame {
-    private static final long serialVersionUID = 1L;
+public class MainWindow {
+    private GLWindow glWindow;
 
     public MainWindow(InputSystem inputSystem, int sizeX, int sizeY) {
-        addKeyListener(inputSystem);
-        addMouseListener(inputSystem);
-        addMouseMotionListener(inputSystem);
-        setSize(sizeX, sizeY);
-        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        this.glWindow = GLWindow.create(new GLCapabilities(GLProfile.get(GLProfile.GL2)));
+        this.glWindow.addKeyListener(inputSystem);
+        this.glWindow.addMouseListener(inputSystem);
+        // this.glWindow.addMouseMotionListener(inputSystem);
+        this.glWindow.setSize(sizeX, sizeY);
+        this.glWindow.setDefaultCloseOperation(WindowClosingMode.DISPOSE_ON_CLOSE);
+    }
+
+    public GLWindow getWindow() {
+        return this.glWindow;
     }
 }
