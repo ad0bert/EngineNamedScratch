@@ -1,8 +1,5 @@
 package test.main;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
 
@@ -10,7 +7,6 @@ import com.jogamp.newt.event.MouseEvent;
 import com.jogamp.newt.event.WindowAdapter;
 import com.jogamp.newt.event.WindowEvent;
 import com.jogamp.newt.opengl.GLWindow;
-import com.jogamp.opengl.GLEventListener;
 import com.jogamp.opengl.util.FPSAnimator;
 
 import engine.messageing.MessageObject;
@@ -23,26 +19,23 @@ import test.render.TestRenderer.ObjectType;
 
 public class TestApp implements IMessageReciver {
     private final IMessageService messageService;
+    private TestRenderer testRenderer = new TestRenderer();
     private final GLWindow window;
-    private final List<GLEventListener> drawableList = new ArrayList<GLEventListener>();
-    private int current = 0;
     private String version;
 
     public TestApp(IMessageService messageService, MainWindow window) {
         this.messageService = messageService;
         this.window = window.getWindow();
-        this.drawableList.add(TestRenderer.createObject(ObjectType.Cube));
-        this.drawableList.add(TestRenderer.createObject(ObjectType.Point));
-        this.drawableList.add(TestRenderer.createObject(ObjectType.Object));
     }
 
     public void run() {
         IMessageReciver reciver1 = new DummyMessageReciver(1);
         this.messageService.register(reciver1, null);
         this.messageService.register(this, null);
-        this.window.addGLEventListener(this.drawableList.get(this.current));
+        this.window.addGLEventListener(this.testRenderer.getEventListener());
         this.window.setVisible(true);
         final FPSAnimator animator = new FPSAnimator(this.window, 300, true);
+
         this.window.addWindowListener(new WindowAdapter() {
             @Override
             public void windowDestroyNotify(WindowEvent arg0) {
@@ -58,6 +51,7 @@ public class TestApp implements IMessageReciver {
             };
         });
         animator.start();
+        this.testRenderer.renderObject(ObjectType.Cube);
         while (animator.isAnimating()) {
         }
     }
@@ -81,8 +75,7 @@ public class TestApp implements IMessageReciver {
         if (message.getTransportedObject() instanceof MouseEvent) {
             MouseEvent event = (MouseEvent) message.getTransportedObject();
             if (event.getEventType() == MouseEvent.EVENT_MOUSE_PRESSED) {
-                this.window.removeGLEventListener(this.drawableList.get(this.current % this.drawableList.size()));
-                this.window.addGLEventListener(this.drawableList.get((++this.current) % this.drawableList.size()));
+                this.testRenderer.nextObject();
             }
         }
     }
