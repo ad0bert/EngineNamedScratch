@@ -9,6 +9,7 @@ import com.jogamp.opengl.util.texture.Texture;
 import com.jogamp.opengl.util.texture.TextureIO;
 
 import engine.ecs.AbstractComponent;
+import engine.ecs.Entity;
 import engine.render.interfaces.IDrawable;
 
 public class CubeRendering extends AbstractComponent implements IDrawable {
@@ -89,7 +90,8 @@ public class CubeRendering extends AbstractComponent implements IDrawable {
         gl.glEnd();
     }
 
-    public CubeRendering(String texturePath, float size) {// "textures/cubeFace.png"
+    public CubeRendering(String texturePath, float size, Entity entity) {
+        super(entity);
         this.size = size;
         ClassLoader loader = CubeRendering.class.getClassLoader();
         this.textureFile = new File(loader.getResource(texturePath).getPath());

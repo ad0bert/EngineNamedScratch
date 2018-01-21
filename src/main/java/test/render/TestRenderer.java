@@ -3,6 +3,7 @@ package test.render;
 import com.jogamp.opengl.GLEventListener;
 
 import engine.ecs.Entity;
+import engine.ecs.components.Camera;
 import engine.render.CubeRendering;
 import engine.render.ObjectRendering;
 import engine.render.PointRendering;
@@ -24,10 +25,13 @@ public class TestRenderer {
         this.cube = new Entity();
         this.point = new Entity();
         this.object = new Entity();
+        this.cube.getPosition().setXYZ(0f, 0f, 0f);
+        this.point.getPosition().setXYZ(1f, 1f, 1f);
+        this.object.getPosition().setXYZ(2f, 2f, 2f);
     }
 
     public enum ObjectType {
-        Cube, Point, Object
+        Cube, Point, Object, All
     }
 
     public void renderObject(ObjectType obj) {
@@ -50,14 +54,19 @@ public class TestRenderer {
             this.point.deactivateComponent(IDrawable.class);
             this.object.activateComponent(IDrawable.class);
             break;
+        case All:
+            this.cube.activateComponent(IDrawable.class);
+            this.point.activateComponent(IDrawable.class);
+            this.object.activateComponent(IDrawable.class);
         }
         this.current = obj;
     }
 
     private void doInit() {
-        this.cube.addComponent(new CubeRendering("textures/cubeFace.png", 1f));
-        this.point.addComponent(new PointRendering());
-        this.object.addComponent(new ObjectRendering("objects/capsule/capsule.obj", "objects/capsule/capsule0.jpg"));
+        this.cube.addComponent(new CubeRendering("textures/cubeFace.png", 1f, this.cube));
+        this.point.addComponent(new PointRendering(this.point));
+        this.object.addComponent(
+                new ObjectRendering("objects/capsule/capsule.obj", "objects/capsule/capsule0.jpg", this.object));
 
         this.renderSystem.getDrawingList().add(this.cube);
         this.renderSystem.getDrawingList().add(this.point);
@@ -76,6 +85,10 @@ public class TestRenderer {
             this.current = ObjectType.Object;
             break;
         case Object:
+            renderObject(ObjectType.All);
+            this.current = ObjectType.All;
+            break;
+        case All:
             renderObject(ObjectType.Cube);
             this.current = ObjectType.Cube;
             break;
@@ -87,5 +100,9 @@ public class TestRenderer {
 
     public GLEventListener getEventListener() {
         return this.renderSystem;
+    }
+
+    public void addCamera(Camera camera) {
+        this.renderSystem.setCamera(camera);
     }
 }

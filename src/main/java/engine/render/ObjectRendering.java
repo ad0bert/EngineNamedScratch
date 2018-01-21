@@ -5,10 +5,12 @@ import java.io.IOException;
 
 import com.jogamp.opengl.GL2;
 import com.jogamp.opengl.GLException;
+import com.jogamp.opengl.fixedfunc.GLMatrixFunc;
 import com.jogamp.opengl.util.texture.Texture;
 import com.jogamp.opengl.util.texture.TextureIO;
 
 import engine.ecs.AbstractComponent;
+import engine.ecs.Entity;
 import engine.render.interfaces.IDrawable;
 import engine.util.ObjectLoader;
 
@@ -31,12 +33,17 @@ public class ObjectRendering extends AbstractComponent implements IDrawable {
             }
 
         }
+        gl.glMatrixMode(GLMatrixFunc.GL_MODELVIEW);
+        gl.glPushMatrix(); // remember current matrix
+        gl.glTranslatef(this.getEntity().getPosition().getX(), this.getEntity().getPosition().getX(),
+                this.getEntity().getPosition().getX());
         gl.glBindTexture(GL2.GL_TEXTURE_2D, this.texture.getTextureObject(gl));
         this.objectLoader.drawModel(gl);
+        gl.glPopMatrix(); // restore matrix
     }
 
-    public ObjectRendering(String objectPath, String texturePath) { // "objects/capsule/capsule0.jpg"
-                                                                    // "objects/capsule/capsule.obj"
+    public ObjectRendering(String objectPath, String texturePath, Entity entity) {
+        super(entity);
         this.objectLoader = new ObjectLoader(objectPath);
         ClassLoader loader = CubeRendering.class.getClassLoader();
         this.textureFile = new File(loader.getResource(texturePath).getPath());

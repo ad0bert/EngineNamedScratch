@@ -9,6 +9,8 @@ import com.jogamp.newt.event.WindowEvent;
 import com.jogamp.newt.opengl.GLWindow;
 import com.jogamp.opengl.util.FPSAnimator;
 
+import engine.ecs.Entity;
+import engine.ecs.components.Camera;
 import engine.messageing.MessageObject;
 import engine.messageing.interfaces.IMessageReciver;
 import engine.messageing.interfaces.IMessageService;
@@ -32,6 +34,13 @@ public class TestApp implements IMessageReciver {
         IMessageReciver reciver1 = new DummyMessageReciver(1);
         this.messageService.register(reciver1, null);
         this.messageService.register(this, null);
+
+        Entity player = new Entity();
+        Camera camera = new Camera(player);
+        player.addComponent(camera);
+        player.getPosition().setXYZ(0, 0, 5);
+        this.testRenderer.addCamera(camera);
+        this.messageService.register(camera, null);
         this.window.addGLEventListener(this.testRenderer.getEventListener());
         this.window.setVisible(true);
         final FPSAnimator animator = new FPSAnimator(this.window, 300, true);

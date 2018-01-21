@@ -4,11 +4,13 @@ import com.jogamp.opengl.GL;
 import com.jogamp.opengl.GL2;
 
 import engine.ecs.AbstractComponent;
-import engine.geometry.Point;
+import engine.ecs.Entity;
 import engine.render.interfaces.IDrawable;
 
 public class PointRendering extends AbstractComponent implements IDrawable {
-    private final Point point = new Point(1f, 1f, 1f);
+    public PointRendering(Entity entity) {
+        super(entity);
+    }
 
     @Override
     public void draw(GL2 gl) {
@@ -19,7 +21,8 @@ public class PointRendering extends AbstractComponent implements IDrawable {
         gl.glBegin(GL.GL_POINTS);
         for (int i = 0; i < 10; ++i) {
             // gl.glColor3d(.5f, .7f, .1f);
-            gl.glVertex3f(this.point.getX() + i, this.point.getY() + i, this.point.getZ() + i);
+            gl.glVertex3f(this.getEntity().getPosition().getX() + i, this.getEntity().getPosition().getY() + i,
+                    this.getEntity().getPosition().getZ() + i);
         }
         gl.glEnd();
     }
