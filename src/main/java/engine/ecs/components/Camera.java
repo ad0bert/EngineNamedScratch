@@ -16,11 +16,12 @@ public class Camera extends AbstractComponent implements IMessageReciver {
     private Point viewDirection;
     private final Point UP = new Point(0f, 1f, 0f);
     private final Point oldPosition;
+    private boolean isMovement = true;
 
     public Camera(Entity entity) {
         super(entity);
         this.offset = new Point(0f, 0f, 0f);
-        this.oldPosition = new Point(0, 0, 0);
+        this.oldPosition = new Point(250, 300, 0);
         this.viewDirection = new Point(0f, 0f, -1f);
     }
 
@@ -51,14 +52,24 @@ public class Camera extends AbstractComponent implements IMessageReciver {
 
     @Override
     public void reciveMessage(MessageObject message) {
-        if (message.getTransportedObject() instanceof MouseEvent) {
+        if ((message.getTransportedObject() instanceof MouseEvent) && this.isMovement) {
             MouseEvent event = (MouseEvent) message.getTransportedObject();
 
-            float x = this.oldPosition.getX() < event.getX() ? 0.01f : -0.01f;
-            float y = this.oldPosition.getY() < event.getY() ? -0.01f : 0.01f;
+            float x = 0f;
+            if (this.oldPosition.getX() < event.getX()) {
+                x = 0.01f;
+            } else if (this.oldPosition.getX() > event.getX()) {
+                x = -0.01f;
+            }
+            float y = 0f;
+            if (this.oldPosition.getY() < event.getY()) {
+                y = -0.01f;
+            } else if (this.oldPosition.getY() > event.getY()) {
+                y = 0.01f;
+            }
 
             this.viewDirection.moveXY(x, y);
-            this.oldPosition.setXYZ(event.getX(), event.getY(), 0);
+            // this.oldPosition.setXYZ(event.getX(), event.getY(), 0);
         } else if (message.getTransportedObject() instanceof KeyEvent) {
             KeyEvent event = (KeyEvent) message.getTransportedObject();
             switch (event.getKeyChar()) {
@@ -78,6 +89,10 @@ public class Camera extends AbstractComponent implements IMessageReciver {
             case 'D':
                 this.getEntity().getPosition().moveX(0.1f);
                 break;
+            case KeyEvent.VK_ESCAPE:
+                if (event.getEventType() == KeyEvent.EVENT_KEY_PRESSED) {
+                    this.isMovement = !this.isMovement;
+                }
             }
         }
     }

@@ -17,6 +17,7 @@ public class PointRendering extends AbstractComponent implements IDrawable {
         if (!isActive()) {
             return;
         }
+        applyRotation(gl);
         gl.glPointSize(10f);
         gl.glBegin(GL.GL_POINTS);
         for (int i = 0; i < 10; ++i) {
@@ -27,4 +28,9 @@ public class PointRendering extends AbstractComponent implements IDrawable {
         gl.glEnd();
     }
 
+    private void applyRotation(final GL2 gl) {
+        gl.glRotatef(this.getEntity().getRotation().getX(), 1, 0, 0);
+        gl.glRotatef(this.getEntity().getRotation().getY(), 0, 1, 0);
+        gl.glRotatef(this.getEntity().getRotation().getZ(), 0, 0, 1);
+    }
 }

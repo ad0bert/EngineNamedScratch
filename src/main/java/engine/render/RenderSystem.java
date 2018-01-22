@@ -7,6 +7,7 @@ import java.util.List;
 import com.jogamp.opengl.GL2;
 import com.jogamp.opengl.GLAutoDrawable;
 import com.jogamp.opengl.GLEventListener;
+import com.jogamp.opengl.fixedfunc.GLMatrixFunc;
 import com.jogamp.opengl.glu.GLU;
 
 import engine.ecs.Entity;
@@ -29,7 +30,10 @@ public class RenderSystem implements GLEventListener {
         for (Entity entity : this.drawingList) {
             for (IComponent component : entity.getComponents()) {
                 if (component instanceof IDrawable) {
+                    gl.glMatrixMode(GLMatrixFunc.GL_MODELVIEW);
+                    gl.glPushMatrix(); // remember current matrix
                     ((IDrawable) component).draw(gl);
+                    gl.glPopMatrix(); // restore matrix
                 }
             }
         }

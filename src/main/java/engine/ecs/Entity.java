@@ -9,6 +9,8 @@ import engine.render.interfaces.IDrawable;
 public class Entity {
     private int id;
     private Point position = new Point(0f, 0f, 0f);
+    private Point rotation = new Point(0f, 0f, 0f);
+
     private List<IComponent> components = new ArrayList<IComponent>();
 
     public int getId() {
@@ -53,5 +55,13 @@ public class Entity {
 
     public void setPosition(Point position) {
         this.position = position;
+    }
+
+    public Point getRotation() {
+        return this.rotation;
+    }
+
+    public void setRotation(Point rotation) {
+        this.rotation = rotation;
     }
 }

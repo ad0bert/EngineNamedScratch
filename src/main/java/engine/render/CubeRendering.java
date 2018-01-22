@@ -31,6 +31,9 @@ public class CubeRendering extends AbstractComponent implements IDrawable {
                 e.printStackTrace();
             }
         }
+
+        applyRotation(gl);
+
         gl.glBindTexture(GL2.GL_TEXTURE_2D, this.texture.getTextureObject(gl));
         gl.glBegin(GL2.GL_QUADS);
         // Front Face
@@ -88,6 +91,16 @@ public class CubeRendering extends AbstractComponent implements IDrawable {
         gl.glTexCoord2f(0.0f, this.size);
         gl.glVertex3f(-this.size, this.size, -this.size);
         gl.glEnd();
+
+        this.getEntity().getRotation().moveX(0.1f);
+        this.getEntity().getRotation().moveY(0.1f);
+        this.getEntity().getRotation().moveZ(0.1f);
+    }
+
+    private void applyRotation(final GL2 gl) {
+        gl.glRotatef(this.getEntity().getRotation().getX(), 1, 0, 0);
+        gl.glRotatef(this.getEntity().getRotation().getY(), 0, 1, 0);
+        gl.glRotatef(this.getEntity().getRotation().getZ(), 0, 0, 1);
     }
 
     public CubeRendering(String texturePath, float size, Entity entity) {

@@ -5,7 +5,6 @@ import java.io.IOException;
 
 import com.jogamp.opengl.GL2;
 import com.jogamp.opengl.GLException;
-import com.jogamp.opengl.fixedfunc.GLMatrixFunc;
 import com.jogamp.opengl.util.texture.Texture;
 import com.jogamp.opengl.util.texture.TextureIO;
 
@@ -33,13 +32,17 @@ public class ObjectRendering extends AbstractComponent implements IDrawable {
             }
 
         }
-        gl.glMatrixMode(GLMatrixFunc.GL_MODELVIEW);
-        gl.glPushMatrix(); // remember current matrix
+        applyRotation(gl);
         gl.glTranslatef(this.getEntity().getPosition().getX(), this.getEntity().getPosition().getX(),
                 this.getEntity().getPosition().getX());
         gl.glBindTexture(GL2.GL_TEXTURE_2D, this.texture.getTextureObject(gl));
         this.objectLoader.drawModel(gl);
-        gl.glPopMatrix(); // restore matrix
+    }
+
+    private void applyRotation(final GL2 gl) {
+        gl.glRotatef(this.getEntity().getRotation().getX(), 1, 0, 0);
+        gl.glRotatef(this.getEntity().getRotation().getY(), 0, 1, 0);
+        gl.glRotatef(this.getEntity().getRotation().getZ(), 0, 0, 1);
     }
 
     public ObjectRendering(String objectPath, String texturePath, Entity entity) {
