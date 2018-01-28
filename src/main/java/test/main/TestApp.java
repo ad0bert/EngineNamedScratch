@@ -1,6 +1,8 @@
 package test.main;
 
 import java.io.IOException;
+import java.util.Queue;
+import java.util.concurrent.LinkedBlockingQueue;
 
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
@@ -9,18 +11,13 @@ import com.jogamp.common.util.IOUtil;
 import com.jogamp.newt.Display.PointerIcon;
 import com.jogamp.newt.event.KeyEvent;
 import com.jogamp.newt.event.MouseEvent;
-import com.jogamp.newt.event.WindowAdapter;
-import com.jogamp.newt.event.WindowEvent;
-import com.jogamp.newt.opengl.GLWindow;
-import com.jogamp.opengl.util.FPSAnimator;
 
-import engine.ecs.Entity;
-import engine.ecs.components.Camera;
 import engine.messageing.MessageObject;
 import engine.messageing.interfaces.IMessageReciver;
 import engine.messageing.interfaces.IMessageService;
-import engine.render.CubeRendering;
+import engine.util.Timer;
 import engine.windows.MainWindow;
+import game.objects.Player;
 import test.messageing.DummyMessageReciver;
 import test.render.TestRenderer;
 import test.render.TestRenderer.ObjectType;
@@ -28,13 +25,15 @@ import test.render.TestRenderer.ObjectType;
 public class TestApp implements IMessageReciver {
     private final IMessageService messageService;
     private TestRenderer testRenderer = new TestRenderer();
-    private final GLWindow window;
+    private final MainWindow window;
     private String version;
     private PointerIcon pointerIcon;
 
+    private Queue<MessageObject> messageQueue = new LinkedBlockingQueue<>();
+
     public TestApp(IMessageService messageService, MainWindow window) {
         this.messageService = messageService;
-        this.window = window.getWindow();
+        this.window = window;
     }
 
     public void run() {
@@ -42,55 +41,30 @@ public class TestApp implements IMessageReciver {
         this.messageService.register(reciver1, null);
         this.messageService.register(this, null);
 
-        Entity player = new Entity();
-        Camera camera = new Camera(player);
-        player.addComponent(camera);
+        Player player = new Player();
         player.getPosition().setXYZ(0, 0, 5);
-        this.testRenderer.addCamera(camera);
-        this.messageService.register(camera, null);
-        this.window.addGLEventListener(this.testRenderer.getEventListener());
-
-        this.window.setVisible(true);
-        final FPSAnimator animator = new FPSAnimator(this.window, 300, true);
-
-        this.window.addWindowListener(new WindowAdapter() {
-            @Override
-            public void windowDestroyNotify(WindowEvent arg0) {
-                // Use a dedicate thread to run the stop() to ensure that the
-                // animator stops before program exits.
-                new Thread() {
-                    @Override
-                    public void run() {
-                        animator.stop(); // stop the animator loop
-                    }
-                }.start();
-            };
-        });
-
-        animator.start();
+        this.testRenderer.addCamera(player.getCamera());
         this.testRenderer.renderObject(ObjectType.Cube);
+        this.window.getWindow().addGLEventListener(this.testRenderer.getEventListener());
+        this.window.getWindow().setVisible(true);
 
         try {
-            ClassLoader loader = CubeRendering.class.getClassLoader();
+            ClassLoader loader = TestApp.class.getClassLoader();
             final IOUtil.ClassResources res = new IOUtil.ClassResources(
                     new String[] { loader.getResource("textures/pointerIcon.png").getPath() },
-                    this.window.getScreen().getDisplay().getClass().getClassLoader(), null);
-            this.pointerIcon = this.window.getScreen().getDisplay().createPointerIcon(res, 8, 8);
-            this.window.setPointerIcon(this.pointerIcon);
+                    this.window.getWindow().getScreen().getDisplay().getClass().getClassLoader(), null);
+            this.pointerIcon = this.window.getWindow().getScreen().getDisplay().createPointerIcon(res, 8, 8);
+            this.window.getWindow().setPointerIcon(this.pointerIcon);
         } catch (IllegalArgumentException | IllegalStateException | IOException e) {
             e.printStackTrace();
         }
 
-        this.window.confinePointer(true);
+        this.window.getWindow().confinePointer(true);
 
-        while (animator.isAnimating()) {
-            try {
-                Thread.sleep(1000000);
-            } catch (InterruptedException e) {
-                // TODO Auto-generated catch block
-                e.printStackTrace();
-            }
+        while (!this.window.isClosed()) {
+            Timer.updateGame(this);
         }
+        System.out.println("stoped");
     }
 
     public static void main(String[] args) {
@@ -107,24 +81,21 @@ public class TestApp implements IMessageReciver {
         this.version = version;
     }
 
+    public void gameLogic(double t, double dt) {
+        System.out.println(t + " -- " + dt);
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
+    }
+
     @Override
     public void reciveMessage(MessageObject message) {
-        if (message.getTransportedObject() instanceof MouseEvent) {
-            if (this.window.isPointerConfined()) {
-                this.window.warpPointer(this.window.getWidth() / 2, this.window.getHeight() / 2);
-            }
-            MouseEvent event = (MouseEvent) message.getTransportedObject();
-            if (event.getEventType() == MouseEvent.EVENT_MOUSE_PRESSED) {
-                this.testRenderer.nextObject();
-            }
-        }
-        if (message.getTransportedObject() instanceof KeyEvent) {
-            if ((((KeyEvent) message.getTransportedObject()).getKeyChar() == KeyEvent.VK_ESCAPE)
-                    && (((KeyEvent) message.getTransportedObject()).getEventType() == KeyEvent.EVENT_KEY_PRESSED)) {
-                this.window.confinePointer(!this.window.isPointerConfined());
-            } else {
-                System.out.println(((KeyEvent) message.getTransportedObject()).getKeyChar());
-            }
+        if ((message.getTransportedObject() instanceof MouseEvent)
+                || (message.getTransportedObject() instanceof KeyEvent)) {
+            this.messageQueue.add(message);
         }
     }
 }

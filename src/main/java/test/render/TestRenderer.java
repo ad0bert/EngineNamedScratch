@@ -4,11 +4,12 @@ import com.jogamp.opengl.GLEventListener;
 
 import engine.ecs.Entity;
 import engine.ecs.components.Camera;
-import engine.render.CubeRendering;
-import engine.render.ObjectRendering;
-import engine.render.PointRendering;
 import engine.render.RenderSystem;
 import engine.render.interfaces.IDrawable;
+import game.objects.Capsule;
+import game.objects.Points;
+import game.objects.Qube;
+import game.objects.Sprite;
 
 public class TestRenderer {
 
@@ -16,18 +17,22 @@ public class TestRenderer {
     private Entity cube;
     private Entity point;
     private Entity object;
+    private Entity sprite;
 
     boolean init = false;
 
     ObjectType current = ObjectType.Cube;
 
     public TestRenderer() {
-        this.cube = new Entity();
-        this.point = new Entity();
-        this.object = new Entity();
+        this.cube = new Qube();
+        this.point = new Points();
+        this.object = new Capsule();
+        this.sprite = new Sprite();
         this.cube.getPosition().setXYZ(0f, 0f, 0f);
         this.point.getPosition().setXYZ(1f, 1f, 1f);
         this.object.getPosition().setXYZ(2f, 2f, 2f);
+        this.sprite.getPosition().setXYZ(0f, 0f, 0f);
+        this.sprite.activateComponent(IDrawable.class);
     }
 
     public enum ObjectType {
@@ -63,14 +68,10 @@ public class TestRenderer {
     }
 
     private void doInit() {
-        this.cube.addComponent(new CubeRendering("textures/cubeFace.png", 1f, this.cube));
-        this.point.addComponent(new PointRendering(this.point));
-        this.object.addComponent(
-                new ObjectRendering("objects/capsule/capsule.obj", "objects/capsule/capsule0.jpg", this.object));
-
         this.renderSystem.getDrawingList().add(this.cube);
         this.renderSystem.getDrawingList().add(this.point);
         this.renderSystem.getDrawingList().add(this.object);
+        this.renderSystem.getDrawingList().add(this.sprite);
         this.init = true;
     }
 

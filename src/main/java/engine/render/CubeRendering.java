@@ -8,8 +8,7 @@ import com.jogamp.opengl.GLException;
 import com.jogamp.opengl.util.texture.Texture;
 import com.jogamp.opengl.util.texture.TextureIO;
 
-import engine.ecs.AbstractComponent;
-import engine.ecs.Entity;
+import engine.ecs.components.AbstractComponent;
 import engine.render.interfaces.IDrawable;
 
 public class CubeRendering extends AbstractComponent implements IDrawable {
@@ -103,8 +102,8 @@ public class CubeRendering extends AbstractComponent implements IDrawable {
         gl.glRotatef(this.getEntity().getRotation().getZ(), 0, 0, 1);
     }
 
-    public CubeRendering(String texturePath, float size, Entity entity) {
-        super(entity);
+    public CubeRendering(String texturePath, float size) {
+        super();
         this.size = size;
         ClassLoader loader = CubeRendering.class.getClassLoader();
         this.textureFile = new File(loader.getResource(texturePath).getPath());

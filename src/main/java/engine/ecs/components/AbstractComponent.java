@@ -1,12 +1,13 @@
-package engine.ecs;
+package engine.ecs.components;
+
+import engine.ecs.Entity;
 
 public abstract class AbstractComponent implements IComponent {
 
     private boolean isActive;
     private Entity entity;
 
-    public AbstractComponent(Entity entity) {
-        this.setEntity(entity);
+    public AbstractComponent() {
         this.isActive = false;
     }
 
@@ -24,6 +25,7 @@ public abstract class AbstractComponent implements IComponent {
         return this.entity;
     }
 
+    @Override
     public void setEntity(Entity entity) {
         this.entity = entity;
     }

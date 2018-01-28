@@ -1,6 +1,5 @@
 package engine.render;
 
-import java.awt.DisplayMode;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -11,12 +10,11 @@ import com.jogamp.opengl.fixedfunc.GLMatrixFunc;
 import com.jogamp.opengl.glu.GLU;
 
 import engine.ecs.Entity;
-import engine.ecs.IComponent;
 import engine.ecs.components.Camera;
+import engine.ecs.components.IComponent;
 import engine.render.interfaces.IDrawable;
 
 public class RenderSystem implements GLEventListener {
-    public static DisplayMode dm, dm_old;
     private final GLU glu = new GLU();
     private Camera camera;
     private List<Entity> drawingList = new ArrayList<Entity>();
@@ -48,7 +46,7 @@ public class RenderSystem implements GLEventListener {
     public void init(GLAutoDrawable drawable) {
         final GL2 gl = drawable.getGL().getGL2();
         gl.glShadeModel(GL2.GL_SMOOTH);
-        gl.glClearColor(0f, 0f, 0f, 0f);
+        gl.glClearColor(1f, 1f, 1f, 0f);
         gl.glClearDepth(1.0f);
         gl.glEnable(GL2.GL_DEPTH_TEST);
         gl.glDepthFunc(GL2.GL_LEQUAL);

@@ -3,14 +3,10 @@ package engine.render;
 import com.jogamp.opengl.GL;
 import com.jogamp.opengl.GL2;
 
-import engine.ecs.AbstractComponent;
-import engine.ecs.Entity;
+import engine.ecs.components.AbstractComponent;
 import engine.render.interfaces.IDrawable;
 
 public class PointRendering extends AbstractComponent implements IDrawable {
-    public PointRendering(Entity entity) {
-        super(entity);
-    }
 
     @Override
     public void draw(GL2 gl) {

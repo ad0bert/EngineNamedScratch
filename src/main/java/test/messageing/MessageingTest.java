@@ -3,6 +3,7 @@ package test.messageing;
 import org.junit.Test;
 
 import engine.messageing.MessageObject;
+import engine.messageing.MessageQueueNames;
 import engine.messageing.MessageServiceImpl;
 import engine.messageing.interfaces.IMessageReciver;
 import engine.messageing.interfaces.IMessageService;
@@ -18,13 +19,13 @@ public class MessageingTest {
         IMessageReciver reciver2 = new DummyMessageReciver(2);
         IMessageReciver reciver3 = new DummyMessageReciver(3);
 
-        service.register(reciver1, 0xFF00);
-        service.register(reciver2, null);
-        service.register(reciver3, 0xEF01);
+        this.service.register(reciver1, MessageQueueNames.QUEUES.get("MOUSE"));
+        this.service.register(reciver2, null);
+        this.service.register(reciver3, MessageQueueNames.QUEUES.get("KEYBOARD"));
 
-        service.send(new MessageObject(this, null, "Hello"));
-        service.send(new MessageObject(this, 0xFF00, "Hello1"));
-        service.send(new MessageObject(this, 0xEF01, "Hello2"));
-        service.send(new MessageObject(this, 0xEF02, "Hello3"));
+        this.service.send(new MessageObject(this, null, null, "Hello"));
+        this.service.send(new MessageObject(this, null, MessageQueueNames.QUEUES.get("MOUSE"), "Hello1"));
+        this.service.send(new MessageObject(this, 1, null, "Hello2"));
+        this.service.send(new MessageObject(this, null, MessageQueueNames.QUEUES.get("KEYBOARD"), "Hello3"));
     }
 }
