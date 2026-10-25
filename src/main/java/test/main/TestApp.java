@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.Queue;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
 
 import com.jogamp.common.util.IOUtil;
@@ -26,6 +27,7 @@ import lombok.Setter;
 import lombok.experimental.FieldDefaults;
 import lombok.val;
 
+@Slf4j
 @FieldDefaults(level = AccessLevel.PRIVATE)
 public class TestApp implements IMessageReciver {
   final IMessageService messageService;
@@ -34,9 +36,8 @@ public class TestApp implements IMessageReciver {
   @Getter
   @Setter
   String version;
-  PointerIcon pointerIcon;
 
-  Queue<MessageObject> messageQueue = new LinkedBlockingQueue<>();
+  final Queue<MessageObject> messageQueue = new LinkedBlockingQueue<>();
 
   public TestApp(IMessageService messageService, MainWindow window) {
     this.messageService = messageService;
@@ -44,8 +45,8 @@ public class TestApp implements IMessageReciver {
   }
 
   public void run() {
-    val reciver1 = new DummyMessageReciver(1);
-    this.messageService.register(reciver1, null);
+    val receiver1 = new DummyMessageReciver(1);
+    this.messageService.register(receiver1, null);
     this.messageService.register(this, null);
 
     val player = new Player();
@@ -57,13 +58,17 @@ public class TestApp implements IMessageReciver {
 
     try {
       val loader = TestApp.class.getClassLoader();
+      val iconUrl = loader.getResource("textures/pointerIcon.png");
+      if (iconUrl == null) {
+        throw new IllegalStateException("Resource not found: textures/pointerIcon.png");
+      }
       val res = new IOUtil.ClassResources(
-          new String[] { loader.getResource("textures/pointerIcon.png").getPath() },
+          new String[] { iconUrl.getPath() },
           this.window.getWindow().getScreen().getDisplay().getClass().getClassLoader(), null);
-      this.pointerIcon = this.window.getWindow().getScreen().getDisplay().createPointerIcon(res, 8, 8);
-      this.window.getWindow().setPointerIcon(this.pointerIcon);
+      final PointerIcon pointerIcon = this.window.getWindow().getScreen().getDisplay().createPointerIcon(res, 8, 8);
+      this.window.getWindow().setPointerIcon(pointerIcon);
     } catch (IllegalArgumentException | IllegalStateException | IOException e) {
-      e.printStackTrace();
+      log.error("Could not set pointer icon", e);
     }
 
     this.window.getWindow().confinePointer(true);
@@ -71,22 +76,22 @@ public class TestApp implements IMessageReciver {
     while (!this.window.isClosed()) {
       Timer.updateGame(this);
     }
-    System.out.println("stoped");
+    log.info("stopped");
   }
 
-  public static void main(String[] args) {
+  static void main() {
     try (val context = new ClassPathXmlApplicationContext("applicationContext.xml")) {
       context.getBean("testApp", TestApp.class).run();
     }
   }
 
   public void gameLogic(double t, double dt) {
-    System.out.println(t + " -- " + dt);
+    log.debug("{} -- {}", t, dt);
     try {
       Thread.sleep(100);
     } catch (InterruptedException e) {
-      // TODO Auto-generated catch block
-      e.printStackTrace();
+      log.warn("Interrupted while sleeping", e);
+      Thread.currentThread().interrupt();
     }
   }
 

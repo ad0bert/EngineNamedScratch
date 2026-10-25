@@ -13,10 +13,12 @@ import com.jogamp.opengl.util.GLBuffers;
 import engine.render.ObjectRendering;
 import lombok.AccessLevel;
 import lombok.experimental.FieldDefaults;
+import lombok.extern.slf4j.Slf4j;
 
 // modified version of the object loader from:
 // https://github.com/demoscenepassivist/SocialCoding/blob/master/code_demos_jogamp/src/framework/util/WavefrontObjectLoader.java
 
+@Slf4j
 @FieldDefaults(level = AccessLevel.PRIVATE)
 public class ObjectLoader {
 
@@ -61,7 +63,7 @@ public class ObjectLoader {
       }
       br.close();
     } catch (IOException e) {
-      System.out.println(e);
+      log.error("Failed to load OBJ model {}", modelPath, e);
     }
   }
 
