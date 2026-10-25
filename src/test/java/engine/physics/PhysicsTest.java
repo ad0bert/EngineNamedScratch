@@ -193,6 +193,104 @@ class PhysicsTest {
     assertEquals(0.2f + 0.1f, inside.depth(), 1e-4f);
   }
 
+  /** How far the entity's local up axis points up in the world (1 = upright, 0 = on its side). */
+  private static float uprightness(Entity e) {
+    return e.transform().rotation().transform(new Vector3f(0f, 1f, 0f)).y;
+  }
+
+  @Test
+  void aTiltedCrateLandsOnItsCornerAndFallsFlat() {
+    floor();
+    final var c = crate(0f, 2f, 0f);
+    c.transform().setEulerDegrees(35f, 0f, 25f);
+    simulate(4.0);
+    final float up = Math.abs(uprightness(c));
+    assertTrue(up > 0.99f, "settles on a face, uprightness " + up);
+    assertEquals(0.5f, c.transform().position().y, 0.04f);
+    assertTrue(c.get(Rigidbody.class).angularVelocity.length() < 0.5f);
+  }
+
+  @Test
+  void anOffCentreHitSpinsABody() {
+    final var c = crate(0f, 0f, 0f);
+    c.get(Rigidbody.class).useGravity = false;
+    final var hitter = new Entity("hitter");
+    hitter.transform().position().set(-1.45f, 0.45f, 0f); // meets the crate's upper left edge
+    hitter.add(new BoxCollider(0.5f, 0.5f, 0.5f));
+    final var hitterBody = hitter.add(new Rigidbody());
+    hitterBody.useGravity = false;
+    hitterBody.velocity.set(6f, 0f, 0f);
+    this.scene.add(hitter);
+    simulate(0.5);
+    assertTrue(c.get(Rigidbody.class).angularVelocity.z < -0.5f, "turned clockwise about z: "
+        + c.get(Rigidbody.class).angularVelocity);
+  }
+
+  @Test
+  void aLockedBodyNeverRotates() {
+    floor();
+    final var c = crate(0f, 2f, 0f);
+    c.transform().setEulerDegrees(35f, 0f, 25f);
+    c.get(Rigidbody.class).lockRotation = true;
+    final var before = new org.joml.Quaternionf(c.transform().rotation());
+    simulate(2.0);
+    assertTrue(before.equals(c.transform().rotation()));
+  }
+
+  @Test
+  void aSphereRollsWithoutSlipping() {
+    floor();
+    final var ball = new Entity("ball");
+    ball.transform().position().set(0f, 0.5f, 0f);
+    ball.add(new SphereCollider(0.5f));
+    final var body = ball.add(new Rigidbody());
+    body.linearDamping = 0f;
+    body.angularDamping = 0f;
+    body.velocity.set(3f, 0f, 0f);
+    this.scene.add(ball);
+    simulate(1.0);
+    final float v = body.velocity.x;
+    assertTrue(v > 1.5f, "keeps rolling, speed " + v);
+    assertEquals(-v / 0.5f, body.angularVelocity.z, 0.4f); // rolling: omega = v / r, turning clockwise seen from +z
+    assertEquals(0f, body.angularVelocity.x, 0.2f);
+  }
+
+  @Test
+  void aTallStackStaysStanding() {
+    floor();
+    final List<Entity> stack = new ArrayList<>();
+    for (int i = 0; i < 6; i++) {
+      stack.add(crate(0f, 0.5f + i * 1.02f, 0f));
+    }
+    simulate(6.0);
+    final var top = stack.get(5);
+    assertEquals(5.5f, top.transform().position().y, 0.15f);
+    assertEquals(0f, top.transform().position().x, 0.1f);
+    assertEquals(0f, top.transform().position().z, 0.1f);
+    assertTrue(uprightness(top) > 0.99f);
+  }
+
+  @Test
+  void aBoxRestingFlatHasFourContactPoints() {
+    final var c = Narrowphase.boxBox(box(0f, 0f, 0f, 0.5f), box(0.8f, 0.05f, 0f, 0.5f));
+    assertEquals(4, c.count());
+    for (int i = 0; i < c.count(); i++) {
+      assertEquals(0.2f, c.depth(i), 1e-4f);
+      assertEquals(0.4f, c.point(i).x, 1e-3f); // halfway between the faces at x = 0.5 and x = 0.3
+    }
+  }
+
+  @Test
+  void aTurnedBoxTouchesAlongItsEdgeOnly() {
+    final var c = Narrowphase.boxBox(box(0f, 0f, 0f, 0.5f), box(1.15f, 0f, 45f, 0.5f));
+    assertEquals(2, c.count()); // the diamond's tip is an edge along z, poking into A's face
+    for (int i = 0; i < 2; i++) {
+      assertEquals(0.4715f, c.point(i).x, 0.01f); // halfway between the tip (x = 0.443) and A's face (x = 0.5)
+      assertEquals(0f, c.point(i).y, 1e-3f);
+      assertEquals(0.5f, Math.abs(c.point(i).z), 1e-3f);
+    }
+  }
+
   @Test
   void sphereRollsToRestOnFloor() {
     floor();

@@ -30,6 +30,8 @@ public class Transform {
     final Vector3f s = new Vector3f();
     final Vector3f v = new Vector3f();
     final Quaternionf q = new Quaternionf();
+    final Quaternionf q2 = new Quaternionf();
+    final Quaternionf q3 = new Quaternionf();
     final Matrix4f tmp = new Matrix4f();
     final Matrix4f inverse = new Matrix4f();
     final List<Matrix4f> parents = new ArrayList<>(); // one matrix per hierarchy depth
@@ -161,6 +163,22 @@ public class Transform {
     final var s = SCRATCH.get();
     this.parent.world(s.inverse, s, 0).invert().transformDirection(delta, s.v);
     this.position.add(s.v);
+  }
+
+  /**
+   * Rotates the entity about its own origin by a world-space rotation, converting it into this transform's parent
+   * space.
+   */
+  public void rotateWorld(Quaternionf delta) {
+    if (this.parent == null) {
+      this.rotation.premul(delta).normalize();
+      return;
+    }
+    final var s = SCRATCH.get();
+    this.parent.world(s.inverse, s, 0).getNormalizedRotation(s.q2); // the parent's world rotation P
+    // local' = P^-1 * delta * P * local
+    s.q3.set(s.q2).conjugate().mul(delta).mul(s.q2);
+    this.rotation.premul(s.q3).normalize();
   }
 
   /** Local forward direction (-Z) in the parent's space. */

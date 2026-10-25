@@ -13,10 +13,21 @@ public final class Narrowphase {
   private Narrowphase() {
   }
 
-  /** Penetration of A into B: push A by {@code -normal * depth} (or B by {@code +normal * depth}) to separate. */
+  /**
+   * Penetration of A into B: push A by {@code -normal * depth} (or B by {@code +normal * depth}) to separate.
+   * {@link #depth()} is the deepest penetration; the contact manifold holds up to {@link #MAX_POINTS} world-space
+   * points (halfway between the two surfaces) with their own depths. Box-box manifolds are only built when
+   * {@code wantPoints} is set, because clipping costs more than the overlap test.
+   */
   public static final class Contact {
+    public static final int MAX_POINTS = 4;
+
     private final Vector3f normal = new Vector3f();
     private float depth;
+    private int count;
+    private final Vector3f[] points = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
+    private final float[] depths = new float[MAX_POINTS];
+    boolean wantPoints;
 
     public Contact() {
     }
@@ -33,15 +44,41 @@ public final class Narrowphase {
     public float depth() {
       return this.depth;
     }
+
+    public int count() {
+      return this.count;
+    }
+
+    public Vector3f point(int i) {
+      return this.points[i];
+    }
+
+    public float depth(int i) {
+      return this.depths[i];
+    }
+
+    private void single(float x, float y, float z, float d) {
+      this.count = 1;
+      this.points[0].set(x, y, z);
+      this.depths[0] = d;
+    }
   }
 
   /** Per-thread scratch vectors so the tests below do not allocate. */
   private static final class Scratch {
+    static final int CAP = 16; // clipping a quad against four planes yields at most eight vertices
+
     final Vector3f t = new Vector3f();
     final Vector3f l = new Vector3f();
     final Vector3f closest = new Vector3f();
     final Vector3f diff = new Vector3f();
+    final Vector3f nRef = new Vector3f();
     final float[] p = new float[3];
+    float[] polyA = new float[CAP * 3];
+    float[] polyB = new float[CAP * 3];
+    final float[] candPos = new float[CAP * 3];
+    final float[] candDepth = new float[CAP];
+    final boolean[] taken = new boolean[CAP];
   }
 
   private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
@@ -203,6 +240,8 @@ public final class Narrowphase {
       n.set(0f, 1f, 0f);
     }
     out.depth = sum - len;
+    final float along = a.r() - 0.5f * out.depth;
+    out.single(a.c().x + n.x * along, a.c().y + n.y * along, a.c().z + n.z * along, out.depth);
     return true;
   }
 
@@ -231,6 +270,9 @@ public final class Narrowphase {
       final float dist = (float) Math.sqrt(dist2);
       out.normal.set(diff).div(dist);
       out.depth = s.r() - dist;
+      final float along = s.r() - 0.5f * out.depth;
+      out.single(s.c().x + out.normal.x * along, s.c().y + out.normal.y * along, s.c().z + out.normal.z * along,
+          out.depth);
       return true;
     }
     // centre inside the box: leave through the nearest face
@@ -245,12 +287,16 @@ public final class Narrowphase {
     }
     out.normal.set(b.axes()[axis]).mul(p[axis] >= 0f ? -1f : 1f); // the negated outward direction
     out.depth = s.r() + bestGap;
+    final float along = s.r() - 0.5f * out.depth;
+    out.single(s.c().x + out.normal.x * along, s.c().y + out.normal.y * along, s.c().z + out.normal.z * along,
+        out.depth);
     return true;
   }
 
   /** Separating-axis test over the 15 candidate axes; keeps the axis of least penetration. */
   static Contact boxBox(Box a, Box b) {
     final var c = new Contact();
+    c.wantPoints = true;
     return boxBox(a, b, c) ? c : null;
   }
 
@@ -258,6 +304,7 @@ public final class Narrowphase {
     final var sc = SCRATCH.get();
     final var t = sc.t.set(b.c()).sub(a.c());
     float best = Float.MAX_VALUE;
+    int bestAxis = -1;
     boolean found = false;
     final var l = sc.l;
     for (int i = 0; i < 15; i++) {
@@ -281,6 +328,7 @@ public final class Narrowphase {
       final boolean better = i < 6 ? overlap < best : overlap < best * 0.95f - 1e-4f;
       if (better) {
         best = overlap;
+        bestAxis = i;
         out.normal.set(l);
         found = true;
       }
@@ -292,7 +340,254 @@ public final class Narrowphase {
       out.normal.negate();
     }
     out.depth = best;
+    out.count = 0;
+    if (out.wantPoints) {
+      if (bestAxis < 6) {
+        faceContact(a, b, bestAxis, out, sc);
+      } else {
+        edgeContact(a, b, bestAxis, out, sc);
+      }
+    }
     return true;
+  }
+
+  /**
+   * Face contact: the incident box's most facing face is clipped against the side planes of the reference face, and
+   * the vertices that ended up behind the reference face become the manifold.
+   */
+  private static void faceContact(Box a, Box b, int axisIndex, Contact out, Scratch sc) {
+    final boolean refIsA = axisIndex < 3;
+    final Box ref = refIsA ? a : b;
+    final Box inc = refIsA ? b : a;
+    final int ri = refIsA ? axisIndex : axisIndex - 3;
+    final var nRef = sc.nRef.set(out.normal); // from the reference box towards the incident one
+    if (!refIsA) {
+      nRef.negate();
+    }
+
+    int k = 0;
+    float bestDot = -1f;
+    for (int i = 0; i < 3; i++) {
+      final float d = Math.abs(inc.axes()[i].dot(nRef));
+      if (d > bestDot) {
+        bestDot = d;
+        k = i;
+      }
+    }
+    final float faceSign = inc.axes()[k].dot(nRef) > 0f ? -1f : 1f;
+    final var u = inc.axes()[(k + 1) % 3];
+    final var v = inc.axes()[(k + 2) % 3];
+    final float hu = inc.half()[(k + 1) % 3];
+    final float hv = inc.half()[(k + 2) % 3];
+    final var axisK = inc.axes()[k];
+    final float cx = inc.c().x + faceSign * inc.half()[k] * axisK.x;
+    final float cy = inc.c().y + faceSign * inc.half()[k] * axisK.y;
+    final float cz = inc.c().z + faceSign * inc.half()[k] * axisK.z;
+    float[] poly = sc.polyA;
+    float[] other = sc.polyB;
+    for (int i = 0; i < 4; i++) {
+      final float su = i == 0 || i == 3 ? hu : -hu;
+      final float sv = i < 2 ? hv : -hv;
+      poly[i * 3] = cx + su * u.x + sv * v.x;
+      poly[i * 3 + 1] = cy + su * u.y + sv * v.y;
+      poly[i * 3 + 2] = cz + su * u.z + sv * v.z;
+    }
+    int n = 4;
+    for (int side = 0; side < 4 && n > 0; side++) {
+      final int axis = (ri + 1 + side / 2) % 3;
+      final float sign = side % 2 == 0 ? 1f : -1f;
+      n = clip(poly, n, other, ref.axes()[axis], sign, ref.half()[axis], ref.c());
+      final var swap = poly;
+      poly = other;
+      other = swap;
+    }
+
+    final float fx = ref.c().x + nRef.x * ref.half()[ri];
+    final float fy = ref.c().y + nRef.y * ref.half()[ri];
+    final float fz = ref.c().z + nRef.z * ref.half()[ri];
+    int count = 0;
+    int shallowest = -1;
+    float shallowestS = -Float.MAX_VALUE;
+    float[] cand = sc.candPos;
+    for (int i = 0; i < n; i++) {
+      final float s = nRef.x * (poly[i * 3] - fx) + nRef.y * (poly[i * 3 + 1] - fy)
+          + nRef.z * (poly[i * 3 + 2] - fz);
+      if (s > shallowestS) {
+        shallowestS = s;
+        shallowest = i;
+      }
+      if (s <= 0f) {
+        cand[count * 3] = poly[i * 3] - 0.5f * s * nRef.x;
+        cand[count * 3 + 1] = poly[i * 3 + 1] - 0.5f * s * nRef.y;
+        cand[count * 3 + 2] = poly[i * 3 + 2] - 0.5f * s * nRef.z;
+        sc.candDepth[count] = -s;
+        count++;
+      }
+    }
+    if (count == 0) {
+      if (shallowest < 0) {
+        // numerically degenerate: fall back to the middle of the incident face
+        out.single(cx, cy, cz, out.depth);
+        return;
+      }
+      cand[0] = poly[shallowest * 3];
+      cand[1] = poly[shallowest * 3 + 1];
+      cand[2] = poly[shallowest * 3 + 2];
+      sc.candDepth[0] = Math.max(-shallowestS, 1e-4f);
+      count = 1;
+    }
+    reduce(out, sc, count);
+  }
+
+  /** Sutherland-Hodgman against the half space {@code sign * axis . (p - origin) <= limit}; returns the new count. */
+  private static int clip(float[] in, int n, float[] out, Vector3f axis, float sign, float limit, Vector3f origin) {
+    int m = 0;
+    final float ax = axis.x * sign;
+    final float ay = axis.y * sign;
+    final float az = axis.z * sign;
+    final float ox = origin.x;
+    final float oy = origin.y;
+    final float oz = origin.z;
+    for (int i = 0; i < n; i++) {
+      final int j = (i + 1) % n;
+      final float di = ax * (in[i * 3] - ox) + ay * (in[i * 3 + 1] - oy) + az * (in[i * 3 + 2] - oz) - limit;
+      final float dj = ax * (in[j * 3] - ox) + ay * (in[j * 3 + 1] - oy) + az * (in[j * 3 + 2] - oz) - limit;
+      if (di <= 0f && m < Scratch.CAP) {
+        out[m * 3] = in[i * 3];
+        out[m * 3 + 1] = in[i * 3 + 1];
+        out[m * 3 + 2] = in[i * 3 + 2];
+        m++;
+      }
+      if (((di < 0f && dj > 0f) || (di > 0f && dj < 0f)) && m < Scratch.CAP) {
+        final float f = di / (di - dj);
+        out[m * 3] = in[i * 3] + f * (in[j * 3] - in[i * 3]);
+        out[m * 3 + 1] = in[i * 3 + 1] + f * (in[j * 3 + 1] - in[i * 3 + 1]);
+        out[m * 3 + 2] = in[i * 3 + 2] + f * (in[j * 3 + 2] - in[i * 3 + 2]);
+        m++;
+      }
+    }
+    return m;
+  }
+
+  /** Copies the candidates into the contact, keeping at most four that span the largest area. */
+  private static void reduce(Contact out, Scratch sc, int count) {
+    final float[] p = sc.candPos;
+    final float[] d = sc.candDepth;
+    if (count <= Contact.MAX_POINTS) {
+      out.count = count;
+      for (int i = 0; i < count; i++) {
+        out.points[i].set(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
+        out.depths[i] = d[i];
+      }
+      return;
+    }
+    java.util.Arrays.fill(sc.taken, 0, count, false);
+    int first = 0; // deepest point
+    for (int i = 1; i < count; i++) {
+      if (d[i] > d[first]) {
+        first = i;
+      }
+    }
+    sc.taken[first] = true;
+    int second = -1; // farthest from it
+    float far = -1f;
+    for (int i = 0; i < count; i++) {
+      if (sc.taken[i]) {
+        continue;
+      }
+      final float dx = p[i * 3] - p[first * 3];
+      final float dy = p[i * 3 + 1] - p[first * 3 + 1];
+      final float dz = p[i * 3 + 2] - p[first * 3 + 2];
+      final float dist = dx * dx + dy * dy + dz * dz;
+      if (dist > far) {
+        far = dist;
+        second = i;
+      }
+    }
+    sc.taken[second] = true;
+    // the points on either side of that edge that enclose the largest signed areas
+    final var n = sc.nRef;
+    final float ex = p[second * 3] - p[first * 3];
+    final float ey = p[second * 3 + 1] - p[first * 3 + 1];
+    final float ez = p[second * 3 + 2] - p[first * 3 + 2];
+    int third = -1;
+    int fourth = -1;
+    float maxArea = 0f;
+    float minArea = 0f;
+    for (int i = 0; i < count; i++) {
+      if (sc.taken[i]) {
+        continue;
+      }
+      final float dx = p[i * 3] - p[first * 3];
+      final float dy = p[i * 3 + 1] - p[first * 3 + 1];
+      final float dz = p[i * 3 + 2] - p[first * 3 + 2];
+      final float area = n.x * (ey * dz - ez * dy) + n.y * (ez * dx - ex * dz) + n.z * (ex * dy - ey * dx);
+      if (area > maxArea) {
+        maxArea = area;
+        third = i;
+      }
+      if (area < minArea) {
+        minArea = area;
+        fourth = i;
+      }
+    }
+    out.count = 0;
+    addPoint(out, p, d, first);
+    addPoint(out, p, d, second);
+    addPoint(out, p, d, third);
+    addPoint(out, p, d, fourth);
+  }
+
+  private static void addPoint(Contact out, float[] p, float[] d, int i) {
+    if (i >= 0) {
+      out.points[out.count].set(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
+      out.depths[out.count] = d[i];
+      out.count++;
+    }
+  }
+
+  /** Edge contact: a single point halfway between the closest points of the two supporting edges. */
+  private static void edgeContact(Box a, Box b, int axisIndex, Contact out, Scratch sc) {
+    final int ia = (axisIndex - 6) / 3;
+    final int ib = (axisIndex - 6) % 3;
+    final var n = out.normal;
+    float pax = a.c().x;
+    float pay = a.c().y;
+    float paz = a.c().z;
+    float pbx = b.c().x;
+    float pby = b.c().y;
+    float pbz = b.c().z;
+    for (int j = 0; j < 3; j++) {
+      if (j != ia) {
+        final var ax = a.axes()[j];
+        final float s = (ax.dot(n) >= 0f ? 1f : -1f) * a.half()[j];
+        pax += s * ax.x;
+        pay += s * ax.y;
+        paz += s * ax.z;
+      }
+      if (j != ib) {
+        final var bx = b.axes()[j];
+        final float s = (bx.dot(n) >= 0f ? -1f : 1f) * b.half()[j];
+        pbx += s * bx.x;
+        pby += s * bx.y;
+        pbz += s * bx.z;
+      }
+    }
+    final var d1 = a.axes()[ia];
+    final var d2 = b.axes()[ib];
+    final float rx = pax - pbx;
+    final float ry = pay - pby;
+    final float rz = paz - pbz;
+    final float bq = d1.dot(d2);
+    final float c = d1.x * rx + d1.y * ry + d1.z * rz;
+    final float f = d2.x * rx + d2.y * ry + d2.z * rz;
+    final float denom = 1f - bq * bq;
+    final float s = denom > 1e-8f ? (bq * f - c) / denom : 0f;
+    final float t = bq * s + f;
+    final float mx = 0.5f * (pax + s * d1.x + pbx + t * d2.x);
+    final float my = 0.5f * (pay + s * d1.y + pby + t * d2.y);
+    final float mz = 0.5f * (paz + s * d1.z + pbz + t * d2.z);
+    out.single(mx, my, mz, out.depth);
   }
 
   private static float radius(Box box, Vector3f axis) {

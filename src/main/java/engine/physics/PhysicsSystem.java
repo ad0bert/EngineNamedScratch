@@ -5,11 +5,14 @@ import java.util.List;
 import java.util.Optional;
 import java.util.function.Predicate;
 
+import org.joml.Matrix3f;
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import engine.ecs.Entity;
 import engine.ecs.ISystem;
 import engine.ecs.Scene;
+import engine.ecs.Transform;
 import engine.messaging.IMessageService;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
@@ -37,14 +40,23 @@ public class PhysicsSystem implements ISystem {
   private static final float REST_SPEED = 1.0f;
   /** Bounding spheres are grown by this much so near-touching pairs reach the narrowphase. */
   private static final float PAIR_MARGIN = 0.05f;
-  /** Stands in for the velocity of a static collider; never written to because its inverse mass is zero. */
+  /** Spin is capped so a freak impulse cannot make a body rotate faster than a step can resolve. */
+  private static final float MAX_ANGULAR_SPEED = 50f;
+  /** Stand in for the motion and inertia of a static collider; never written to because its inverse mass is zero. */
   private static final Vector3f NO_VELOCITY = new Vector3f();
+  private static final Vector3f NO_SPIN = new Vector3f();
+  private static final Matrix3f NO_INERTIA = new Matrix3f().zero();
 
   public final Vector3f gravity = new Vector3f(0f, -9.81f, 0f);
+  /** Rounds of positional correction per step. */
   public int solverIterations = 4;
+  /** Rounds of the impulse solver per step; more makes tall stacks steadier. */
+  public int velocityIterations = 10;
   public boolean sleepingEnabled = true;
   /** Bodies slower than this (m/s) count as resting. */
   public float sleepSpeed = 0.1f;
+  /** Bodies turning slower than this (rad/s) count as resting. */
+  public float sleepAngularSpeed = 0.2f;
   /** Seconds a body must keep resting before it falls asleep. */
   public float sleepTime = 0.5f;
 
@@ -57,8 +69,12 @@ public class PhysicsSystem implements ISystem {
   private final Vector3f tmpPos = new Vector3f();
   private final Vector3f tmpCenter = new Vector3f();
   private final Vector3f relativeVelocity = new Vector3f();
-  private final Vector3f tangent = new Vector3f();
+  private final Vector3f cross = new Vector3f();
+  private final Vector3f crossB = new Vector3f();
+  private final Vector3f impulse = new Vector3f();
+  private final Quaternionf deltaRotation = new Quaternionf();
   private final Narrowphase.Contact contact = new Narrowphase.Contact();
+  private int step;
 
   // broadphase scratch, reused every step
   private final List<Pair> pairs = new ArrayList<>();
@@ -81,13 +97,43 @@ public class PhysicsSystem implements ISystem {
   }
 
 
-  /** A candidate pair; instances are pooled and only valid until the next {@link #findPairs}. */
+  /**
+   * A candidate pair; instances are pooled and only valid until the next {@link #findPairs}. Also carries the contact
+   * constraint (one row per manifold point) while the solver runs.
+   */
   static final class Pair {
     private Collider a;
     private Collider b;
     private Rigidbody ra;
     private Rigidbody rb;
     private boolean hit;
+
+    private final Narrowphase.Contact manifold = new Narrowphase.Contact();
+    private int count;
+    private float invA;
+    private float invB;
+    private float mu;
+    private Matrix3f ia;
+    private Matrix3f ib;
+    private Vector3f va;
+    private Vector3f vb;
+    private Vector3f wa;
+    private Vector3f wb;
+    private final Vector3f t1 = new Vector3f();
+    private final Vector3f t2 = new Vector3f();
+    private final Vector3f[] rA = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
+    private final Vector3f[] rB = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
+    private final float[] massN = new float[Narrowphase.Contact.MAX_POINTS];
+    private final float[] massT1 = new float[Narrowphase.Contact.MAX_POINTS];
+    private final float[] massT2 = new float[Narrowphase.Contact.MAX_POINTS];
+    private final float[] bias = new float[Narrowphase.Contact.MAX_POINTS];
+    private final float[] jn = new float[Narrowphase.Contact.MAX_POINTS];
+    private final float[] jt1 = new float[Narrowphase.Contact.MAX_POINTS];
+    private final float[] jt2 = new float[Narrowphase.Contact.MAX_POINTS];
+
+    Pair() {
+      this.manifold.wantPoints = true;
+    }
 
     Collider a() {
       return this.a;
@@ -163,12 +209,22 @@ public class PhysicsSystem implements ISystem {
         this.solvable.add(p);
       }
     }
+    // positions first (entities move, so the shape is tested again each round), then velocities on the final contacts
     for (int it = 0; it < this.solverIterations; it++) {
       for (int i = 0; i < this.solvable.size(); i++) {
         final var p = this.solvable.get(i);
         if (Narrowphase.test(p.a, p.b, this.contact)) {
-          resolve(p, this.contact);
+          correctPosition(p, this.contact);
         }
+      }
+    }
+    this.step++;
+    for (int i = 0; i < this.solvable.size(); i++) {
+      prepareConstraint(this.solvable.get(i));
+    }
+    for (int it = 0; it < this.velocityIterations; it++) {
+      for (int i = 0; i < this.solvable.size(); i++) {
+        solveConstraint(this.solvable.get(i));
       }
     }
 
@@ -211,7 +267,8 @@ public class PhysicsSystem implements ISystem {
       t.worldPosition(this.tmpPos);
       if (b.sleeping) {
         final boolean disturbed = !this.sleepingEnabled || !b.allowSleep || b.velocity.lengthSquared() > 0f
-            || this.tmpPos.distanceSquared(b.sleepPosition) > 1e-8f;
+            || b.angularVelocity.lengthSquared() > 0f || this.tmpPos.distanceSquared(b.sleepPosition) > 1e-8f
+            || !t.rotation().equals(b.sleepRotation);
         if (!disturbed) {
           continue;
         }
@@ -230,12 +287,53 @@ public class PhysicsSystem implements ISystem {
         }
         b.velocity.mul(Math.max(0f, 1f - b.linearDamping * dt));
         t.translateWorld(this.tmp.set(b.velocity).mul(dt));
+        if (!b.lockRotation) {
+          turn(b, t, dt);
+        }
       }
     }
   }
 
+  /** Turns the entity by its angular velocity, about the centre of its collider rather than its origin. */
+  private void turn(Rigidbody b, Transform t, float dt) {
+    final var w = b.angularVelocity;
+    w.mul(Math.max(0f, 1f - b.angularDamping * dt));
+    final float speed = w.length();
+    if (speed < 1e-6f) {
+      return;
+    }
+    if (speed > MAX_ANGULAR_SPEED) {
+      w.mul(MAX_ANGULAR_SPEED / speed);
+    }
+    final float rate = Math.min(speed, MAX_ANGULAR_SPEED);
+    this.deltaRotation.setAngleAxis(rate * dt, w.x / speed, w.y / speed, w.z / speed);
+    final var primary = primaryCollider(b.entity());
+    if (primary == null || primary.offset.lengthSquared() == 0f) {
+      t.rotateWorld(this.deltaRotation);
+      return;
+    }
+    primary.worldCenter(this.tmpCenter);
+    t.worldPosition(this.tmpPos);
+    final var arm = this.tmpCenter.sub(this.tmpPos); // origin -> centre of mass, kept in place by the turn
+    this.tmp.set(arm);
+    t.rotateWorld(this.deltaRotation);
+    this.deltaRotation.transform(this.tmp);
+    t.translateWorld(arm.sub(this.tmp));
+  }
+
+  /** The collider that defines a body's centre of mass and inertia: the first one that is not a trigger. */
+  private static Collider primaryCollider(Entity e) {
+    for (int i = 0; i < e.componentCount(); i++) {
+      if (e.componentAt(i) instanceof Collider c && !c.trigger) {
+        return c;
+      }
+    }
+    return null;
+  }
+
   private void updateSleep(List<Rigidbody> bodies, float dt) {
     final float limit = this.sleepSpeed * this.sleepSpeed;
+    final float spinLimit = this.sleepAngularSpeed * this.sleepAngularSpeed;
     for (int i = 0; i < bodies.size(); i++) {
       final var b = bodies.get(i);
       if (b.kinematic || b.sleeping || !b.allowSleep || !this.sleepingEnabled) {
@@ -243,7 +341,7 @@ public class PhysicsSystem implements ISystem {
         continue;
       }
       // only a body that rests on something may sleep: floating bodies drifting slowly must keep moving
-      if (b.touchedThisStep && b.velocity.lengthSquared() < limit) {
+      if (b.touchedThisStep && b.velocity.lengthSquared() < limit && b.angularVelocity.lengthSquared() < spinLimit) {
         b.sleepTimer += dt;
       } else {
         b.sleepTimer = 0f;
@@ -251,7 +349,9 @@ public class PhysicsSystem implements ISystem {
       if (b.sleepTimer >= this.sleepTime) {
         b.sleeping = true;
         b.velocity.zero();
+        b.angularVelocity.zero();
         b.entity().transform().worldPosition(b.sleepPosition);
+        b.sleepRotation.set(b.entity().transform().rotation());
       }
     }
   }
@@ -375,7 +475,8 @@ public class PhysicsSystem implements ISystem {
     this.pairs.add(p);
   }
 
-  private void resolve(Pair p, Narrowphase.Contact c) {
+  /** Pushes the two bodies apart along the normal, split by inverse mass. */
+  private void correctPosition(Pair p, Narrowphase.Contact c) {
     final float invA = awakeInverseMass(p.ra);
     final float invB = awakeInverseMass(p.rb);
     final float total = invA + invB;
@@ -383,8 +484,6 @@ public class PhysicsSystem implements ISystem {
       return;
     }
     final var n = c.normal();
-
-    // positional correction, split by inverse mass
     final float corr = Math.max(c.depth() - SLOP, 0f) / total * CORRECTION_PERCENT;
     if (corr > 0f) {
       if (invA > 0f) {
@@ -396,37 +495,168 @@ public class PhysicsSystem implements ISystem {
         refreshColliders(p.b.entity());
       }
     }
+  }
 
-    final var va = p.ra != null ? p.ra.velocity : NO_VELOCITY;
-    final var vb = p.rb != null ? p.rb.velocity : NO_VELOCITY;
-    final var rv = this.relativeVelocity.set(vb).sub(va);
-    final float vn = rv.dot(n);
-    if (vn >= 0f) {
-      return; // already separating
+  /** Centre of mass and world-space inverse inertia tensor of a dynamic body, computed once per step. */
+  private void prepare(Rigidbody b) {
+    if (b.preparedStep == this.step) {
+      return;
     }
-    final float e = vn > -REST_SPEED ? 0f : combineMin(p.ra, p.rb);
-    final float j = -(1f + e) * vn / total;
+    b.preparedStep = this.step;
+    final var primary = primaryCollider(b.entity());
+    if (primary != null) {
+      primary.cachedCenter(b.centerOfMass);
+    } else {
+      b.entity().transform().worldPosition(b.centerOfMass);
+    }
+    final var m = b.invInertiaWorld.zero();
+    if (b.lockRotation || primary == null) {
+      return;
+    }
+    if (primary instanceof BoxCollider box) {
+      final var shape = box.cachedBox();
+      final float[] h = shape.half();
+      for (int i = 0; i < 3; i++) {
+        final float h1 = h[(i + 1) % 3];
+        final float h2 = h[(i + 2) % 3];
+        final float inv = 3f / (b.mass * Math.max(h1 * h1 + h2 * h2, 1e-6f));
+        final var ax = shape.axes()[i];
+        m.m00 += inv * ax.x * ax.x;
+        m.m11 += inv * ax.y * ax.y;
+        m.m22 += inv * ax.z * ax.z;
+        final float xy = inv * ax.x * ax.y;
+        final float xz = inv * ax.x * ax.z;
+        final float yz = inv * ax.y * ax.z;
+        m.m01 += xy;
+        m.m10 += xy;
+        m.m02 += xz;
+        m.m20 += xz;
+        m.m12 += yz;
+        m.m21 += yz;
+      }
+    } else if (primary instanceof SphereCollider sphere) {
+      final float r = sphere.cachedRadius();
+      final float inv = 2.5f / (b.mass * Math.max(r * r, 1e-6f));
+      m.m00 = inv;
+      m.m11 = inv;
+      m.m22 = inv;
+    }
+  }
+
+  /** Turns the pair's final contact manifold into constraint rows: arms, effective masses and a rebound target. */
+  private void prepareConstraint(Pair p) {
+    p.count = 0;
+    final float invA = awakeInverseMass(p.ra);
+    final float invB = awakeInverseMass(p.rb);
+    if (invA + invB <= 0f) {
+      return;
+    }
+    final var c = p.manifold;
+    if (!Narrowphase.test(p.a, p.b, c) || c.count() == 0) {
+      return;
+    }
     if (invA > 0f) {
-      va.fma(-j * invA, n);
+      prepare(p.ra);
     }
     if (invB > 0f) {
-      vb.fma(j * invB, n);
+      prepare(p.rb);
     }
+    p.invA = invA;
+    p.invB = invB;
+    p.ia = invA > 0f ? p.ra.invInertiaWorld : NO_INERTIA;
+    p.ib = invB > 0f ? p.rb.invInertiaWorld : NO_INERTIA;
+    p.va = p.ra != null ? p.ra.velocity : NO_VELOCITY;
+    p.vb = p.rb != null ? p.rb.velocity : NO_VELOCITY;
+    p.wa = p.ra != null ? p.ra.angularVelocity : NO_SPIN;
+    p.wb = p.rb != null ? p.rb.angularVelocity : NO_SPIN;
+    p.mu = (float) Math.sqrt(friction(p.ra) * friction(p.rb));
 
-    // friction along the tangent, limited by mu * normal impulse
-    rv.set(vb).sub(va);
-    final var tg = rv.fma(-rv.dot(n), n, this.tangent);
-    final float tl = tg.length();
-    if (tl > 1e-6f) {
-      tg.div(tl);
-      final float mu = (float) Math.sqrt(friction(p.ra) * friction(p.rb));
-      final float jt = Math.max(-mu * j, Math.min(mu * j, -rv.dot(tg) / total));
+    final var n = c.normal();
+    if (Math.abs(n.x) > 0.57735f) {
+      p.t1.set(n.y, -n.x, 0f);
+    } else {
+      p.t1.set(0f, n.z, -n.y);
+    }
+    p.t1.normalize();
+    n.cross(p.t1, p.t2);
+
+    final float e = combineMin(p.ra, p.rb);
+    p.count = c.count();
+    for (int k = 0; k < p.count; k++) {
       if (invA > 0f) {
-        va.fma(-jt * invA, tg);
+        p.rA[k].set(c.point(k)).sub(p.ra.centerOfMass);
+      } else {
+        p.rA[k].zero();
       }
       if (invB > 0f) {
-        vb.fma(jt * invB, tg);
+        p.rB[k].set(c.point(k)).sub(p.rb.centerOfMass);
+      } else {
+        p.rB[k].zero();
       }
+      final float vn = pointVelocity(p, k, this.relativeVelocity).dot(n);
+      p.bias[k] = vn < -REST_SPEED ? -e * vn : 0f;
+      p.massN[k] = 1f / (invA + invB + angularTerm(p.ia, p.rA[k], n) + angularTerm(p.ib, p.rB[k], n));
+      p.massT1[k] = 1f / (invA + invB + angularTerm(p.ia, p.rA[k], p.t1) + angularTerm(p.ib, p.rB[k], p.t1));
+      p.massT2[k] = 1f / (invA + invB + angularTerm(p.ia, p.rA[k], p.t2) + angularTerm(p.ib, p.rB[k], p.t2));
+      p.jn[k] = 0f;
+      p.jt1[k] = 0f;
+      p.jt2[k] = 0f;
+    }
+  }
+
+  /** {@code dir . ((I (r x dir)) x r)}: how much turning a body adds to the effective mass along {@code dir}. */
+  private float angularTerm(Matrix3f invInertia, Vector3f r, Vector3f dir) {
+    r.cross(dir, this.cross);
+    invInertia.transform(this.cross);
+    return this.cross.cross(r, this.crossB).dot(dir);
+  }
+
+  /** Velocity of B's contact point relative to A's. */
+  private Vector3f pointVelocity(Pair p, int k, Vector3f dest) {
+    dest.set(p.vb).sub(p.va);
+    dest.add(p.wb.cross(p.rB[k], this.cross));
+    dest.sub(p.wa.cross(p.rA[k], this.cross));
+    return dest;
+  }
+
+  /** Applies {@code dir * amount} to B and its opposite to A, at the contact point. */
+  private void applyImpulse(Pair p, int k, Vector3f dir, float amount) {
+    final var j = this.impulse.set(dir).mul(amount);
+    if (p.invA > 0f) {
+      p.va.fma(-p.invA, j);
+      p.rA[k].cross(j, this.cross);
+      p.wa.sub(p.ia.transform(this.cross));
+    }
+    if (p.invB > 0f) {
+      p.vb.fma(p.invB, j);
+      p.rB[k].cross(j, this.cross);
+      p.wb.add(p.ib.transform(this.cross));
+    }
+  }
+
+  /** One round of sequential impulses with accumulated, clamped impulses (non-penetration, then friction). */
+  private void solveConstraint(Pair p) {
+    final var n = p.manifold.normal();
+    final var rv = this.relativeVelocity;
+    for (int k = 0; k < p.count; k++) {
+      float dj = p.massN[k] * (p.bias[k] - pointVelocity(p, k, rv).dot(n));
+      float total = Math.max(p.jn[k] + dj, 0f);
+      dj = total - p.jn[k];
+      p.jn[k] = total;
+      applyImpulse(p, k, n, dj);
+
+      final float limit = p.mu * p.jn[k];
+      dj = -p.massT1[k] * pointVelocity(p, k, rv).dot(p.t1);
+      total = Math.max(-limit, Math.min(limit, p.jt1[k] + dj));
+      dj = total - p.jt1[k];
+      p.jt1[k] = total;
+      applyImpulse(p, k, p.t1, dj);
+
+      dj = -p.massT2[k] * pointVelocity(p, k, rv).dot(p.t2);
+      total = Math.max(-limit, Math.min(limit, p.jt2[k] + dj));
+      dj = total - p.jt2[k];
+      p.jt2[k] = total;
+      applyImpulse(p, k, p.t2, dj);
     }
   }
 

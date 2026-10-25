@@ -31,8 +31,8 @@ cascades), `-Dengine.exitAfterFrames=N`,
 - **Models:** OBJ with MTL (diffuse colour/texture, specular, shininess, alpha); one part per `usemtl`.
 - **UI:** immediate-mode text and rectangles (`Overlay`, `UiCanvas`) from a Java2D-generated font atlas; the debug HUD
   and the demo crosshair use it.
-- **Physics:** oriented box and sphere colliders, rigidbodies (gravity, restitution, friction, kinematic bodies),
-  triggers, enter/exit `CollisionEvent`s, grid broadphase, sleeping, parented bodies, `raycast` and `overlapSphere`
+- **Physics:** oriented box and sphere colliders, rigidbodies (gravity, restitution, friction, rotation and inertia,
+  kinematic bodies), multi-point contact manifolds, triggers, enter/exit `CollisionEvent`s, grid broadphase, sleeping, parented bodies, `raycast` and `overlapSphere`
   queries, `Camera.viewRay` for picking.
 - **Loop:** fixed-timestep updates with render interpolation between the last two steps.
 - **ECS, input bindings, first-person controller, message queues, resource caching** (see below).
@@ -93,8 +93,11 @@ forget).
 
 - Developed and tested on Windows with an NVIDIA GPU. macOS and Linux are untested (the old macOS texture bug should
   be gone because textures are now decoded with ImageIO and uploaded by the engine, but that is not verified).
-- Physics is linear only (bodies never rotate). Contacts are single normal/depth pairs, so tall stacks are only
-  moderately stable. Sleeping bodies are not carried by moving *static* colliders; make movers kinematic rigidbodies.
+- Bodies rotate about the centre of their first non-trigger collider and use the inertia of a box or sphere (so
+  capsule-like or compound shapes are approximated by that collider). Contact impulses are not warm-started between
+  steps, so very tall stacks may jitter or sag (a 6-crate stack is tested and holds); raise `PhysicsSystem.velocityIterations`. Kinematic
+  bodies do not carry spin, and a spinning one does not drag what rests on it. Sleeping bodies are not carried by
+  moving *static* colliders; make movers kinematic rigidbodies. Set `Rigidbody.lockRotation` for upright characters.
 - Raycasts and overlap queries loop over all colliders (with a bounding-sphere early-out); they do not use the grid.
 - Shadows come from the first directional light only (up to 4 cascades, fixed 2048² each); point lights do not cast
   shadows, and casters further than 4 cascade radii towards the light are dropped from a cascade.
