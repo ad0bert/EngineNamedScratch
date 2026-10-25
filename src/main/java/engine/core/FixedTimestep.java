@@ -43,6 +43,11 @@ public class FixedTimestep {
     return steps;
   }
 
+  /** Fraction of a step left in the accumulator (0..1): how far rendering is between the last two states. */
+  public float alpha() {
+    return (float) Math.max(0.0, Math.min(1.0, this.accumulator / this.step));
+  }
+
   public double step() {
     return this.step;
   }

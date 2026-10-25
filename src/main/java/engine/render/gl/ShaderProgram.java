@@ -1,4 +1,4 @@
-package engine.render;
+package engine.render.gl;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -7,7 +7,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
@@ -16,12 +15,12 @@ import com.jogamp.common.nio.Buffers;
 import com.jogamp.opengl.GL3;
 
 /** Compiled and linked GLSL program loaded from classpath resources. */
-public class ShaderProgram {
+final class ShaderProgram {
   private final int id;
   private final Map<String, Integer> uniforms = new HashMap<>();
   private final FloatBuffer buf16 = Buffers.newDirectFloatBuffer(16);
 
-  public ShaderProgram(GL3 gl, String vertexResource, String fragmentResource) {
+  ShaderProgram(GL3 gl, String vertexResource, String fragmentResource) {
     final int vs = compile(gl, GL3.GL_VERTEX_SHADER, vertexResource);
     final int fs = compile(gl, GL3.GL_FRAGMENT_SHADER, fragmentResource);
     this.id = gl.glCreateProgram();
@@ -75,7 +74,7 @@ public class ShaderProgram {
     return new String(log, 0, written[0], StandardCharsets.UTF_8);
   }
 
-  public void use(GL3 gl) {
+  void use(GL3 gl) {
     gl.glUseProgram(this.id);
   }
 
@@ -83,33 +82,35 @@ public class ShaderProgram {
     return this.uniforms.computeIfAbsent(name, n -> gl.glGetUniformLocation(this.id, n));
   }
 
-  public void set(GL3 gl, String name, Matrix4f m) {
+  void set(GL3 gl, String name, Matrix4f m) {
     m.get(this.buf16.clear());
     gl.glUniformMatrix4fv(loc(gl, name), 1, false, this.buf16);
   }
 
-  public void set(GL3 gl, String name, Matrix3f m) {
-    m.get(this.buf16.clear());
-    gl.glUniformMatrix3fv(loc(gl, name), 1, false, this.buf16);
-  }
-
-  public void set(GL3 gl, String name, Vector3f v) {
+  void set(GL3 gl, String name, Vector3f v) {
     gl.glUniform3f(loc(gl, name), v.x, v.y, v.z);
   }
 
-  public void set(GL3 gl, String name, Vector4f v) {
+  void set(GL3 gl, String name, Vector4f v) {
     gl.glUniform4f(loc(gl, name), v.x, v.y, v.z, v.w);
   }
 
-  public void set(GL3 gl, String name, float v) {
+  void set(GL3 gl, String name, float v) {
     gl.glUniform1f(loc(gl, name), v);
   }
 
-  public void set(GL3 gl, String name, int v) {
+  void set(GL3 gl, String name, int v) {
     gl.glUniform1i(loc(gl, name), v);
   }
 
-  public void dispose(GL3 gl) {
+  /** Uploads {@code count} vec4s to a {@code vec4 name[N]} uniform array. */
+  void setVec4Array(GL3 gl, String name, float[] data, int count) {
+    if (count > 0) {
+      gl.glUniform4fv(loc(gl, name), count, data, 0);
+    }
+  }
+
+  void dispose(GL3 gl) {
     gl.glDeleteProgram(this.id);
   }
 }

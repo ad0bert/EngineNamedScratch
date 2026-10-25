@@ -2,75 +2,60 @@ package engine.resources;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.jogamp.opengl.GL3;
-import com.jogamp.opengl.GLProfile;
-import com.jogamp.opengl.util.texture.Texture;
-import com.jogamp.opengl.util.texture.TextureData;
-import com.jogamp.opengl.util.texture.TextureIO;
-
-import engine.render.Mesh;
+import engine.render.GpuMesh;
+import engine.render.GpuTexture;
+import engine.render.Material;
 import engine.render.MeshData;
+import engine.render.RenderBackend;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Loads and caches GPU resources from the classpath. All calls must happen on the GL thread. Textures are read from
- * streams so loading also works from inside a JAR.
+ * Loads and caches GPU resources from the classpath (so it also works from inside a JAR). Must be used on the
+ * graphics thread. Paths are classpath-relative, e.g. {@code objects/box.obj}.
  */
 @Slf4j
 public class ResourceManager {
-  private final GL3 gl;
-  private final Map<String, Texture> textures = new HashMap<>();
-  private final Map<String, Mesh> meshes = new HashMap<>();
-  private final List<Mesh> ownedMeshes = new ArrayList<>();
-  private Texture white;
+  private final RenderBackend backend;
+  private final Map<String, GpuTexture> textures = new HashMap<>();
+  private final Map<String, GpuMesh> meshes = new HashMap<>();
+  private final Map<String, Model> models = new HashMap<>();
+  private final List<GpuMesh> ownedMeshes = new ArrayList<>();
 
-  public ResourceManager(GL3 gl) {
-    this.gl = gl;
+  public ResourceManager(RenderBackend backend) {
+    this.backend = backend;
   }
 
-  /** A 1x1 white texture, used when a material has no texture. */
-  public Texture white() {
-    if (this.white == null) {
-      final ByteBuffer pixel = ByteBuffer.allocateDirect(4);
-      pixel.put(new byte[] { (byte) 255, (byte) 255, (byte) 255, (byte) 255 }).flip();
-      final TextureData data = new TextureData(this.gl.getGLProfile(), GL3.GL_RGBA, 1, 1, 0, GL3.GL_RGBA,
-          GL3.GL_UNSIGNED_BYTE, false, false, false, pixel, null);
-      this.white = TextureIO.newTexture(this.gl, data);
-    }
-    return this.white;
+  public GpuTexture white() {
+    return this.backend.whiteTexture();
   }
 
   /** Returns the cached texture, or the white texture (with a logged error) if loading fails. */
-  public Texture texture(String path) {
-    return this.textures.computeIfAbsent(path, p -> {
-      try (InputStream in = open(p)) {
-        // GL-bound overload: uploads the pixels immediately
-        final Texture t = TextureIO.newTexture(this.gl,
-            TextureIO.newTextureData(this.gl.getGLProfile(), in, true, extension(p)));
-        t.bind(this.gl);
-        this.gl.glGenerateMipmap(GL3.GL_TEXTURE_2D);
-        t.setTexParameteri(this.gl, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR_MIPMAP_LINEAR);
-        t.setTexParameteri(this.gl, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
-        t.setTexParameteri(this.gl, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT);
-        t.setTexParameteri(this.gl, GL3.GL_TEXTURE_WRAP_T, GL3.GL_REPEAT);
-        return t;
-      } catch (IOException | RuntimeException e) {
-        log.error("Could not load texture {}", p, e);
-        return white();
-      }
-    });
+  public GpuTexture texture(String path) {
+    final GpuTexture cached = this.textures.get(path);
+    if (cached != null) {
+      return cached;
+    }
+    GpuTexture t;
+    try (InputStream in = open(path)) {
+      t = this.backend.createTexture(ImageLoader.load(in, path));
+      this.textures.put(path, t);
+    } catch (IOException | RuntimeException e) {
+      log.error("Could not load texture {}", path, e);
+      t = white();
+    }
+    return t;
   }
 
-  public Mesh mesh(String objPath) {
+  /** A single mesh from an OBJ file; materials are ignored. */
+  public GpuMesh mesh(String objPath) {
     return this.meshes.computeIfAbsent(objPath, p -> {
       try (InputStream in = open(p)) {
-        return new Mesh(this.gl, ObjLoader.load(in, p));
+        return this.backend.createMesh(ObjLoader.load(in, p));
       } catch (IOException | RuntimeException e) {
         throw new IllegalStateException("Could not load model " + p, e);
       }
@@ -78,10 +63,55 @@ public class ResourceManager {
   }
 
   /** Uploads generated mesh data; the manager disposes it on shutdown. */
-  public Mesh mesh(MeshData data) {
-    final Mesh m = new Mesh(this.gl, data);
+  public GpuMesh mesh(MeshData data) {
+    final GpuMesh m = this.backend.createMesh(data);
     this.ownedMeshes.add(m);
     return m;
+  }
+
+  /** An OBJ with its MTL materials: one part per material, textures resolved relative to the OBJ. */
+  public Model model(String objPath) {
+    final Model cached = this.models.get(objPath);
+    if (cached != null) {
+      return cached;
+    }
+    final String dir = objPath.substring(0, objPath.lastIndexOf('/') + 1);
+    try (InputStream in = open(objPath)) {
+      final ObjLoader.ObjModel obj = ObjLoader.parse(in, objPath, true);
+      Map<String, MtlLoader.MtlMaterial> mtl = Map.of();
+      if (obj.mtllib() != null) {
+        try (InputStream mi = open(dir + obj.mtllib())) {
+          mtl = MtlLoader.parse(mi);
+        } catch (IOException e) {
+          log.warn("Could not read material library {} of {}: {}", obj.mtllib(), objPath, e.getMessage());
+        }
+      }
+      final List<Model.Part> parts = new ArrayList<>();
+      for (ObjLoader.Part p : obj.parts()) {
+        final GpuMesh mesh = this.backend.createMesh(p.mesh());
+        this.ownedMeshes.add(mesh);
+        parts.add(new Model.Part(mesh, toMaterial(mtl.get(p.material()), dir)));
+      }
+      final Model model = new Model(parts);
+      this.models.put(objPath, model);
+      return model;
+    } catch (IOException | RuntimeException e) {
+      throw new IllegalStateException("Could not load model " + objPath, e);
+    }
+  }
+
+  private Material toMaterial(MtlLoader.MtlMaterial m, String dir) {
+    final Material out = new Material();
+    if (m == null) {
+      return out;
+    }
+    out.color(m.kd()[0], m.kd()[1], m.kd()[2], m.alpha());
+    out.specular = m.specular();
+    out.shininess = m.shininess();
+    if (m.diffuseMap() != null) {
+      out.texture = texture(dir + m.diffuseMap());
+    }
+    return out;
   }
 
   private static InputStream open(String path) throws IOException {
@@ -92,21 +122,13 @@ public class ResourceManager {
     return in;
   }
 
-  private static String extension(String path) {
-    final int dot = path.lastIndexOf('.');
-    return dot < 0 ? "" : path.substring(dot + 1).toLowerCase();
-  }
-
   public void dispose() {
-    this.textures.values().stream().filter(t -> t != this.white).forEach(t -> t.destroy(this.gl));
-    this.meshes.values().forEach(m -> m.dispose(this.gl));
-    this.ownedMeshes.forEach(m -> m.dispose(this.gl));
-    if (this.white != null) {
-      this.white.destroy(this.gl);
-    }
+    this.textures.values().forEach(GpuTexture::dispose);
+    this.meshes.values().forEach(GpuMesh::dispose);
+    this.ownedMeshes.forEach(GpuMesh::dispose);
     this.textures.clear();
     this.meshes.clear();
     this.ownedMeshes.clear();
-    this.white = null;
+    this.models.clear();
   }
 }

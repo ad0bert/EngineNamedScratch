@@ -1,6 +1,7 @@
 package engine.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
@@ -23,6 +24,20 @@ class FixedTimestepTest {
     assertEquals(1, t.advance(30 * MS, dt -> {
     })); // +5ms -> 10ms -> 1 step
     assertEquals(0.03, t.elapsed(), 1e-9);
+  }
+
+  @Test
+  void alphaIsTheFractionOfAStepLeftOver() {
+    final var t = new FixedTimestep(0.01, 0.25);
+    assertEquals(0f, t.alpha(), 0f);
+    t.advance(0, dt -> {
+    });
+    t.advance(15 * MS, dt -> {
+    }); // one step, 5ms left over
+    assertEquals(0.5f, t.alpha(), 1e-4f);
+    t.advance(15 * MS + 1, dt -> {
+    });
+    assertTrue(t.alpha() >= 0f && t.alpha() <= 1f);
   }
 
   @Test

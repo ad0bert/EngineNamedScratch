@@ -2,32 +2,40 @@ package engine.render;
 
 import org.joml.Vector4f;
 
-import com.jogamp.opengl.util.texture.Texture;
-
 /** Surface description. A {@code null} texture renders the plain colour. */
 public class Material {
-  public Texture texture;
+  public GpuTexture texture;
   public final Vector4f color = new Vector4f(1f, 1f, 1f, 1f);
   public float specular = 0.3f;
   public float shininess = 32f;
   /** Skip lighting and output texture * colour directly. */
   public boolean unlit;
+  /** Alpha-blended; drawn after all opaque geometry, sorted back to front, and never casts shadows. */
+  public boolean transparent;
   public float pointSize = 6f;
 
   public Material() {
   }
 
-  public Material(Texture texture) {
+  public Material(GpuTexture texture) {
     this.texture = texture;
   }
 
   public Material color(float r, float g, float b, float a) {
     this.color.set(r, g, b, a);
+    if (a < 1f) {
+      this.transparent = true;
+    }
     return this;
   }
 
   public Material unlit() {
     this.unlit = true;
+    return this;
+  }
+
+  public Material transparent() {
+    this.transparent = true;
     return this;
   }
 }

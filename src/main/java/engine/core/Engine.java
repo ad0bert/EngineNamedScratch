@@ -21,6 +21,7 @@ import com.jogamp.opengl.util.Animator;
 
 import engine.debug.DebugOverlay;
 import engine.ecs.ComponentUpdateSystem;
+import engine.ecs.Entity;
 import engine.ecs.ISystem;
 import engine.ecs.Scene;
 import engine.input.FirstPersonController;
@@ -28,8 +29,10 @@ import engine.input.InputListener;
 import engine.input.InputState;
 import engine.messaging.IMessageService;
 import engine.messaging.MessageService;
-import engine.physics.CollisionSystem;
-import engine.render.Renderer;
+import engine.physics.PhysicsSystem;
+import engine.render.Overlay;
+import engine.render.RenderBackend;
+import engine.render.gl.GlBackend;
 import engine.resources.ResourceManager;
 import lombok.extern.slf4j.Slf4j;
 
@@ -37,6 +40,10 @@ import lombok.extern.slf4j.Slf4j;
  * Owns the window, the GL loop and all subsystems. Everything (update, messages, rendering) runs on the animator's GL
  * thread, so scene state needs no locking; only input and window events arrive from other threads and go through
  * {@link InputState} and {@link IMessageService#post}.
+ *
+ * <p>
+ * The window and loop are the JOGL platform layer; drawing goes through {@link RenderBackend}. Rendering is
+ * interpolated between the last two fixed updates, so motion stays smooth at any frame rate.
  *
  * <p>
  * System properties: {@code engine.debugGL=true} wraps GL in {@link DebugGL3}; {@code engine.exitAfterFrames=N} closes
@@ -51,13 +58,15 @@ public class Engine {
   private final InputState input = new InputState();
   private final InputListener inputListener = new InputListener(this.messages, this.input);
   private final List<ISystem> systems = new ArrayList<>();
+  private final List<Overlay> overlays = new ArrayList<>();
   private final FixedTimestep timestep;
-  private final Renderer renderer = new Renderer();
+  private final PhysicsSystem physics = new PhysicsSystem(this.messages);
   private final CountDownLatch closed = new CountDownLatch(1);
   private final int exitAfterFrames = Integer.getInteger("engine.exitAfterFrames", 0);
 
   private GLWindow window;
   private Animator animator;
+  private RenderBackend backend;
   private ResourceManager resources;
 
   private volatile double fps;
@@ -87,16 +96,33 @@ public class Engine {
     return this.input;
   }
 
+  public PhysicsSystem physics() {
+    return this.physics;
+  }
+
   public ResourceManager resources() {
     return this.resources;
+  }
+
+  public RenderBackend backend() {
+    return this.backend;
   }
 
   public double fps() {
     return this.fps;
   }
 
+  public boolean isMouseCaptured() {
+    return this.inputListener.isCaptured();
+  }
+
   public void addSystem(ISystem system) {
     this.systems.add(system);
+  }
+
+  /** Adds 2D content drawn over the scene every frame, in registration order. */
+  public void addOverlay(Overlay overlay) {
+    this.overlays.add(overlay);
   }
 
   public void setTitle(String title) {
@@ -107,6 +133,7 @@ public class Engine {
 
   /** Opens the window and blocks until it is closed. */
   public void run() throws InterruptedException {
+    System.setProperty("java.awt.headless", "true"); // ImageIO/Java2D only; keeps macOS from showing an AWT app
     final GLCapabilities caps = new GLCapabilities(GLProfile.get(GLProfile.GL3));
     caps.setDepthBits(24);
     this.window = GLWindow.create(caps);
@@ -160,6 +187,9 @@ public class Engine {
 
   private void step(double dt) {
     this.scene.flush();
+    for (Entity e : this.scene.entities()) {
+      e.transform().snapshot(); // previous state for render interpolation
+    }
     this.messages.dispatchPending();
     if (this.input.wasActionPressed("release_mouse")) {
       captureMouse(false);
@@ -191,14 +221,17 @@ public class Engine {
       final GL3 gl = drawable.getGL().getGL3();
       gl.setSwapInterval(1);
       log.info("OpenGL {} on {}", gl.glGetString(GL3.GL_VERSION), gl.glGetString(GL3.GL_RENDERER));
-      Engine.this.resources = new ResourceManager(gl);
-      Engine.this.renderer.init(gl, Engine.this.resources.white());
+      Engine.this.backend = new GlBackend(() -> Engine.this.window.getGL().getGL3());
+      Engine.this.backend.init();
+      Engine.this.resources = new ResourceManager(Engine.this.backend);
 
       Engine.this.input.bind("release_mouse", KeyEvent.VK_ESCAPE);
       FirstPersonController.bindDefaults(Engine.this.input);
       Engine.this.addSystem(new ComponentUpdateSystem());
-      Engine.this.addSystem(new CollisionSystem(Engine.this.messages));
-      Engine.this.addSystem(new DebugOverlay(Engine.this));
+      Engine.this.addSystem(Engine.this.physics);
+      final DebugOverlay debug = new DebugOverlay(Engine.this);
+      Engine.this.addSystem(debug);
+      Engine.this.addOverlay(debug);
       Engine.this.game.init(Engine.this);
       Engine.this.scene.flush();
       Engine.this.fpsWindowStart = System.nanoTime();
@@ -207,10 +240,10 @@ public class Engine {
 
     @Override
     public void display(GLAutoDrawable drawable) {
-      final GL3 gl = drawable.getGL().getGL3();
       Engine.this.timestep.advance(System.nanoTime(), Engine.this::step);
       Engine.this.scene.flush();
-      Engine.this.renderer.render(gl, Engine.this.scene, drawable.getSurfaceWidth(), drawable.getSurfaceHeight());
+      Engine.this.backend.render(Engine.this.scene, Engine.this.timestep.alpha(), drawable.getSurfaceWidth(),
+          drawable.getSurfaceHeight(), Engine.this.overlays);
       Engine.this.frameCount++;
       trackFps();
       if (Engine.this.exitAfterFrames > 0 && Engine.this.frameCount >= Engine.this.exitAfterFrames) {
@@ -220,7 +253,7 @@ public class Engine {
 
     @Override
     public void reshape(GLAutoDrawable drawable, int x, int y, int width, int height) {
-      Engine.this.renderer.resize(drawable.getGL().getGL3(), width, height);
+      Engine.this.backend.resize(width, height);
       if (Engine.this.inputListener.isCaptured()) {
         Engine.this.inputListener.setCaptured(true, width, height);
       }
@@ -228,10 +261,9 @@ public class Engine {
 
     @Override
     public void dispose(GLAutoDrawable drawable) {
-      final GL3 gl = drawable.getGL().getGL3();
       Engine.this.game.shutdown(Engine.this);
-      Engine.this.renderer.dispose(gl);
       Engine.this.resources.dispose();
+      Engine.this.backend.dispose();
     }
   }
 }

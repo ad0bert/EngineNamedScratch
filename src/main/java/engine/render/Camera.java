@@ -10,9 +10,9 @@ public class Camera extends Component {
   public float near = 0.1f;
   public float far = 1000f;
 
-  public Matrix4f viewMatrix(Matrix4f dest) {
-    // world matrix without scale would be ideal; cameras are not scaled in practice
-    return entity().transform().worldMatrix(dest).invert();
+  /** View matrix at the interpolated render state; cameras are not expected to be scaled. */
+  public Matrix4f viewMatrix(float alpha, Matrix4f dest) {
+    return entity().transform().interpolatedWorldMatrix(alpha, dest).invert();
   }
 
   public Matrix4f projectionMatrix(float aspect, Matrix4f dest) {

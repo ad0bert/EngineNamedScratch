@@ -7,6 +7,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -16,19 +17,39 @@ import engine.render.MeshData;
 
 /**
  * Minimal Wavefront OBJ loader: v/vt/vn/f (including negative indices), polygons are fan-triangulated, missing normals
- * become flat face normals. Materials (.mtl) are ignored.
+ * become flat face normals. Faces can be split into one part per {@code usemtl} material.
  */
 public final class ObjLoader {
   private ObjLoader() {
   }
 
+  /** One material's share of a model. {@code material} is the usemtl name, or "" before any usemtl. */
+  public record Part(String material, MeshData mesh) {
+  }
+
+  /** {@code mtllib} is the referenced material library file name, or null. */
+  public record ObjModel(String mtllib, List<Part> parts) {
+  }
+
+  /** Loads the whole file as one mesh, ignoring materials. */
   public static MeshData load(InputStream in, String name) throws IOException {
+    return parse(in, name, false).parts().get(0).mesh();
+  }
+
+  private static final class Builder {
+    final List<Float> vertices = new ArrayList<>();
+    final List<Integer> indices = new ArrayList<>();
+    final Map<String, Integer> cache = new HashMap<>();
+  }
+
+  public static ObjModel parse(InputStream in, String name, boolean splitByMaterial) throws IOException {
     final List<float[]> pos = new ArrayList<>();
     final List<float[]> tex = new ArrayList<>();
     final List<float[]> nor = new ArrayList<>();
-    final List<Float> out = new ArrayList<>();
-    final List<Integer> indices = new ArrayList<>();
-    final Map<String, Integer> cache = new HashMap<>();
+    final Map<String, Builder> builders = new LinkedHashMap<>();
+    Builder current = builders.computeIfAbsent("", k -> new Builder());
+    String currentMaterial = "";
+    String mtllib = null;
 
     try (BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
       String line;
@@ -45,9 +66,16 @@ public final class ObjLoader {
           case "v" -> pos.add(floats(t, 3));
           case "vt" -> tex.add(floats(t, 2));
           case "vn" -> nor.add(floats(t, 3));
-          case "f" -> face(t, pos, tex, nor, out, indices, cache);
+          case "mtllib" -> mtllib = line.substring(6).trim();
+          case "usemtl" -> {
+            if (splitByMaterial) {
+              currentMaterial = line.substring(6).trim();
+              current = builders.computeIfAbsent(currentMaterial, k -> new Builder());
+            }
+          }
+          case "f" -> face(t, pos, tex, nor, current);
           default -> {
-            // o, g, s, usemtl, mtllib ... ignored
+            // o, g, s ... ignored
           }
           }
         } catch (RuntimeException e) {
@@ -55,14 +83,23 @@ public final class ObjLoader {
         }
       }
     }
-    if (indices.isEmpty()) {
+
+    final List<Part> parts = new ArrayList<>();
+    for (Map.Entry<String, Builder> e : builders.entrySet()) {
+      final Builder b = e.getValue();
+      if (b.indices.isEmpty()) {
+        continue;
+      }
+      final float[] vertices = new float[b.vertices.size()];
+      for (int i = 0; i < vertices.length; i++) {
+        vertices[i] = b.vertices.get(i);
+      }
+      parts.add(new Part(e.getKey(), MeshData.triangles(vertices, b.indices.stream().mapToInt(Integer::intValue).toArray())));
+    }
+    if (parts.isEmpty()) {
       throw new IOException("OBJ " + name + " contains no faces");
     }
-    final float[] vertices = new float[out.size()];
-    for (int i = 0; i < vertices.length; i++) {
-      vertices[i] = out.get(i);
-    }
-    return MeshData.triangles(vertices, indices.stream().mapToInt(Integer::intValue).toArray());
+    return new ObjModel(mtllib, parts);
   }
 
   private static float[] floats(String[] t, int n) {
@@ -81,8 +118,7 @@ public final class ObjLoader {
     return i > 0 ? i - 1 : size + i;
   }
 
-  private static void face(String[] t, List<float[]> pos, List<float[]> tex, List<float[]> nor, List<Float> out,
-      List<Integer> indices, Map<String, Integer> cache) {
+  private static void face(String[] t, List<float[]> pos, List<float[]> tex, List<float[]> nor, Builder b) {
     final int n = t.length - 1;
     if (n < 3) {
       throw new IllegalArgumentException("face needs at least 3 vertices");
@@ -99,29 +135,30 @@ public final class ObjLoader {
     final int[] ids = new int[n];
     for (int i = 0; i < n; i++) {
       final int[] r = refs[i];
-      final String key = r[0] + "/" + r[1] + "/" + r[2] + (r[2] < 0 ? "/" + flat[0] + "," + flat[1] + "," + flat[2] : "");
-      Integer id = cache.get(key);
+      final String key = r[0] + "/" + r[1] + "/" + r[2]
+          + (r[2] < 0 ? "/" + flat[0] + "," + flat[1] + "," + flat[2] : "");
+      Integer id = b.cache.get(key);
       if (id == null) {
-        id = out.size() / MeshData.FLOATS_PER_VERTEX;
-        cache.put(key, id);
+        id = b.vertices.size() / MeshData.FLOATS_PER_VERTEX;
+        b.cache.put(key, id);
         final float[] p = pos.get(r[0]);
         final float[] nn = r[2] >= 0 ? nor.get(r[2]) : flat;
         final float[] tt = r[1] >= 0 ? tex.get(r[1]) : new float[] { 0f, 0f };
-        out.add(p[0]);
-        out.add(p[1]);
-        out.add(p[2]);
-        out.add(nn[0]);
-        out.add(nn[1]);
-        out.add(nn[2]);
-        out.add(tt[0]);
-        out.add(tt[1]);
+        b.vertices.add(p[0]);
+        b.vertices.add(p[1]);
+        b.vertices.add(p[2]);
+        b.vertices.add(nn[0]);
+        b.vertices.add(nn[1]);
+        b.vertices.add(nn[2]);
+        b.vertices.add(tt[0]);
+        b.vertices.add(tt[1]);
       }
       ids[i] = id;
     }
     for (int i = 1; i < n - 1; i++) {
-      indices.add(ids[0]);
-      indices.add(ids[i]);
-      indices.add(ids[i + 1]);
+      b.indices.add(ids[0]);
+      b.indices.add(ids[i]);
+      b.indices.add(ids[i + 1]);
     }
   }
 

@@ -105,6 +105,46 @@ class EcsTest {
   }
 
   @Test
+  void interpolationBlendsPreviousAndCurrentState() {
+    final var e = new Entity();
+    e.transform().position().set(0f, 0f, 0f);
+    e.transform().snapshot();
+    e.transform().position().set(10f, 0f, 0f);
+
+    assertEquals(0f, e.transform().interpolatedWorldMatrix(0f, new org.joml.Matrix4f()).m30(), 1e-5f);
+    assertEquals(5f, e.transform().interpolatedWorldMatrix(0.5f, new org.joml.Matrix4f()).m30(), 1e-5f);
+    assertEquals(10f, e.transform().interpolatedWorldMatrix(1f, new org.joml.Matrix4f()).m30(), 1e-5f);
+  }
+
+  @Test
+  void interpolationIncludesParentAndRotation() {
+    final var parent = new Entity();
+    final var child = new Entity();
+    child.transform().setParent(parent.transform());
+    child.transform().position().set(1f, 0f, 0f);
+    parent.transform().snapshot();
+    child.transform().snapshot();
+    parent.transform().position().set(0f, 4f, 0f);
+    parent.transform().setEulerDegrees(0f, 0f, 90f);
+
+    final var m = child.transform().interpolatedWorldMatrix(1f, new org.joml.Matrix4f());
+    final var p = m.getTranslation(new Vector3f());
+    assertEquals(0f, p.x, 1e-5f); // (1,0,0) turned 90 degrees about Z points along +Y
+    assertEquals(5f, p.y, 1e-5f);
+  }
+
+  @Test
+  void newEntitiesAreSnapshottedWhenAddedToTheScene() {
+    final var scene = new Scene();
+    final var e = new Entity();
+    e.transform().position().set(7f, 0f, 0f);
+    scene.add(e);
+    scene.flush();
+    // no smear from the origin: at alpha 0 the entity is already where it was placed
+    assertEquals(7f, e.transform().interpolatedWorldMatrix(0f, new org.joml.Matrix4f()).m30(), 1e-5f);
+  }
+
+  @Test
   void spinnerRotatesWithFixedStep() {
     final var e = new Entity();
     e.add(new Spinner(0f, 90f, 0f));

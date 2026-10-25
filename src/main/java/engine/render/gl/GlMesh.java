@@ -1,0 +1,98 @@
+package engine.render.gl;
+
+import java.nio.FloatBuffer;
+import java.util.function.Supplier;
+
+import com.jogamp.common.nio.Buffers;
+import com.jogamp.opengl.GL3;
+
+import engine.render.GpuMesh;
+import engine.render.MeshData;
+
+/**
+ * VAO with static vertex/index buffers plus a dynamic per-instance buffer holding one model matrix per instance
+ * (attribute locations 3-6), so every draw is an instanced draw.
+ */
+final class GlMesh implements GpuMesh {
+  private final Supplier<GL3> glSupplier;
+  private final MeshData data;
+  private final int vao;
+  private final int vbo;
+  private final int ebo;
+  private final int instanceVbo;
+  private final int mode;
+
+  GlMesh(Supplier<GL3> glSupplier, MeshData data) {
+    this.glSupplier = glSupplier;
+    this.data = data;
+    this.mode = data.drawMode() == MeshData.DrawMode.POINTS ? GL3.GL_POINTS : GL3.GL_TRIANGLES;
+    final GL3 gl = glSupplier.get();
+
+    final int[] ids = new int[1];
+    gl.glGenVertexArrays(1, ids, 0);
+    this.vao = ids[0];
+    gl.glBindVertexArray(this.vao);
+
+    gl.glGenBuffers(1, ids, 0);
+    this.vbo = ids[0];
+    gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, this.vbo);
+    gl.glBufferData(GL3.GL_ARRAY_BUFFER, (long) data.vertices().length * Float.BYTES,
+        Buffers.newDirectFloatBuffer(data.vertices()), GL3.GL_STATIC_DRAW);
+    final int stride = MeshData.STRIDE_BYTES;
+    gl.glEnableVertexAttribArray(0);
+    gl.glVertexAttribPointer(0, 3, GL3.GL_FLOAT, false, stride, 0L);
+    gl.glEnableVertexAttribArray(1);
+    gl.glVertexAttribPointer(1, 3, GL3.GL_FLOAT, false, stride, 3L * Float.BYTES);
+    gl.glEnableVertexAttribArray(2);
+    gl.glVertexAttribPointer(2, 2, GL3.GL_FLOAT, false, stride, 6L * Float.BYTES);
+
+    if (data.indices() != null) {
+      gl.glGenBuffers(1, ids, 0);
+      this.ebo = ids[0];
+      gl.glBindBuffer(GL3.GL_ELEMENT_ARRAY_BUFFER, this.ebo);
+      gl.glBufferData(GL3.GL_ELEMENT_ARRAY_BUFFER, (long) data.indices().length * Integer.BYTES,
+          Buffers.newDirectIntBuffer(data.indices()), GL3.GL_STATIC_DRAW);
+    } else {
+      this.ebo = 0;
+    }
+
+    gl.glGenBuffers(1, ids, 0);
+    this.instanceVbo = ids[0];
+    gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, this.instanceVbo);
+    for (int col = 0; col < 4; col++) {
+      gl.glEnableVertexAttribArray(3 + col);
+      gl.glVertexAttribPointer(3 + col, 4, GL3.GL_FLOAT, false, 64, (long) col * 16);
+      gl.glVertexAttribDivisor(3 + col, 1);
+    }
+    gl.glBindVertexArray(0);
+  }
+
+  @Override
+  public MeshData data() {
+    return this.data;
+  }
+
+  /** Draws {@code count} instances; {@code matrices} holds count*16 floats (position 0, limit count*16). */
+  void draw(GL3 gl, FloatBuffer matrices, int count) {
+    gl.glBindVertexArray(this.vao);
+    gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, this.instanceVbo);
+    gl.glBufferData(GL3.GL_ARRAY_BUFFER, (long) count * 64, matrices, GL3.GL_STREAM_DRAW);
+    if (this.data.indices() != null) {
+      gl.glDrawElementsInstanced(this.mode, this.data.indices().length, GL3.GL_UNSIGNED_INT, 0L, count);
+    } else {
+      gl.glDrawArraysInstanced(this.mode, 0, this.data.vertexCount(), count);
+    }
+    gl.glBindVertexArray(0);
+  }
+
+  @Override
+  public void dispose() {
+    final GL3 gl = this.glSupplier.get();
+    gl.glDeleteVertexArrays(1, new int[] { this.vao }, 0);
+    gl.glDeleteBuffers(1, new int[] { this.vbo }, 0);
+    gl.glDeleteBuffers(1, new int[] { this.instanceVbo }, 0);
+    if (this.ebo != 0) {
+      gl.glDeleteBuffers(1, new int[] { this.ebo }, 0);
+    }
+  }
+}

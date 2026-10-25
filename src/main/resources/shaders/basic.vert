@@ -3,22 +3,23 @@
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUv;
+layout(location = 3) in mat4 aModel; // per instance, occupies locations 3-6
 
-uniform mat4 uModel;
 uniform mat4 uViewProj;
-uniform mat3 uNormalMatrix;
+uniform mat4 uShadowViewProj;
 uniform float uPointSize;
-uniform int uFlipV;
 
 out vec3 vWorldPos;
 out vec3 vNormal;
 out vec2 vUv;
+out vec4 vShadowPos;
 
 void main() {
-  vec4 world = uModel * vec4(aPos, 1.0);
+  vec4 world = aModel * vec4(aPos, 1.0);
   vWorldPos = world.xyz;
-  vNormal = normalize(uNormalMatrix * aNormal);
-  vUv = vec2(aUv.x, uFlipV == 1 ? 1.0 - aUv.y : aUv.y);
+  vNormal = normalize(transpose(inverse(mat3(aModel))) * aNormal);
+  vUv = aUv;
+  vShadowPos = uShadowViewProj * world;
   gl_Position = uViewProj * world;
   gl_PointSize = uPointSize;
 }

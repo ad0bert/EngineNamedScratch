@@ -33,6 +33,7 @@ public class Scene {
       for (Entity e : this.toAdd) {
         if (!this.entities.contains(e)) {
           this.entities.add(e);
+          e.transform().snapshot(); // no interpolation smear from the origin
         }
       }
       this.toAdd.clear();

@@ -1,3 +1,12 @@
+Version 0.2.0
+Rendering, physics and UI upgrade. Contains:
+- RenderBackend abstraction with OpenGL implementation; GPU instancing, frustum culling, point + directional
+  lights, shadow mapping, alpha blending
+- OBJ+MTL models (one part per material), ImageIO texture decoding
+- On-screen text/rect overlays (debug HUD, crosshair)
+- Physics: OBB + sphere colliders, rigidbodies, friction/restitution, triggers
+- Render interpolation between fixed updates
+
 Version 0.1.0
 Engine rewrite. Contains:
 - Engine/Game lifecycle, fixed-timestep update, GL3 core renderer (shaders, VAO/VBO, directional light)

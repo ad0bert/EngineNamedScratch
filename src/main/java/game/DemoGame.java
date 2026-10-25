@@ -5,6 +5,8 @@ import java.util.List;
 
 import org.joml.Vector3f;
 
+import com.jogamp.newt.event.KeyEvent;
+
 import engine.core.Engine;
 import engine.core.Game;
 import engine.ecs.Entity;
@@ -13,73 +15,98 @@ import engine.input.FirstPersonController;
 import engine.messaging.IMessageReceiver;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
-import engine.physics.AabbCollider;
+import engine.physics.BoxCollider;
 import engine.physics.CollisionEvent;
+import engine.physics.Rigidbody;
+import engine.physics.SphereCollider;
 import engine.render.Camera;
+import engine.render.GpuMesh;
 import engine.render.Light;
 import engine.render.Material;
-import engine.render.MeshData;
 import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
+import engine.render.UiCanvas;
 import lombok.extern.slf4j.Slf4j;
 
-/** Sample scene exercising the engine: lit/textured meshes, OBJ models, points, a sprite and collisions. */
+/**
+ * Sample scene exercising the engine: shadows, two light types, instanced crates under physics, an MTL-textured model,
+ * transparency, points, a sprite and a HUD. Press F to throw a crate.
+ */
 @Slf4j
 public class DemoGame implements Game {
+  private GpuMesh crateMesh;
+  private Material crateMaterial;
+  private Entity player;
 
   @Override
   public void init(Engine engine) {
     final var res = engine.resources();
     final var scene = engine.scene();
+    engine.input().bind("spawn", KeyEvent.VK_F);
 
     final Entity sun = new Entity("sun");
     sun.transform().setEulerDegrees(-50f, -30f, 0f);
     sun.add(new Light());
     scene.add(sun);
 
-    final Entity player = new Entity("player");
-    player.transform().position().set(0f, 1.5f, 7f);
-    player.add(new Camera());
-    player.add(new FirstPersonController(engine.input()));
-    player.add(new AabbCollider(new Vector3f(0.3f)));
-    scene.add(player);
+    this.player = new Entity("player");
+    this.player.transform().position().set(0f, 1.5f, 8f);
+    this.player.add(new Camera());
+    this.player.add(new FirstPersonController(engine.input()));
+    this.player.add(new SphereCollider(0.4f));
+    final Rigidbody playerBody = this.player.add(new Rigidbody());
+    playerBody.kinematic = true;
+    scene.add(this.player);
 
     final Entity ground = new Entity("ground");
     ground.transform().setEulerDegrees(-90f, 0f, 0f);
     ground.transform().position().set(0f, -1f, 0f);
-    ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(40f, 40f)), new Material().color(0.35f, 0.55f, 0.3f, 1f)));
+    final Material grass = new Material().color(0.35f, 0.55f, 0.3f, 1f);
+    grass.specular = 0f;
+    ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(60f, 60f)), grass));
     scene.add(ground);
+
+    final Entity groundBody = new Entity("ground-collider");
+    groundBody.transform().position().set(0f, -1.5f, 0f);
+    groundBody.add(new BoxCollider(30f, 0.5f, 30f));
+    scene.add(groundBody);
 
     final Entity cube = new Entity("cube");
     cube.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), new Material(res.texture("textures/cubeFace.png"))));
     cube.add(new Spinner(20f, 35f, 10f));
-    cube.add(new AabbCollider(new Vector3f(1f)));
+    cube.add(new BoxCollider(new Vector3f(1f)));
     scene.add(cube);
 
-    final var capsuleMesh = res.mesh("objects/capsule/capsule.obj");
+    final var capsuleModel = res.model("objects/capsule/capsule.obj");
     final Entity capsule = new Entity("capsule");
     capsule.transform().position().set(4f, 0f, 0f);
-    capsule.add(new MeshRenderer(capsuleMesh, new Material(res.texture("objects/capsule/capsule0.jpg"))));
+    capsuleModel.attachTo(capsule);
     capsule.add(new Spinner(0f, 40f, 0f));
-    capsule.add(new AabbCollider(capsuleMesh.data().halfExtents()));
+    final BoxCollider capsuleCollider = capsule.add(new BoxCollider(capsuleModel.halfExtents()));
+    capsuleCollider.offset.set(capsuleModel.center());
     scene.add(capsule);
 
-    final var boxMesh = res.mesh("objects/box.obj");
+    final var boxModel = res.model("objects/box.obj");
+    boxModel.parts().get(0).material().color(0.8f, 0.3f, 0.2f, 1f);
     final Entity box = new Entity("box");
     box.transform().position().set(-4f, 0f, 0f);
-    box.add(new MeshRenderer(boxMesh, new Material().color(0.8f, 0.3f, 0.2f, 1f)));
-    box.add(new AabbCollider(boxMesh.data().halfExtents()));
+    boxModel.attachTo(box);
+    box.add(new BoxCollider(boxModel.halfExtents()));
     scene.add(box);
 
-    // hierarchy: a small cube orbiting the big one through a pivot parent
+    // hierarchy: a small glowing cube orbits through a pivot parent and carries a warm point light
     final Entity pivot = new Entity("pivot");
+    pivot.transform().position().set(0f, 0.5f, 0f);
     pivot.add(new Spinner(0f, 60f, 0f));
     scene.add(pivot);
     final Entity moon = new Entity("moon");
     moon.transform().setParent(pivot.transform());
-    moon.transform().position().set(2.5f, 0f, 0f);
+    moon.transform().position().set(3.5f, 0f, 0f);
     moon.transform().scale().set(0.3f);
-    moon.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), new Material().color(0.9f, 0.9f, 0.2f, 1f)));
+    final Material moonMaterial = new Material().color(1f, 0.85f, 0.4f, 1f).unlit();
+    final MeshRenderer moonRenderer = moon.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), moonMaterial));
+    moonRenderer.castShadows = false;
+    moon.add(Light.point(1f, 0.6f, 0.2f, 1.1f, 8f));
     scene.add(moon);
 
     final List<Vector3f> ring = new ArrayList<>();
@@ -87,24 +114,74 @@ public class DemoGame implements Game {
       final double a = i * Math.PI * 2 / 48;
       ring.add(new Vector3f((float) Math.cos(a) * 3f, 2.5f, (float) Math.sin(a) * 3f));
     }
-    final MeshData pointData = MeshFactory.points(ring);
     final Entity points = new Entity("points");
-    points.add(new MeshRenderer(res.mesh(pointData), new Material().color(1f, 0.9f, 0.1f, 1f).unlit()));
+    points.add(new MeshRenderer(res.mesh(MeshFactory.points(ring)), new Material().color(1f, 0.9f, 0.1f, 1f).unlit()));
     scene.add(points);
 
     final Entity sprite = new Entity("sprite");
     sprite.transform().position().set(0f, 2f, -3f);
-    final Material spriteMat = new Material(res.texture("textures/pointerIcon.png")).unlit();
-    sprite.add(new MeshRenderer(res.mesh(MeshFactory.quad(1f, 1f)), spriteMat));
+    final MeshRenderer spriteRenderer = sprite.add(new MeshRenderer(res.mesh(MeshFactory.quad(1f, 1f)),
+        new Material(res.texture("textures/pointerIcon.png")).unlit().transparent()));
+    spriteRenderer.castShadows = false;
     scene.add(sprite);
+
+    final Entity glass = new Entity("glass");
+    glass.transform().position().set(2.5f, 0f, 3f);
+    glass.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), new Material().color(0.2f, 0.5f, 1f, 0.4f)))
+        .castShadows = false;
+    scene.add(glass);
+
+    // many identical crates: one mesh + one material, so they render as a single instanced draw call
+    this.crateMesh = res.mesh(MeshFactory.cube(0.5f));
+    this.crateMaterial = new Material(res.texture("textures/cubeFace.png"));
+    for (int x = -1; x <= 1; x++) {
+      for (int z = 0; z < 4; z++) {
+        for (int y = 0; y < 3; y++) {
+          spawnCrate(engine, new Vector3f(x * 1.2f + 0.05f * z, 1.5f + y * 1.4f, -9f + z * 1.2f), new Vector3f());
+        }
+      }
+    }
 
     engine.messages().register(new IMessageReceiver() {
       @Override
       public void receiveMessage(MessageObject m) {
-        if (m.getPayload() instanceof CollisionEvent c) {
-          log.info("collision {}: {} <-> {}", c.started() ? "start" : "end", c.a(), c.b());
+        if (m.getPayload() instanceof CollisionEvent c && (c.a() == DemoGame.this.player
+            || c.b() == DemoGame.this.player)) {
+          log.debug("player collision {}: {} <-> {}", c.started() ? "start" : "end", c.a(), c.b());
         }
       }
     }, MessageQueue.COLLISION);
+
+    engine.addOverlay(this::drawHud);
+  }
+
+  private void spawnCrate(Engine engine, Vector3f position, Vector3f velocity) {
+    final Entity crate = new Entity("crate");
+    crate.transform().position().set(position);
+    crate.transform().scale().set(0.8f);
+    crate.add(new MeshRenderer(this.crateMesh, this.crateMaterial));
+    crate.add(new BoxCollider(0.5f, 0.5f, 0.5f));
+    final Rigidbody body = crate.add(new Rigidbody());
+    body.velocity.set(velocity);
+    engine.scene().add(crate);
+  }
+
+  @Override
+  public void update(Engine engine, double dt) {
+    if (engine.input().wasActionPressed("spawn")) {
+      final var t = this.player.transform();
+      final Vector3f forward = t.forward(new Vector3f());
+      spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), forward.mul(10f));
+    }
+  }
+
+  private void drawHud(UiCanvas ui, int width, int height) {
+    final float cx = width / 2f;
+    final float cy = height / 2f;
+    ui.drawRect(cx - 8, cy - 1, 16, 2, 1f, 1f, 1f, 0.8f);
+    ui.drawRect(cx - 1, cy - 8, 2, 16, 1f, 1f, 1f, 0.8f);
+    final String help = "WASD move  Space/Shift up/down  F throw crate  F3 debug  Esc free mouse";
+    ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
+    ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);
   }
 }
