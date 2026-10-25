@@ -7,60 +7,46 @@ import engine.ecs.components.IComponent;
 import engine.geometry.Point;
 import engine.render.interfaces.IDrawable;
 import engine.util.IdFactory;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
+import lombok.experimental.FieldDefaults;
+import lombok.val;
 
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@EqualsAndHashCode(onlyExplicitlyIncluded = true)
+@FieldDefaults(level = AccessLevel.PRIVATE)
 public abstract class Entity {
-    private long id = IdFactory.getNextId();
-    private Point position = new Point(0f, 0f, 0f);
-    private Point rotation = new Point(0f, 0f, 0f);
 
-    private List<IComponent> components = new ArrayList<IComponent>();
+  @EqualsAndHashCode.Include
+  final long id = IdFactory.getNextId();
+  Point position = new Point(0f, 0f, 0f);
+  Point rotation = new Point(0f, 0f, 0f);
 
-    public long getId() {
-        return this.id;
+  List<IComponent> components = new ArrayList<>();
+
+  public void addComponent(IComponent component) {
+    this.components.add(component);
+    component.setEntity(this);
+  }
+
+  public void activateComponent(Class<?> clazz) {
+    for (val comp : this.components) {
+      if (clazz.isAssignableFrom(comp.getClass())) {
+        comp.setActive(true);
+      }
     }
+  }
 
-    public List<IComponent> getComponents() {
-        return this.components;
+  public void deactivateComponent(Class<IDrawable> clazz) {
+    for (val comp : this.components) {
+      if (clazz.isAssignableFrom(comp.getClass())) {
+        comp.setActive(false);
+      }
     }
-
-    public void setComponents(List<IComponent> components) {
-        this.components = components;
-    }
-
-    public void addComponent(IComponent component) {
-        this.components.add(component);
-        component.setEntity(this);
-    }
-
-    public void activateComponent(Class<?> clazz) {
-        for (IComponent comp : this.components) {
-            if (clazz.isAssignableFrom(comp.getClass())) {
-                comp.setActive(true);
-            }
-        }
-    }
-
-    public void deactivateComponent(Class<IDrawable> clazz) {
-        for (IComponent comp : this.components) {
-            if (clazz.isAssignableFrom(comp.getClass())) {
-                comp.setActive(false);
-            }
-        }
-    }
-
-    public Point getPosition() {
-        return this.position;
-    }
-
-    public void setPosition(Point position) {
-        this.position = position;
-    }
-
-    public Point getRotation() {
-        return this.rotation;
-    }
-
-    public void setRotation(Point rotation) {
-        this.rotation = rotation;
-    }
+  }
 }

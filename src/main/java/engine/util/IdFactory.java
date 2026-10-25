@@ -1,10 +1,10 @@
 package engine.util;
 
 public class IdFactory {
-    private static long currId = 1L;
+  private static long currId = 1L;
 
-    public static long getNextId() {
-        return currId++;
-    }
+  public static long getNextId() {
+    return currId++;
+  }
 
 }

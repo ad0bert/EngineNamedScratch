@@ -3,41 +3,38 @@ package engine.ecs.components;
 import com.jogamp.opengl.glu.GLU;
 
 import engine.geometry.Point;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+import lombok.experimental.FieldDefaults;
+import lombok.val;
 
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@EqualsAndHashCode(callSuper = true)
+@ToString(callSuper = true)
+@FieldDefaults(level = AccessLevel.PRIVATE)
 public class Camera extends AbstractComponent {
 
-    private Point offset;
-    private Point viewDirection;
-    private final Point UP = new Point(0f, 1f, 0f);
+  @Builder.Default
+  Point offset = new Point(0f, 0f, 0f);
+  @Builder.Default
+  Point viewDirection = new Point(0f, 0f, -1f);
+  final Point UP = new Point(0f, 1f, 0f);
 
-    public Camera() {
-        this.offset = new Point(0f, 0f, 0f);
-        this.viewDirection = new Point(0f, 0f, -1f);
-    }
-
-    public void getWorldToViewMatrix(GLU glu) {
-        glu.gluLookAt(this.getEntity().getPosition().getX(), this.getEntity().getPosition().getY(),
-                this.getEntity().getPosition().getZ(),
-                this.getEntity().getPosition().getX() + this.viewDirection.getX(),
-                this.getEntity().getPosition().getY() + this.viewDirection.getY(),
-                this.getEntity().getPosition().getZ() + this.viewDirection.getZ(), this.UP.getX(), this.UP.getY(),
-                this.UP.getZ());
-    }
-
-    public Point getOffset() {
-        return this.offset;
-    }
-
-    public void setOffset(Point offset) {
-        this.offset = offset;
-    }
-
-    public Point getViewDirection() {
-        return this.viewDirection;
-    }
-
-    public void setViewDirection(Point viewDirection) {
-        this.viewDirection = viewDirection;
-    }
+  public void getWorldToViewMatrix(GLU glu) {
+    val position = this.getEntity().getPosition();
+    glu.gluLookAt(position.getX(), position.getY(), position.getZ(),
+        position.getX() + this.viewDirection.getX(),
+        position.getY() + this.viewDirection.getY(),
+        position.getZ() + this.viewDirection.getZ(),
+        this.UP.getX(), this.UP.getY(), this.UP.getZ());
+  }
 
 }

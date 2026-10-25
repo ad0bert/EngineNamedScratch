@@ -10,45 +10,48 @@ import com.jogamp.opengl.util.texture.TextureIO;
 
 import engine.ecs.components.AbstractComponent;
 import engine.render.interfaces.IDrawable;
+import lombok.AccessLevel;
+import lombok.experimental.FieldDefaults;
 import engine.util.ObjectLoader;
 
+@FieldDefaults(level = AccessLevel.PRIVATE)
 public class ObjectRendering extends AbstractComponent implements IDrawable {
 
-    private ObjectLoader objectLoader;
-    private File textureFile;
-    private Texture texture;
+  ObjectLoader objectLoader;
+  File textureFile;
+  Texture texture;
 
-    @Override
-    public void draw(GL2 gl) {
-        if (!this.isActive()) {
-            return;
-        }
-        if (this.texture == null) {
-            try {
-                this.texture = TextureIO.newTexture(this.textureFile, true);
-            } catch (GLException | IOException e) {
-                e.printStackTrace();
-            }
-
-        }
-        applyRotation(gl);
-        gl.glTranslatef(this.getEntity().getPosition().getX(), this.getEntity().getPosition().getY(),
-                this.getEntity().getPosition().getZ());
-        gl.glBindTexture(GL2.GL_TEXTURE_2D, this.texture.getTextureObject(gl));
-        this.objectLoader.drawModel(gl);
+  @Override
+  public void draw(GL2 gl) {
+    if (!this.isActive()) {
+      return;
     }
+    if (this.texture == null) {
+      try {
+        this.texture = TextureIO.newTexture(this.textureFile, true);
+      } catch (GLException | IOException e) {
+        e.printStackTrace();
+      }
 
-    private void applyRotation(final GL2 gl) {
-        gl.glRotatef(this.getEntity().getRotation().getX(), 1, 0, 0);
-        gl.glRotatef(this.getEntity().getRotation().getY(), 0, 1, 0);
-        gl.glRotatef(this.getEntity().getRotation().getZ(), 0, 0, 1);
     }
+    applyRotation(gl);
+    gl.glTranslatef(this.getEntity().getPosition().getX(), this.getEntity().getPosition().getY(),
+        this.getEntity().getPosition().getZ());
+    gl.glBindTexture(GL2.GL_TEXTURE_2D, this.texture.getTextureObject(gl));
+    this.objectLoader.drawModel(gl);
+  }
 
-    public ObjectRendering(String objectPath, String texturePath) {
-        super();
-        this.objectLoader = new ObjectLoader(objectPath);
-        ClassLoader loader = CubeRendering.class.getClassLoader();
-        this.textureFile = new File(loader.getResource(texturePath).getPath());
-    }
+  private void applyRotation(final GL2 gl) {
+    gl.glRotatef(this.getEntity().getRotation().getX(), 1, 0, 0);
+    gl.glRotatef(this.getEntity().getRotation().getY(), 0, 1, 0);
+    gl.glRotatef(this.getEntity().getRotation().getZ(), 0, 0, 1);
+  }
+
+  public ObjectRendering(String objectPath, String texturePath) {
+    super();
+    this.objectLoader = new ObjectLoader(objectPath);
+    ClassLoader loader = CubeRendering.class.getClassLoader();
+    this.textureFile = new File(loader.getResource(texturePath).getPath());
+  }
 
 }
