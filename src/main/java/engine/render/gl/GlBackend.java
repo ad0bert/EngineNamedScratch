@@ -13,11 +13,12 @@ import engine.render.MeshData;
 import engine.render.Overlay;
 import engine.render.RenderBackend;
 import engine.render.RenderStats;
+import lombok.Getter;
 
 /** OpenGL 3.3 core implementation of {@link RenderBackend}. */
 public final class GlBackend implements RenderBackend {
   private final Supplier<GL3> glSupplier;
-  private final RenderStats stats = new RenderStats();
+  @Getter private final RenderStats stats = new RenderStats();
   private final GlSceneRenderer scene = new GlSceneRenderer(this.stats);
   private final GlUi ui = new GlUi();
   private GlTexture white;
@@ -29,7 +30,7 @@ public final class GlBackend implements RenderBackend {
 
   @Override
   public void init() {
-    final GL3 gl = this.glSupplier.get();
+    final var gl = this.glSupplier.get();
     this.white = new GlTexture(this.glSupplier, ImageData.solid(255, 255, 255, 255));
     this.scene.init(gl, this.white);
     this.ui.init(gl, this.glSupplier);
@@ -57,7 +58,7 @@ public final class GlBackend implements RenderBackend {
 
   @Override
   public void render(Scene scene, float alpha, int width, int height, List<Overlay> overlays) {
-    final GL3 gl = this.glSupplier.get();
+    final var gl = this.glSupplier.get();
     this.stats.reset();
     this.scene.render(gl, scene, alpha, width, height);
     this.ui.begin();
@@ -68,13 +69,8 @@ public final class GlBackend implements RenderBackend {
   }
 
   @Override
-  public RenderStats stats() {
-    return this.stats;
-  }
-
-  @Override
   public void dispose() {
-    final GL3 gl = this.glSupplier.get();
+    final var gl = this.glSupplier.get();
     this.scene.dispose(gl);
     this.ui.dispose(gl);
     if (this.white != null) {

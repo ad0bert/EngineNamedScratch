@@ -19,8 +19,8 @@ class NormalMapsTest {
 
   @Test
   void flatSurfacesPointStraightUp() {
-    final ImageData img = NormalMaps.fromHeights(new float[16], 4, 4, 5f);
-    final Vector3f n = normalAt(img, 1, 2);
+    final var img = NormalMaps.fromHeights(new float[16], 4, 4, 5f);
+    final var n = normalAt(img, 1, 2);
     assertEquals(0f, n.x, 0.01f);
     assertEquals(0f, n.y, 0.01f);
     assertEquals(1f, n.z, 0.01f);
@@ -36,7 +36,7 @@ class NormalMapsTest {
         h[y * 8 + x] = x * 0.1f;
       }
     }
-    final Vector3f n = normalAt(NormalMaps.fromHeights(h, 8, 8, 4f), 3, 3);
+    final var n = normalAt(NormalMaps.fromHeights(h, 8, 8, 4f), 3, 3);
     assertTrue(n.x < -0.1f, "x " + n.x);
     assertEquals(0f, n.y, 0.01f);
     assertTrue(n.z > 0.5f && n.z < 1f);
@@ -67,7 +67,7 @@ class NormalMapsTest {
   void bordersWrapSoTexturesTile() {
     final float[] h = new float[4 * 4];
     h[0] = 1f; // a single bump in the corner also affects the opposite borders
-    final ImageData img = NormalMaps.fromHeights(h, 4, 4, 4f);
+    final var img = NormalMaps.fromHeights(h, 4, 4, 4f);
     assertTrue(normalAt(img, 3, 0).x < -0.1f, "pixel left of the bump (wrapped): the ground rises towards +x, so it leans to -x");
     assertTrue(normalAt(img, 0, 3).y < -0.1f, "pixel below the bump (wrapped): the ground rises towards +y, so it leans to -y");
   }

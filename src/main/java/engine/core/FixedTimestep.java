@@ -1,13 +1,14 @@
 package engine.core;
 
 import java.util.function.DoubleConsumer;
+import lombok.Getter;
 
 /** Fixed-timestep accumulator. All times are in seconds; callers feed it {@link System#nanoTime()} values. */
 public class FixedTimestep {
-  private final double step;
+  @Getter private final double step;
   private final double maxFrameTime;
   private double accumulator;
-  private double elapsed;
+  @Getter private double elapsed;
   private long lastNanos;
   private boolean started;
 
@@ -46,13 +47,5 @@ public class FixedTimestep {
   /** Fraction of a step left in the accumulator (0..1): how far rendering is between the last two states. */
   public float alpha() {
     return (float) Math.max(0.0, Math.min(1.0, this.accumulator / this.step));
-  }
-
-  public double step() {
-    return this.step;
-  }
-
-  public double elapsed() {
-    return this.elapsed;
   }
 }

@@ -29,7 +29,7 @@ final class GlUi implements UiCanvas {
 
   void init(GL3 gl, java.util.function.Supplier<GL3> glSupplier) {
     this.shader = new ShaderProgram(gl, "shaders/ui.vert", "shaders/ui.frag");
-    final ImageData img = this.atlas.image();
+    final var img = this.atlas.image();
     this.atlasTexture = new GlTexture(glSupplier, img);
     final int[] ids = new int[1];
     gl.glGenVertexArrays(1, ids, 0);

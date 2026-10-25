@@ -19,7 +19,7 @@ class ObjLoaderTest {
 
   @Test
   void quadsAreTriangulated() throws IOException {
-    final MeshData m = parse("""
+    final var m = parse("""
         v 0 0 0
         v 1 0 0
         v 1 1 0
@@ -32,7 +32,7 @@ class ObjLoaderTest {
 
   @Test
   void missingNormalsBecomeFlatNormals() throws IOException {
-    final MeshData m = parse("""
+    final var m = parse("""
         v 0 0 0
         v 1 0 0
         v 0 1 0
@@ -43,7 +43,7 @@ class ObjLoaderTest {
 
   @Test
   void negativeIndicesAndFullFaceFormat() throws IOException {
-    final MeshData m = parse("""
+    final var m = parse("""
         v 0 0 0
         v 1 0 0
         v 0 1 0
@@ -59,7 +59,7 @@ class ObjLoaderTest {
 
   @Test
   void vertexOnlyAndDoubleSlashFormats() throws IOException {
-    final MeshData m = parse("""
+    final var m = parse("""
         v 0 0 0
         v 1 0 0
         v 0 1 0
@@ -71,7 +71,7 @@ class ObjLoaderTest {
 
   @Test
   void sharedVerticesAreDeduplicated() throws IOException {
-    final MeshData m = parse("""
+    final var m = parse("""
         v 0 0 0
         v 1 0 0
         v 1 1 0
@@ -94,7 +94,7 @@ class ObjLoaderTest {
   void bundledModelsLoad() throws IOException {
     for (String path : new String[] { "objects/box.obj", "objects/capsule/capsule.obj" }) {
       try (var in = ObjLoaderTest.class.getClassLoader().getResourceAsStream(path)) {
-        final MeshData m = ObjLoader.load(in, path);
+        final var m = ObjLoader.load(in, path);
         assertEquals(0, m.indices().length % 3);
       }
     }

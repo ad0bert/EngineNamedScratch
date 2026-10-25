@@ -78,7 +78,7 @@ class EcsTest {
     child.transform().setParent(parent.transform());
     child.transform().position().set(1f, 0f, 0f);
 
-    final Vector3f w = child.transform().worldPosition(new Vector3f());
+    final var w = child.transform().worldPosition(new Vector3f());
 
     assertEquals(12f, w.x, 1e-5);
     assertEquals(0f, w.y, 1e-5);
@@ -95,7 +95,7 @@ class EcsTest {
   @Test
   void forwardIsMinusZUntilRotated() {
     final var t = new Transform();
-    final Vector3f f = t.forward(new Vector3f());
+    final var f = t.forward(new Vector3f());
     assertEquals(-1f, f.z, 1e-6);
     t.setEulerDegrees(0f, 90f, 0f);
     t.forward(f);
@@ -236,7 +236,7 @@ class EcsTest {
     for (int i = 0; i < 100; i++) {
       e.get(Spinner.class).update(0.01); // 1 second in total
     }
-    final Vector3f f = e.transform().forward(new Vector3f());
+    final var f = e.transform().forward(new Vector3f());
     assertEquals(-1f, f.x, 1e-3);
   }
 }

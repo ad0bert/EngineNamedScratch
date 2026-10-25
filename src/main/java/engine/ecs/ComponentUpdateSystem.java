@@ -8,7 +8,7 @@ public class ComponentUpdateSystem implements ISystem {
       // index loop: components may add siblings during update
       final var comps = e.components();
       for (int i = 0; i < comps.size(); i++) {
-        final Component c = comps.get(i);
+        final var c = comps.get(i);
         if (c.isEnabled()) {
           c.update(dt);
         }

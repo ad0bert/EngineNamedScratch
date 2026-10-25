@@ -105,7 +105,7 @@ public final class Narrowphase {
   }
 
   static RayResult raySphere(Sphere s, Vector3f o, Vector3f d, float maxDistance) {
-    final Vector3f oc = new Vector3f(o).sub(s.c());
+    final var oc = new Vector3f(o).sub(s.c());
     final float b = oc.dot(d);
     final float cc = oc.lengthSquared() - s.r() * s.r();
     if (cc > 0f && b > 0f) {
@@ -127,7 +127,7 @@ public final class Narrowphase {
 
   /** Slab test in the box's own axes, so rotated boxes are hit exactly. */
   static RayResult rayBox(Box box, Vector3f o, Vector3f d, float maxDistance) {
-    final Vector3f rel = new Vector3f(o).sub(box.c());
+    final var rel = new Vector3f(o).sub(box.c());
     float tMin = -Float.MAX_VALUE;
     float tMax = Float.MAX_VALUE;
     int hitAxis = -1;
@@ -175,7 +175,7 @@ public final class Narrowphase {
 
   /** True if the collider overlaps the sphere. */
   static boolean overlapsSphere(Collider c, Sphere s) {
-    final Contact scratch = new Contact();
+    final var scratch = new Contact();
     if (c instanceof BoxCollider b) {
       return sphereBox(s, b.world(), scratch);
     }
@@ -186,12 +186,12 @@ public final class Narrowphase {
   }
 
   static Contact sphereSphere(Sphere a, Sphere b) {
-    final Contact c = new Contact();
+    final var c = new Contact();
     return sphereSphere(a, b, c) ? c : null;
   }
 
   static boolean sphereSphere(Sphere a, Sphere b, Contact out) {
-    final Vector3f n = out.normal.set(b.c()).sub(a.c());
+    final var n = out.normal.set(b.c()).sub(a.c());
     final float len = n.length();
     final float sum = a.r() + b.r();
     if (len >= sum) {
@@ -208,15 +208,15 @@ public final class Narrowphase {
 
   /** Normal points from the sphere towards the box. */
   static Contact sphereBox(Sphere s, Box b) {
-    final Contact c = new Contact();
+    final var c = new Contact();
     return sphereBox(s, b, c) ? c : null;
   }
 
   static boolean sphereBox(Sphere s, Box b, Contact out) {
-    final Scratch sc = SCRATCH.get();
-    final Vector3f d = sc.t.set(s.c()).sub(b.c());
+    final var sc = SCRATCH.get();
+    final var d = sc.t.set(s.c()).sub(b.c());
     final float[] p = sc.p;
-    final Vector3f closest = sc.closest.set(b.c());
+    final var closest = sc.closest.set(b.c());
     for (int i = 0; i < 3; i++) {
       p[i] = d.dot(b.axes()[i]);
       final float q = Math.max(-b.half()[i], Math.min(b.half()[i], p[i]));
@@ -250,16 +250,16 @@ public final class Narrowphase {
 
   /** Separating-axis test over the 15 candidate axes; keeps the axis of least penetration. */
   static Contact boxBox(Box a, Box b) {
-    final Contact c = new Contact();
+    final var c = new Contact();
     return boxBox(a, b, c) ? c : null;
   }
 
   static boolean boxBox(Box a, Box b, Contact out) {
-    final Scratch sc = SCRATCH.get();
-    final Vector3f t = sc.t.set(b.c()).sub(a.c());
+    final var sc = SCRATCH.get();
+    final var t = sc.t.set(b.c()).sub(a.c());
     float best = Float.MAX_VALUE;
     boolean found = false;
-    final Vector3f l = sc.l;
+    final var l = sc.l;
     for (int i = 0; i < 15; i++) {
       if (i < 3) {
         l.set(a.axes()[i]);

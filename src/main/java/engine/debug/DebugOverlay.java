@@ -36,12 +36,12 @@ public class DebugOverlay implements ISystem, Overlay {
       return; // text is rebuilt a few times per second, not every frame
     }
     this.sinceUpdate = 0;
-    final RenderStats s = this.engine.backend().stats();
+    final var s = this.engine.backend().stats();
     final String cam = scene.activeCamera().map(c -> {
-      final Vector3f p = c.entity().transform().worldPosition(new Vector3f());
+      final var p = c.entity().transform().worldPosition(new Vector3f());
       return String.format(Locale.ROOT, "%.1f %.1f %.1f", p.x, p.y, p.z);
     }).orElse("-");
-    final PhysicsStats p = this.engine.physics().stats();
+    final var p = this.engine.physics().stats();
     this.text = String.format(Locale.ROOT, "%s %s\n%.0f fps\nentities %d\n"
         + "draw calls %d  instances %d\nculled %d  shadow casters %d (%d cascades)  lights %d\n"
         + "bodies %d (%d asleep)  pairs %d  contacts %d\ncamera %s",

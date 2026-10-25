@@ -91,7 +91,7 @@ final class GlSceneRenderer {
     if (activeCamera.isEmpty()) {
       return;
     }
-    final Camera camera = activeCamera.get();
+    final var camera = activeCamera.get();
     final float aspect = (float) width / Math.max(height, 1);
     camera.viewMatrix(alpha, this.view);
     camera.projectionMatrix(aspect, this.proj);
@@ -113,10 +113,10 @@ final class GlSceneRenderer {
   }
 
   private void prepareLights(Scene scene, float alpha) {
-    final List<Light> all = scene.components(Light.class);
+    final var all = scene.components(Light.class);
     this.shadowLight = null;
     for (int i = 0; i < all.size(); i++) {
-      final Light l = all.get(i);
+      final var l = all.get(i);
       if (l.type == Light.Type.DIRECTIONAL && l.castShadows) {
         this.shadowLight = l;
         break;
@@ -133,7 +133,7 @@ final class GlSceneRenderer {
     }
     this.lightCount = this.orderedLights.size();
     for (int i = 0; i < this.lightCount; i++) {
-      final Light l = this.orderedLights.get(i);
+      final var l = this.orderedLights.get(i);
       l.entity().transform().interpolatedWorldMatrix(alpha, this.world);
       if (l.type == Light.Type.DIRECTIONAL) {
         this.world.transformDirection(this.direction.set(0f, 0f, -1f)).normalize().negate();
@@ -166,7 +166,7 @@ final class GlSceneRenderer {
 
   /** Renders every cascade into its layer; returns the number of cascades (0 if the range is empty). */
   private int shadowPasses(GL3 gl, Camera camera, float aspect, float alpha, int width, int height) {
-    final Light light = this.shadowLight;
+    final var light = this.shadowLight;
     final int count = Math.max(1, Math.min(Light.MAX_CASCADES, light.shadowCascades));
     final float near = camera.near;
     final float far = Math.min(camera.far, light.shadowDistance);
@@ -232,7 +232,7 @@ final class GlSceneRenderer {
     this.opaque.clear();
     this.transparent.clear();
     for (int i = 0; i < this.visible.size(); i++) {
-      final MeshRenderer r = this.visible.get(i);
+      final var r = this.visible.get(i);
       (r.material.transparent ? this.transparent : this.opaque).add(r);
     }
     RenderQueue.sortForBatching(this.opaque, true);
@@ -254,7 +254,7 @@ final class GlSceneRenderer {
     final int n = list.size();
     int i = 0;
     while (i < n) {
-      final MeshRenderer first = list.get(i);
+      final var first = list.get(i);
       int j = i + 1;
       if (batch) {
         while (j < n && RenderQueue.sameBatch(first, list.get(j), byMaterial)) {
@@ -282,7 +282,7 @@ final class GlSceneRenderer {
   }
 
   private void applyMaterial(GL3 gl, Material m) {
-    final GlTexture tex = m.texture != null ? (GlTexture) m.texture : this.white;
+    final var tex = m.texture != null ? (GlTexture) m.texture : this.white;
     tex.bind(gl, 0);
     if (m.normalMap != null) {
       ((GlTexture) m.normalMap).bind(gl, 2);

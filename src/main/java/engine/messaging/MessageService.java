@@ -29,7 +29,7 @@ public class MessageService implements IMessageService {
   @Override
   public void send(MessageObject message) {
     Objects.requireNonNull(message, "message");
-    final List<IMessageReceiver> targets = message.getQueue() == null ? this.all
+    final var targets = message.getQueue() == null ? this.all
         : this.queues.get(message.getQueue());
     for (IMessageReceiver receiver : targets) {
       if (message.getReceiverId() != null && !message.getReceiverId().equals(receiver.receiverId())) {
@@ -65,7 +65,7 @@ public class MessageService implements IMessageService {
     if (queue == null) {
       return true;
     }
-    final List<IMessageReceiver> list = this.queues.get(queue);
+    final var list = this.queues.get(queue);
     return !list.contains(receiver) && list.add(receiver);
   }
 

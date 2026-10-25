@@ -14,7 +14,7 @@ final class GlTexture implements GpuTexture {
 
   GlTexture(Supplier<GL3> glSupplier, ImageData image) {
     this.glSupplier = glSupplier;
-    final GL3 gl = glSupplier.get();
+    final var gl = glSupplier.get();
     final int[] ids = new int[1];
     gl.glGenTextures(1, ids, 0);
     this.id = ids[0];

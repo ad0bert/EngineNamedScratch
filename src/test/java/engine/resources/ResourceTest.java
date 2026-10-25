@@ -96,7 +96,7 @@ class ResourceTest {
 
   @Test
   void objIsSplitIntoPartsPerMaterial() throws IOException {
-    final String text = """
+    final var text = """
         mtllib stuff.mtl
         v 0 0 0
         v 1 0 0
@@ -151,7 +151,7 @@ class ResourceTest {
   @Test
   void bundledImagesDecode() throws IOException {
     try (var in = ResourceTest.class.getClassLoader().getResourceAsStream("textures/cubeFace.png")) {
-      final ImageData img = ImageLoader.load(in, "cubeFace.png");
+      final var img = ImageLoader.load(in, "cubeFace.png");
       assertTrue(img.width() > 0 && img.height() > 0);
       assertEquals(img.width() * img.height() * 4, img.rgba().length);
     }
@@ -170,7 +170,7 @@ class ResourceTest {
   void modelUsesMtlMaterialAndTexture() {
     final var backend = new FakeBackend();
     final var res = new ResourceManager(backend);
-    final Model capsule = res.model("objects/capsule/capsule.obj");
+    final var capsule = res.model("objects/capsule/capsule.obj");
     assertEquals(1, capsule.parts().size());
     final var material = capsule.parts().get(0).material();
     assertNotNull(material.texture);
@@ -231,7 +231,7 @@ class ResourceTest {
   void modelsPickUpNormalMapAndScaleFromTheirMtl() {
     final var backend = new FakeBackend();
     final var res = new ResourceManager(backend);
-    final Model m = res.model("objects/bumpy/bumpy.obj");
+    final var m = res.model("objects/bumpy/bumpy.obj");
     final var material = m.parts().get(0).material();
     assertNotNull(material.texture);
     assertNotNull(material.normalMap);

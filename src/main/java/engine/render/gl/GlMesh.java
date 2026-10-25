@@ -10,6 +10,7 @@ import com.jogamp.opengl.GL3;
 import engine.render.GpuMesh;
 import engine.render.MeshData;
 import engine.render.RenderQueue;
+import lombok.Getter;
 
 /**
  * VAO with static vertex/index buffers plus a dynamic per-instance buffer holding a model and a normal matrix per
@@ -19,9 +20,9 @@ final class GlMesh implements GpuMesh {
   private static final int INSTANCE_STRIDE = RenderQueue.FLOATS_PER_INSTANCE * Float.BYTES;
   private static final AtomicInteger NEXT_ID = new AtomicInteger();
 
-  private final int id = NEXT_ID.incrementAndGet();
+  @Getter private final int id = NEXT_ID.incrementAndGet();
   private final Supplier<GL3> glSupplier;
-  private final MeshData data;
+  @Getter private final MeshData data;
   private final int vao;
   private final int vbo;
   private final int ebo;
@@ -32,7 +33,7 @@ final class GlMesh implements GpuMesh {
     this.glSupplier = glSupplier;
     this.data = data;
     this.mode = data.drawMode() == MeshData.DrawMode.POINTS ? GL3.GL_POINTS : GL3.GL_TRIANGLES;
-    final GL3 gl = glSupplier.get();
+    final var gl = glSupplier.get();
 
     final int[] ids = new int[1];
     gl.glGenVertexArrays(1, ids, 0);
@@ -79,16 +80,6 @@ final class GlMesh implements GpuMesh {
     gl.glBindVertexArray(0);
   }
 
-  @Override
-  public MeshData data() {
-    return this.data;
-  }
-
-  @Override
-  public int id() {
-    return this.id;
-  }
-
   /**
    * Draws {@code count} instances; {@code instances} holds count * {@link RenderQueue#FLOATS_PER_INSTANCE} floats
    * (position 0, limit set accordingly).
@@ -107,7 +98,7 @@ final class GlMesh implements GpuMesh {
 
   @Override
   public void dispose() {
-    final GL3 gl = this.glSupplier.get();
+    final var gl = this.glSupplier.get();
     gl.glDeleteVertexArrays(1, new int[] { this.vao }, 0);
     gl.glDeleteBuffers(1, new int[] { this.vbo }, 0);
     gl.glDeleteBuffers(1, new int[] { this.instanceVbo }, 0);

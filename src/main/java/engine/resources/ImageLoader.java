@@ -15,7 +15,7 @@ public final class ImageLoader {
 
   public static ImageData load(InputStream in, String name) throws IOException {
     System.setProperty("java.awt.headless", "true");
-    final BufferedImage img = ImageIO.read(in);
+    final var img = ImageIO.read(in);
     if (img == null) {
       throw new IOException("Unsupported or corrupt image: " + name);
     }

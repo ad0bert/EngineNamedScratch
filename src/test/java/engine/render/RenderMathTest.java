@@ -16,7 +16,7 @@ class RenderMathTest {
   void shadowMatrixCentresTheFocusPoint() {
     final var focus = new Vector3f(3f, 0f, -2f);
     final var m = ShadowMath.cascadeViewProj(new Vector3f(-0.4f, -0.8f, -0.3f), focus, 25f, 2048, new Matrix4f());
-    final Vector4f ndc = m.transform(new Vector4f(focus, 1f));
+    final var ndc = m.transform(new Vector4f(focus, 1f));
     // snapping moves the centre by less than one texel (2/2048 in NDC)
     assertEquals(0f, ndc.x / ndc.w, 0.002f);
     assertEquals(0f, ndc.y / ndc.w, 0.002f);
@@ -53,7 +53,7 @@ class RenderMathTest {
 
   @Test
   void worldSphereFollowsTranslationAndLargestScale() {
-    final MeshData cube = MeshFactory.cube(1f); // half extent 1, radius sqrt(3)
+    final var cube = MeshFactory.cube(1f); // half extent 1, radius sqrt(3)
     final var center = new Vector3f();
     final var model = new Matrix4f().translate(5f, 0f, 0f).scale(2f, 1f, 1f);
     final float r = ShadowMath.worldSphere(cube, model, center);
@@ -63,11 +63,11 @@ class RenderMathTest {
 
   @Test
   void meshDataBoundsAndFactories() {
-    final MeshData cube = MeshFactory.cube(0.5f);
+    final var cube = MeshFactory.cube(0.5f);
     assertEquals(24, cube.vertexCount());
     assertEquals(36, cube.indices().length);
     assertEquals(0.5f, cube.halfExtents().x, 1e-6f);
-    final MeshData quad = MeshFactory.quad(4f, 2f);
+    final var quad = MeshFactory.quad(4f, 2f);
     assertEquals(2f, quad.halfExtents().x, 1e-6f);
     assertEquals(1f, quad.halfExtents().y, 1e-6f);
     assertEquals(MeshData.DrawMode.POINTS,
@@ -79,7 +79,7 @@ class RenderMathTest {
     final var img = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB);
     img.setRGB(0, 0, 0xFFFF0000); // top-left red
     img.setRGB(0, 1, 0xFF0000FF); // bottom-left blue
-    final ImageData data = ImageData.fromBufferedImage(img);
+    final var data = ImageData.fromBufferedImage(img);
     assertEquals((byte) 0, data.rgba()[0]); // first pixel = bottom-left = blue
     assertEquals((byte) 255, data.rgba()[2]);
     final int topLeft = (1 * 2 + 0) * 4;
@@ -99,7 +99,7 @@ class RenderMathTest {
     assertEquals(q[0], uv[0], 0f);
 
     atlas.solidUv(uv);
-    final ImageData img = atlas.image();
+    final var img = atlas.image();
     final int px = Math.min(img.width() - 1, Math.round(uv[0] * img.width()));
     final int py = Math.min(img.height() - 1, Math.round(uv[1] * img.height()));
     assertEquals((byte) 255, img.rgba()[(py * img.width() + px) * 4 + 3]);

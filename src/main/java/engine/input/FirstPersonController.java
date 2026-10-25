@@ -5,6 +5,7 @@ import org.joml.Vector3f;
 import com.jogamp.newt.event.KeyEvent;
 
 import engine.ecs.Component;
+import lombok.Getter;
 
 /**
  * Free-fly first-person controller. Mouse look sets yaw/pitch on the entity rotation; movement uses the key bindings
@@ -14,8 +15,8 @@ public class FirstPersonController extends Component {
   private final InputState input;
   public float speed = 4f;
   public float sensitivityDegPerPixel = 0.12f;
-  private float yaw;
-  private float pitch;
+  @Getter private float yaw;
+  @Getter private float pitch;
 
   public FirstPersonController(InputState input) {
     this.input = input;
@@ -30,14 +31,6 @@ public class FirstPersonController extends Component {
     input.bind("down", KeyEvent.VK_SHIFT);
   }
 
-  public float yaw() {
-    return this.yaw;
-  }
-
-  public float pitch() {
-    return this.pitch;
-  }
-
   @Override
   public void update(double dt) {
     this.yaw -= this.input.consumeMouseDx() * this.sensitivityDegPerPixel;
@@ -46,9 +39,9 @@ public class FirstPersonController extends Component {
     final var t = entity().transform();
     t.rotation().identity().rotateY((float) Math.toRadians(this.yaw)).rotateX((float) Math.toRadians(this.pitch));
 
-    final Vector3f move = new Vector3f();
-    final Vector3f fwd = t.forward(new Vector3f());
-    final Vector3f right = t.right(new Vector3f());
+    final var move = new Vector3f();
+    final var fwd = t.forward(new Vector3f());
+    final var right = t.right(new Vector3f());
     if (this.input.isActionDown("forward")) {
       move.add(fwd);
     }

@@ -37,7 +37,7 @@ public class ResourceManager {
 
   /** Returns the cached texture, or the white texture (with a logged error) if loading fails. */
   public GpuTexture texture(String path) {
-    final GpuTexture cached = this.textures.get(path);
+    final var cached = this.textures.get(path);
     if (cached != null) {
       return cached;
     }
@@ -73,20 +73,20 @@ public class ResourceManager {
 
   /** Uploads generated mesh data; the manager disposes it on shutdown. */
   public GpuMesh mesh(MeshData data) {
-    final GpuMesh m = this.backend.createMesh(data);
+    final var m = this.backend.createMesh(data);
     this.ownedMeshes.add(m);
     return m;
   }
 
   /** An OBJ with its MTL materials: one part per material, textures resolved relative to the OBJ. */
   public Model model(String objPath) {
-    final Model cached = this.models.get(objPath);
+    final var cached = this.models.get(objPath);
     if (cached != null) {
       return cached;
     }
-    final String dir = objPath.substring(0, objPath.lastIndexOf('/') + 1);
+    final var dir = objPath.substring(0, objPath.lastIndexOf('/') + 1);
     try (InputStream in = open(objPath)) {
-      final ObjLoader.ObjModel obj = ObjLoader.parse(in, objPath, true);
+      final var obj = ObjLoader.parse(in, objPath, true);
       Map<String, MtlLoader.MtlMaterial> mtl = Map.of();
       if (obj.mtllib() != null) {
         try (InputStream mi = open(dir + obj.mtllib())) {
@@ -97,11 +97,11 @@ public class ResourceManager {
       }
       final List<Model.Part> parts = new ArrayList<>();
       for (ObjLoader.Part p : obj.parts()) {
-        final GpuMesh mesh = this.backend.createMesh(p.mesh());
+        final var mesh = this.backend.createMesh(p.mesh());
         this.ownedMeshes.add(mesh);
         parts.add(new Model.Part(mesh, toMaterial(mtl.get(p.material()), dir)));
       }
-      final Model model = new Model(parts);
+      final var model = new Model(parts);
       this.models.put(objPath, model);
       return model;
     } catch (IOException | RuntimeException e) {
@@ -110,7 +110,7 @@ public class ResourceManager {
   }
 
   private Material toMaterial(MtlLoader.MtlMaterial m, String dir) {
-    final Material out = new Material();
+    final var out = new Material();
     if (m == null) {
       return out;
     }
@@ -128,7 +128,7 @@ public class ResourceManager {
   }
 
   private static InputStream open(String path) throws IOException {
-    final InputStream in = ResourceManager.class.getClassLoader().getResourceAsStream(path);
+    final var in = ResourceManager.class.getClassLoader().getResourceAsStream(path);
     if (in == null) {
       throw new IOException("Resource not found: " + path);
     }

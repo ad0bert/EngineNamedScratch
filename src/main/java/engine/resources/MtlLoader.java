@@ -54,7 +54,7 @@ public final class MtlLoader {
         if (line.isEmpty() || line.startsWith("#")) {
           continue;
         }
-        final String[] t = line.split("\\s+");
+        final var t = line.split("\\s+");
         try {
           if (t[0].equals("newmtl")) {
             if (cur != null) {
@@ -96,7 +96,7 @@ public final class MtlLoader {
   private static String parseMap(String[] t, float[] bumpScale) {
     int i = 1;
     while (i < t.length) {
-      final String s = t[i];
+      final var s = t[i];
       if (s.equals("-bm")) {
         if (bumpScale != null) {
           bumpScale[0] = Float.parseFloat(t[i + 1]);

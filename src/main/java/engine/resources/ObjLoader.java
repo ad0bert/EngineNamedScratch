@@ -48,7 +48,7 @@ public final class ObjLoader {
     final List<float[]> nor = new ArrayList<>();
     final Map<String, Builder> builders = new LinkedHashMap<>();
     Builder current = builders.computeIfAbsent("", k -> new Builder());
-    String currentMaterial = "";
+    var currentMaterial = "";
     String mtllib = null;
 
     try (BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
@@ -60,7 +60,7 @@ public final class ObjLoader {
         if (line.isEmpty() || line.startsWith("#")) {
           continue;
         }
-        final String[] t = line.split("\\s+");
+        final var t = line.split("\\s+");
         try {
           switch (t[0]) {
           case "v" -> pos.add(floats(t, 3));
@@ -86,7 +86,7 @@ public final class ObjLoader {
 
     final List<Part> parts = new ArrayList<>();
     for (Map.Entry<String, Builder> e : builders.entrySet()) {
-      final Builder b = e.getValue();
+      final var b = e.getValue();
       if (b.indices.isEmpty()) {
         continue;
       }
@@ -125,7 +125,7 @@ public final class ObjLoader {
     }
     final int[][] refs = new int[n][3];
     for (int i = 0; i < n; i++) {
-      final String[] p = t[i + 1].split("/", -1);
+      final var p = t[i + 1].split("/", -1);
       refs[i][0] = resolve(p[0], pos.size());
       refs[i][1] = p.length > 1 ? resolve(p[1], tex.size()) : -1;
       refs[i][2] = p.length > 2 ? resolve(p[2], nor.size()) : -1;
@@ -135,9 +135,9 @@ public final class ObjLoader {
     final int[] ids = new int[n];
     for (int i = 0; i < n; i++) {
       final int[] r = refs[i];
-      final String key = r[0] + "/" + r[1] + "/" + r[2]
+      final var key = r[0] + "/" + r[1] + "/" + r[2]
           + (r[2] < 0 ? "/" + flat[0] + "," + flat[1] + "," + flat[2] : "");
-      Integer id = b.cache.get(key);
+      var id = b.cache.get(key);
       if (id == null) {
         id = b.vertices.size() / MeshData.FLOATS_PER_VERTEX;
         b.cache.put(key, id);
@@ -163,7 +163,7 @@ public final class ObjLoader {
   }
 
   private static float[] flatNormal(float[] a, float[] b, float[] c) {
-    final Vector3f n = new Vector3f(b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    final var n = new Vector3f(b[0] - a[0], b[1] - a[1], b[2] - a[2])
         .cross(c[0] - a[0], c[1] - a[1], c[2] - a[2]);
     if (n.lengthSquared() > 0f) {
       n.normalize();

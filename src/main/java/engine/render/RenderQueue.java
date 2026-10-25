@@ -13,6 +13,7 @@ import org.joml.Vector3f;
 import engine.ecs.Scene;
 import engine.ecs.Transform;
 import engine.spatial.SpatialGrid;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -54,7 +55,8 @@ public final class RenderQueue {
   private int seenInvalidations;
   private int reconcileStamp;
   private int queryStamp;
-  private int candidates;
+  /** Number of enabled renderers seen in the last {@link #collect}. */
+  @Getter private int candidates;
   private int framesSinceValidation;
 
   public RenderQueue() {
@@ -64,11 +66,6 @@ public final class RenderQueue {
   /** @param staticCellSize edge length of the cells used for static geometry; roughly the size of a room or chunk */
   public RenderQueue(float staticCellSize) {
     this.grid = new SpatialGrid(staticCellSize);
-  }
-
-  /** Number of enabled renderers seen in the last {@link #collect}. */
-  public int candidates() {
-    return this.candidates;
   }
 
   public int staticCount() {
@@ -92,7 +89,7 @@ public final class RenderQueue {
   /** Refreshes the state of all renderers for this frame ({@code alpha}: interpolation between fixed steps). */
   public void collect(Scene scene, float alpha, Vector3f cameraPosition) {
     this.cameraPos.set(cameraPosition);
-    final List<MeshRenderer> all = scene.components(MeshRenderer.class);
+    final var all = scene.components(MeshRenderer.class);
     this.candidates = all.size();
     if (all != this.lastAll) { // the scene hands out a new list whenever its renderers change
       reconcile(all);
@@ -129,7 +126,7 @@ public final class RenderQueue {
       }
     }
     for (int id = 0; id < this.gridItems.size(); id++) {
-      final MeshRenderer r = this.gridItems.get(id);
+      final var r = this.gridItems.get(id);
       if (r != null && r.reconcileStamp != stamp) {
         removeStatic(id); // removed from the scene, disabled, or no longer static
       }
@@ -142,7 +139,7 @@ public final class RenderQueue {
     r.stateValid = true;
     int id = r.gridId;
     if (id < 0 || id >= this.gridItems.size() || this.gridItems.get(id) != r) {
-      final Integer free = this.freeIds.poll();
+      final var free = this.freeIds.poll();
       id = free != null ? free : this.gridItems.size();
       if (id == this.gridItems.size()) {
         this.gridItems.add(r);
@@ -155,7 +152,7 @@ public final class RenderQueue {
   }
 
   private void removeStatic(int id) {
-    final MeshRenderer r = this.gridItems.get(id);
+    final var r = this.gridItems.get(id);
     this.grid.remove(id);
     this.gridItems.set(id, null);
     this.freeIds.add(id);
@@ -166,7 +163,7 @@ public final class RenderQueue {
 
   private void reinsertInvalidated() {
     for (int id = 0; id < this.gridItems.size(); id++) {
-      final MeshRenderer r = this.gridItems.get(id);
+      final var r = this.gridItems.get(id);
       if (r != null && !r.stateValid) {
         insertStatic(r);
       }
@@ -174,7 +171,7 @@ public final class RenderQueue {
   }
 
   private void updateDynamic(MeshRenderer r, float alpha) {
-    final Transform t = r.entity().transform();
+    final var t = r.entity().transform();
     if (t.isChainStatic()) {
       // unchanged since the last step: interpolation is a no-op, so compute once and reuse; the version catches
       // moves that happened and were snapshotted between two rendered frames
@@ -239,7 +236,7 @@ public final class RenderQueue {
         return;
       }
       for (int k = 0; k < ids.size(); k++) {
-        final MeshRenderer r = this.gridItems.get(ids.get(k));
+        final var r = this.gridItems.get(ids.get(k));
         if (r.queryStamp != stamp) { // an object spanning several visible cells is considered once
           r.queryStamp = stamp;
           consider(r, frustum, pass, out);
@@ -251,7 +248,7 @@ public final class RenderQueue {
     } else {
       this.grid.forEachCellInBox(boxMin.x, boxMin.y, boxMin.z, boxMax.x, boxMax.y, boxMax.z, visitor);
     }
-    final SpatialGrid.IntList large = this.grid.large();
+    final var large = this.grid.large();
     for (int k = 0; k < large.size(); k++) {
       consider(this.gridItems.get(large.get(k)), frustum, pass, out);
     }
@@ -259,10 +256,10 @@ public final class RenderQueue {
 
   /** Axis-aligned bounds of the volume described by a view-projection matrix (perspective or orthographic). */
   static void frustumBounds(Matrix4f viewProj, Vector3f outMin, Vector3f outMax) {
-    final Matrix4f inverse = new Matrix4f(viewProj).invert();
+    final var inverse = new Matrix4f(viewProj).invert();
     outMin.set(Float.MAX_VALUE);
     outMax.set(-Float.MAX_VALUE);
-    final Vector3f corner = new Vector3f();
+    final var corner = new Vector3f();
     for (int i = 0; i < 8; i++) {
       inverse.transformProject((i & 1) == 0 ? -1f : 1f, (i & 2) == 0 ? -1f : 1f, (i & 4) == 0 ? -1f : 1f, corner);
       outMin.min(corner);

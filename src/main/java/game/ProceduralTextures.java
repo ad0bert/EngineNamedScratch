@@ -17,7 +17,7 @@ final class ProceduralTextures {
   static Surface bricks(int size) {
     final int brickW = size / 4;
     final int brickH = size / 8;
-    final Random rnd = new Random(11);
+    final var rnd = new Random(11);
     final float[] tone = new float[8 * 4];
     for (int i = 0; i < tone.length; i++) {
       tone[i] = 0.75f + rnd.nextFloat() * 0.5f; // every brick has its own shade
@@ -55,7 +55,7 @@ final class ProceduralTextures {
   /** A soft bumpy normal map (three octaves of value noise) for ground-like surfaces. */
   static ImageData bumps(int size, float strength, long seed) {
     final float[] heights = new float[size * size];
-    final Random rnd = new Random(seed);
+    final var rnd = new Random(seed);
     float amplitude = 1f;
     float total = 0f;
     for (int cells = 8; cells <= 32; cells *= 2) {

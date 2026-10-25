@@ -21,7 +21,7 @@ public class Camera extends Component {
    * screen centre is 0,0). Uses the current (non-interpolated) transform, matching the physics state.
    */
   public void viewRay(float ndcX, float ndcY, float aspect, Vector3f outOrigin, Vector3f outDir) {
-    final Matrix4f world = entity().transform().worldMatrix(new Matrix4f());
+    final var world = entity().transform().worldMatrix(new Matrix4f());
     final float tan = (float) Math.tan(Math.toRadians(this.fovDegrees) / 2.0);
     world.getTranslation(outOrigin);
     world.transformDirection(outDir.set(ndcX * tan * aspect, ndcY * tan, -1f)).normalize();

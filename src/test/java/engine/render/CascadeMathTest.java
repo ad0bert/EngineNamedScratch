@@ -42,7 +42,7 @@ class CascadeMathTest {
   private static Vector3f[] corners(Vector3f pos, Vector3f right, Vector3f up, Vector3f fwd, float near, float far) {
     final float tanY = (float) Math.tan(FOV / 2);
     final float tanX = tanY * ASPECT;
-    final Vector3f[] out = new Vector3f[8];
+    final var out = new Vector3f[8];
     for (int i = 0; i < 8; i++) {
       final float d = (i & 1) == 0 ? near : far;
       out[i] = new Vector3f(pos).fma(d, fwd).fma(((i & 2) == 0 ? -1f : 1f) * d * tanX, right)
@@ -103,7 +103,7 @@ class CascadeMathTest {
       final float r = ShadowMath.sliceBoundingSphere(pos, right, up, fwd, FOV, ASPECT, near, far, center);
       final var m = ShadowMath.cascadeViewProj(lightDir, center, r, 2048, new Matrix4f());
       for (Vector3f c : corners(pos, right, up, fwd, near, far)) {
-        final Vector4f ndc = m.transform(new Vector4f(c, 1f));
+        final var ndc = m.transform(new Vector4f(c, 1f));
         // snapping may shift the volume by up to a texel (2/2048 in NDC)
         assertTrue(Math.abs(ndc.x) <= 1.01f && Math.abs(ndc.y) <= 1.01f, "x/y inside: " + ndc);
         assertTrue(ndc.z >= -1f && ndc.z <= 1f, "depth inside: " + ndc.z);

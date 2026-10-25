@@ -49,7 +49,7 @@ class InputStateTest {
     s.keyDown((short) 1);
     c.update(1.0);
 
-    final Vector3f f = e.transform().forward(new Vector3f());
+    final var f = e.transform().forward(new Vector3f());
     assertEquals(-1f, f.x, 1e-3);
     assertEquals(-2f, e.transform().position().x, 1e-3);
   }

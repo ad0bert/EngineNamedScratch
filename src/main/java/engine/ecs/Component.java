@@ -1,12 +1,10 @@
 package engine.ecs;
 
-public abstract class Component {
-  private Entity entity;
-  private boolean enabled = true;
+import lombok.Getter;
 
-  public Entity entity() {
-    return this.entity;
-  }
+public abstract class Component {
+  @Getter private Entity entity;
+  private boolean enabled = true;
 
   public boolean isEnabled() {
     return this.enabled;

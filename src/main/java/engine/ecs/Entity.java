@@ -5,13 +5,14 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
+import lombok.Getter;
 
 public class Entity {
   private static final AtomicLong NEXT_ID = new AtomicLong(1);
 
-  private final long id = NEXT_ID.getAndIncrement();
-  private final String name;
-  private final Transform transform = new Transform();
+  @Getter private final long id = NEXT_ID.getAndIncrement();
+  @Getter private final String name;
+  @Getter private final Transform transform = new Transform();
   private final List<Component> components = new ArrayList<>();
 
   public Entity() {
@@ -22,17 +23,8 @@ public class Entity {
     this.name = name != null ? name : "entity-" + this.id;
   }
 
-  public long id() {
-    return this.id;
-  }
 
-  public String name() {
-    return this.name;
-  }
 
-  public Transform transform() {
-    return this.transform;
-  }
 
   public <T extends Component> T add(T component) {
     component.attach(this);
@@ -63,7 +55,7 @@ public class Entity {
   /** Like {@link #find} but returns null instead of an empty Optional; for hot paths. */
   public <T> T findOrNull(Class<T> type) {
     for (int i = 0; i < this.components.size(); i++) {
-      final Component c = this.components.get(i);
+      final var c = this.components.get(i);
       if (type.isInstance(c)) {
         return type.cast(c);
       }

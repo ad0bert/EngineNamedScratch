@@ -3,6 +3,7 @@ package engine.spatial;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import lombok.Getter;
 
 /**
  * Uniform grid over bounding spheres, keyed by integer ids chosen by the caller. A sphere is registered in every cell
@@ -141,7 +142,7 @@ public final class SpatialGrid {
 
     private void grow() {
       final long[] oldKeys = this.keys;
-      final IntList[] oldVals = this.vals;
+      final var oldVals = this.vals;
       this.keys = new long[oldKeys.length * 2];
       this.vals = new IntList[oldKeys.length * 2];
       this.size = 0;
@@ -153,10 +154,11 @@ public final class SpatialGrid {
     }
   }
 
-  private final float cellSize;
+  @Getter private final float cellSize;
   private final CellMap cells = new CellMap();
   private final List<IntList> pool = new ArrayList<>();
-  private final IntList large = new IntList();
+  /** Ids of spheres too large for the grid; callers must test them against everything. */
+  @Getter private final IntList large = new IntList();
   // per id: the cell keys it is registered in (arrays are reused) and whether it went to the large list
   private long[][] memberKeys = new long[16][];
   private int[] memberCount = new int[16];
@@ -173,9 +175,6 @@ public final class SpatialGrid {
     this.cellSize = cellSize;
   }
 
-  public float cellSize() {
-    return this.cellSize;
-  }
 
   /** Registers (or re-registers) {@code id}. */
   public void insert(int id, float x, float y, float z, float radius) {
@@ -215,7 +214,7 @@ public final class SpatialGrid {
       for (int cy = y0; cy <= y1; cy++) {
         for (int cz = z0; cz <= z1; cz++) {
           final long key = key(cx, cy, cz);
-          IntList list = this.cells.get(key);
+          var list = this.cells.get(key);
           if (list == null) {
             list = this.pool.isEmpty() ? new IntList() : this.pool.remove(this.pool.size() - 1);
             this.cells.put(key, list);
@@ -241,7 +240,7 @@ public final class SpatialGrid {
     final int count = this.memberCount[id];
     for (int i = 0; i < count; i++) {
       final long key = keys[i];
-      final IntList list = this.cells.get(key);
+      final var list = this.cells.get(key);
       if (list != null) {
         list.removeValue(id);
         if (list.size() == 0) {
@@ -261,11 +260,6 @@ public final class SpatialGrid {
     this.idLimit = 0;
     Arrays.fill(this.boundsMin, Integer.MAX_VALUE);
     Arrays.fill(this.boundsMax, Integer.MIN_VALUE);
-  }
-
-  /** Ids of spheres too large for the grid; callers must test them against everything. */
-  public IntList large() {
-    return this.large;
   }
 
   public int occupiedCells() {
@@ -299,7 +293,7 @@ public final class SpatialGrid {
     for (int cx = x0; cx <= x1; cx++) {
       for (int cy = y0; cy <= y1; cy++) {
         for (int cz = z0; cz <= z1; cz++) {
-          final IntList list = this.cells.get(key(cx, cy, cz));
+          final var list = this.cells.get(key(cx, cy, cz));
           if (list != null) {
             final float bx = cx * this.cellSize;
             final float by = cy * this.cellSize;
@@ -312,9 +306,9 @@ public final class SpatialGrid {
   }
 
   public void forEachCell(CellVisitor visitor) {
-    final CellMap m = this.cells;
+    final var m = this.cells;
     for (int i = 0; i < m.vals.length; i++) {
-      final IntList list = m.vals[i];
+      final var list = m.vals[i];
       if (list != null) {
         final long k = m.keys[i];
         final float minX = decodeX(k) * this.cellSize;

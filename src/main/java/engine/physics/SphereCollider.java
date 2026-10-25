@@ -20,7 +20,7 @@ public class SphereCollider extends Collider {
 
   @Override
   void refresh() {
-    final Matrix4f m = entity().transform().worldMatrix(this.matrix);
+    final var m = entity().transform().worldMatrix(this.matrix);
     m.getScale(this.scale);
     m.transformPosition(this.sphere.c().set(this.offset));
     this.sphere.r = this.radius * Math.max(this.scale.x, Math.max(this.scale.y, this.scale.z));

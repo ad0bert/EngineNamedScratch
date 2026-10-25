@@ -38,6 +38,7 @@ import engine.render.Overlay;
 import engine.render.RenderBackend;
 import engine.render.gl.GlBackend;
 import engine.resources.ResourceManager;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -55,25 +56,25 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 public class Engine {
-  private final EngineConfig config;
+  @Getter private final EngineConfig config;
   private final Game game;
-  private final Scene scene = new Scene();
-  private final IMessageService messages = new MessageService();
-  private final InputState input = new InputState();
+  @Getter private final Scene scene = new Scene();
+  @Getter private final IMessageService messages = new MessageService();
+  @Getter private final InputState input = new InputState();
   private final InputListener inputListener = new InputListener(this.messages, this.input);
   private final List<ISystem> systems = new ArrayList<>();
   private final List<Overlay> overlays = new ArrayList<>();
   private final FixedTimestep timestep;
-  private final PhysicsSystem physics = new PhysicsSystem(this.messages);
+  @Getter private final PhysicsSystem physics = new PhysicsSystem(this.messages);
   private final CountDownLatch closed = new CountDownLatch(1);
   private final int exitAfterFrames = Integer.getInteger("engine.exitAfterFrames", 0);
 
   private GLWindow window;
   private Animator animator;
-  private RenderBackend backend;
-  private ResourceManager resources;
+  @Getter private RenderBackend backend;
+  @Getter private ResourceManager resources;
 
-  private volatile double fps;
+  @Getter private volatile double fps;
   private long frameCount;
   private long fpsWindowStart;
   private long fpsWindowFrames;
@@ -84,41 +85,9 @@ public class Engine {
     this.timestep = new FixedTimestep(config.updateStep(), 0.25);
   }
 
-  public EngineConfig config() {
-    return this.config;
-  }
-
-  public Scene scene() {
-    return this.scene;
-  }
-
-  public IMessageService messages() {
-    return this.messages;
-  }
-
-  public InputState input() {
-    return this.input;
-  }
-
-  public PhysicsSystem physics() {
-    return this.physics;
-  }
-
   /** Nearest solid (non-trigger) collider hit by the ray, see {@link PhysicsSystem#raycast}. */
   public Optional<RayHit> raycast(Vector3f origin, Vector3f direction, float maxDistance) {
     return this.physics.raycast(this.scene, origin, direction, maxDistance);
-  }
-
-  public ResourceManager resources() {
-    return this.resources;
-  }
-
-  public RenderBackend backend() {
-    return this.backend;
-  }
-
-  public double fps() {
-    return this.fps;
   }
 
   public boolean isMouseCaptured() {
@@ -143,7 +112,7 @@ public class Engine {
   /** Opens the window and blocks until it is closed. */
   public void run() throws InterruptedException {
     System.setProperty("java.awt.headless", "true"); // ImageIO/Java2D only; keeps macOS from showing an AWT app
-    final GLCapabilities caps = new GLCapabilities(GLProfile.get(GLProfile.GL3));
+    final var caps = new GLCapabilities(GLProfile.get(GLProfile.GL3));
     caps.setDepthBits(24);
     this.window = GLWindow.create(caps);
     this.window.setTitle(this.config.title());
@@ -227,7 +196,7 @@ public class Engine {
       if (Boolean.getBoolean("engine.debugGL")) {
         drawable.setGL(new DebugGL3(drawable.getGL().getGL3()));
       }
-      final GL3 gl = drawable.getGL().getGL3();
+      final var gl = drawable.getGL().getGL3();
       gl.setSwapInterval(1);
       log.info("OpenGL {} on {}", gl.glGetString(GL3.GL_VERSION), gl.glGetString(GL3.GL_RENDERER));
       Engine.this.backend = new GlBackend(() -> Engine.this.window.getGL().getGL3());
@@ -238,7 +207,7 @@ public class Engine {
       FirstPersonController.bindDefaults(Engine.this.input);
       Engine.this.addSystem(new ComponentUpdateSystem());
       Engine.this.addSystem(Engine.this.physics);
-      final DebugOverlay debug = new DebugOverlay(Engine.this);
+      final var debug = new DebugOverlay(Engine.this);
       Engine.this.addSystem(debug);
       Engine.this.addOverlay(debug);
       Engine.this.game.init(Engine.this);

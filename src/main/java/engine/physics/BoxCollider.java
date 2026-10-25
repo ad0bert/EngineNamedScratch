@@ -25,10 +25,10 @@ public class BoxCollider extends Collider {
 
   @Override
   void refresh() {
-    final Matrix4f m = entity().transform().worldMatrix(this.matrix);
+    final var m = entity().transform().worldMatrix(this.matrix);
     m.transformPosition(this.box.c().set(this.offset));
     for (int i = 0; i < 3; i++) {
-      final Vector3f axis = m.getColumn(i, this.box.axes()[i]);
+      final var axis = m.getColumn(i, this.box.axes()[i]);
       final float len = axis.length();
       if (len > 1e-9f) {
         axis.div(len);

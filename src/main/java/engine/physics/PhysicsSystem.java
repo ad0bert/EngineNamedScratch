@@ -14,6 +14,7 @@ import engine.messaging.IMessageService;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
 import engine.spatial.SpatialGrid;
+import lombok.Getter;
 
 /**
  * Semi-implicit Euler integration plus an iterative impulse solver with positional correction and Coulomb friction.
@@ -47,7 +48,7 @@ public class PhysicsSystem implements ISystem {
   /** Seconds a body must keep resting before it falls asleep. */
   public float sleepTime = 0.5f;
 
-  private final PhysicsStats stats = new PhysicsStats();
+  @Getter private final PhysicsStats stats = new PhysicsStats();
   private final IMessageService messages;
   private PairTable active = new PairTable();
   private PairTable now = new PairTable();
@@ -79,9 +80,6 @@ public class PhysicsSystem implements ISystem {
     this.messages = messages;
   }
 
-  public PhysicsStats stats() {
-    return this.stats;
-  }
 
   /** A candidate pair; instances are pooled and only valid until the next {@link #findPairs}. */
   static final class Pair {
@@ -115,14 +113,14 @@ public class PhysicsSystem implements ISystem {
   @Override
   public void update(Scene scene, double dtD) {
     final float dt = (float) dtD;
-    final List<Rigidbody> bodies = scene.components(Rigidbody.class);
-    final List<Collider> colliders = scene.components(Collider.class);
+    final var bodies = scene.components(Rigidbody.class);
+    final var colliders = scene.components(Collider.class);
     for (int i = 0; i < bodies.size(); i++) {
       bodies.get(i).touchedThisStep = false;
     }
     integrate(bodies, dt);
 
-    final List<Pair> pairs = findPairs(colliders);
+    final var pairs = findPairs(colliders);
 
     // Before solving, an awake body that rests on something has already gained one step of gravity; a sleeper is
     // only woken by bodies clearly faster than that, otherwise a stack could never fall asleep.
@@ -133,14 +131,14 @@ public class PhysicsSystem implements ISystem {
     this.now.clear();
     int contacts = 0;
     for (int i = 0; i < pairs.size(); i++) {
-      final Pair p = pairs.get(i);
+      final var p = pairs.get(i);
       p.hit = Narrowphase.test(p.a, p.b, this.contact);
       if (!p.hit) {
         continue;
       }
       contacts++;
-      final Entity ea = p.a.entity();
-      final Entity eb = p.b.entity();
+      final var ea = p.a.entity();
+      final var eb = p.b.entity();
       this.now.put(key(ea, eb), ea, eb);
       if (!p.a.trigger && !p.b.trigger) {
         touch(p.ra);
@@ -150,7 +148,7 @@ public class PhysicsSystem implements ISystem {
       }
     }
     for (int i = 0; i < bodies.size(); i++) {
-      final Rigidbody b = bodies.get(i);
+      final var b = bodies.get(i);
       if (b.sleeping && !b.touchedThisStep) {
         b.wakeUp(); // lost its support (or never had one)
       }
@@ -159,7 +157,7 @@ public class PhysicsSystem implements ISystem {
     // only pairs that touched at detection are solved: the rest were merely close
     this.solvable.clear();
     for (int i = 0; i < pairs.size(); i++) {
-      final Pair p = pairs.get(i);
+      final var p = pairs.get(i);
       if (p.hit && !p.a.trigger && !p.b.trigger
           && (awakeInverseMass(p.ra) > 0f || awakeInverseMass(p.rb) > 0f)) {
         this.solvable.add(p);
@@ -167,7 +165,7 @@ public class PhysicsSystem implements ISystem {
     }
     for (int it = 0; it < this.solverIterations; it++) {
       for (int i = 0; i < this.solvable.size(); i++) {
-        final Pair p = this.solvable.get(i);
+        final var p = this.solvable.get(i);
         if (Narrowphase.test(p.a, p.b, this.contact)) {
           resolve(p, this.contact);
         }
@@ -208,7 +206,7 @@ public class PhysicsSystem implements ISystem {
 
   private void integrate(List<Rigidbody> bodies, float dt) {
     for (int i = 0; i < bodies.size(); i++) {
-      final Rigidbody b = bodies.get(i);
+      final var b = bodies.get(i);
       final var t = b.entity().transform();
       t.worldPosition(this.tmpPos);
       if (b.sleeping) {
@@ -239,7 +237,7 @@ public class PhysicsSystem implements ISystem {
   private void updateSleep(List<Rigidbody> bodies, float dt) {
     final float limit = this.sleepSpeed * this.sleepSpeed;
     for (int i = 0; i < bodies.size(); i++) {
-      final Rigidbody b = bodies.get(i);
+      final var b = bodies.get(i);
       if (b.kinematic || b.sleeping || !b.allowSleep || !this.sleepingEnabled) {
         b.sleepTimer = 0f;
         continue;
@@ -267,7 +265,7 @@ public class PhysicsSystem implements ISystem {
     ensureCapacity(n);
     this.colliders = colliders;
     for (int i = 0; i < this.pairs.size(); i++) {
-      final Pair p = this.pairs.get(i);
+      final var p = this.pairs.get(i);
       p.a = null;
       p.b = null;
       p.ra = null;
@@ -280,14 +278,14 @@ public class PhysicsSystem implements ISystem {
     float dynamicRadiusSum = 0f;
     int dynamicCount = 0;
     for (int i = 0; i < n; i++) {
-      final Collider col = colliders.get(i);
+      final var col = colliders.get(i);
       col.refresh();
       col.cachedCenter(this.tmpCenter);
       this.cx[i] = this.tmpCenter.x;
       this.cy[i] = this.tmpCenter.y;
       this.cz[i] = this.tmpCenter.z;
       this.radius[i] = col.cachedRadius();
-      final Rigidbody body = col.entity().findOrNull(Rigidbody.class);
+      final var body = col.entity().findOrNull(Rigidbody.class);
       this.bodyOf[i] = body;
       if (body != null && !body.kinematic) {
         dynamicRadiusSum += this.radius[i];
@@ -316,7 +314,7 @@ public class PhysicsSystem implements ISystem {
       this.grid.insert(i, this.cx[i], this.cy[i], this.cz[i], this.radius[i] + PAIR_MARGIN);
     }
     this.grid.forEachCell(this.cellPairs);
-    final SpatialGrid.IntList large = this.grid.large();
+    final var large = this.grid.large();
     for (int k = 0; k < large.size(); k++) {
       for (int j = 0; j < n; j++) {
         if (j != large.get(k)) {
@@ -348,10 +346,10 @@ public class PhysicsSystem implements ISystem {
 
   private void tryPair(int i, int j) {
     // the cheap rejects come first: most candidates die here without touching the set
-    final Rigidbody bi = this.bodyOf[i];
-    final Rigidbody bj = this.bodyOf[j];
-    final Collider a = this.colliders.get(i);
-    final Collider b = this.colliders.get(j);
+    final var bi = this.bodyOf[i];
+    final var bj = this.bodyOf[j];
+    final var a = this.colliders.get(i);
+    final var b = this.colliders.get(j);
     if (bi == null && bj == null && !a.trigger && !b.trigger) {
       return; // static vs static: nothing to resolve and no events wanted
     }
@@ -368,7 +366,7 @@ public class PhysicsSystem implements ISystem {
     if (!this.seen.add((long) Math.min(i, j) << 32 | Math.max(i, j))) {
       return; // reached through another cell already
     }
-    final Pair p = this.sparePairs.isEmpty() ? new Pair() : this.sparePairs.remove(this.sparePairs.size() - 1);
+    final var p = this.sparePairs.isEmpty() ? new Pair() : this.sparePairs.remove(this.sparePairs.size() - 1);
     p.a = a;
     p.b = b;
     p.ra = bi;
@@ -384,7 +382,7 @@ public class PhysicsSystem implements ISystem {
     if (total <= 0f) {
       return;
     }
-    final Vector3f n = c.normal();
+    final var n = c.normal();
 
     // positional correction, split by inverse mass
     final float corr = Math.max(c.depth() - SLOP, 0f) / total * CORRECTION_PERCENT;
@@ -399,9 +397,9 @@ public class PhysicsSystem implements ISystem {
       }
     }
 
-    final Vector3f va = p.ra != null ? p.ra.velocity : NO_VELOCITY;
-    final Vector3f vb = p.rb != null ? p.rb.velocity : NO_VELOCITY;
-    final Vector3f rv = this.relativeVelocity.set(vb).sub(va);
+    final var va = p.ra != null ? p.ra.velocity : NO_VELOCITY;
+    final var vb = p.rb != null ? p.rb.velocity : NO_VELOCITY;
+    final var rv = this.relativeVelocity.set(vb).sub(va);
     final float vn = rv.dot(n);
     if (vn >= 0f) {
       return; // already separating
@@ -417,7 +415,7 @@ public class PhysicsSystem implements ISystem {
 
     // friction along the tangent, limited by mu * normal impulse
     rv.set(vb).sub(va);
-    final Vector3f tg = rv.fma(-rv.dot(n), n, this.tangent);
+    final var tg = rv.fma(-rv.dot(n), n, this.tangent);
     final float tl = tg.length();
     if (tl > 1e-6f) {
       tg.div(tl);
@@ -462,8 +460,8 @@ public class PhysicsSystem implements ISystem {
   }
 
   private void sendEvents() {
-    final PairTable now = this.now;
-    final PairTable before = this.active;
+    final var now = this.now;
+    final var before = this.active;
     for (int s = 0; s < now.capacity(); s++) {
       if (now.occupied(s) && !before.contains(now.key(s))) {
         emit(now.first(s), now.second(s), true);
@@ -495,11 +493,11 @@ public class PhysicsSystem implements ISystem {
     if (dir.lengthSquared() < 1e-12f) {
       return Optional.empty();
     }
-    final Vector3f d = new Vector3f(dir).normalize();
+    final var d = new Vector3f(dir).normalize();
     float best = maxDistance;
     Collider bestCollider = null;
     Narrowphase.RayResult bestResult = null;
-    final Vector3f center = new Vector3f();
+    final var center = new Vector3f();
     for (Collider c : scene.components(Collider.class)) {
       if (!accept.test(c)) {
         continue;
@@ -509,7 +507,7 @@ public class PhysicsSystem implements ISystem {
           best) == null) {
         continue; // cheap reject against the bounding sphere
       }
-      final Narrowphase.RayResult r = Narrowphase.ray(c, origin, d, best);
+      final var r = Narrowphase.ray(c, origin, d, best);
       if (r != null && r.distance() <= best) {
         best = r.distance();
         bestCollider = c;
@@ -525,7 +523,7 @@ public class PhysicsSystem implements ISystem {
 
   /** All colliders (including triggers) that overlap the sphere and are accepted by the filter. */
   public List<Collider> overlapSphere(Scene scene, Vector3f center, float radius, Predicate<Collider> accept) {
-    final Narrowphase.Sphere s = new Narrowphase.Sphere(new Vector3f(center), radius);
+    final var s = new Narrowphase.Sphere(new Vector3f(center), radius);
     final List<Collider> out = new ArrayList<>();
     for (Collider c : scene.components(Collider.class)) {
       if (accept.test(c) && Narrowphase.overlapsSphere(c, s)) {

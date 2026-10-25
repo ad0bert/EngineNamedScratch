@@ -7,16 +7,17 @@ import java.util.List;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
+import lombok.Getter;
 
 /**
  * Position, rotation and scale with an optional parent. Matrix queries do not allocate: they use per-thread scratch
  * objects, so they are safe to call from several threads and cheap enough to call per entity per frame.
  */
 public class Transform {
-  private final Vector3f position = new Vector3f();
-  private final Quaternionf rotation = new Quaternionf();
-  private final Vector3f scale = new Vector3f(1f);
-  private Transform parent;
+  @Getter private final Vector3f position = new Vector3f();
+  @Getter private final Quaternionf rotation = new Quaternionf();
+  @Getter private final Vector3f scale = new Vector3f(1f);
+  @Getter private Transform parent;
   private final List<Transform> children = new ArrayList<>();
 
   private final Vector3f prevPosition = new Vector3f();
@@ -95,27 +96,11 @@ public class Transform {
     this.prevScale.lerp(this.scale, alpha, s.s);
     dest.translationRotateScale(s.p, s.q, s.s); // dest is complete before the scratch values are reused
     if (this.parent != null) {
-      final Matrix4f pm = s.parentMatrix(depth);
+      final var pm = s.parentMatrix(depth);
       this.parent.interpolated(alpha, pm, s, depth + 1);
       pm.mul(dest, dest);
     }
     return dest;
-  }
-
-  public Vector3f position() {
-    return this.position;
-  }
-
-  public Quaternionf rotation() {
-    return this.rotation;
-  }
-
-  public Vector3f scale() {
-    return this.scale;
-  }
-
-  public Transform parent() {
-    return this.parent;
   }
 
   public List<Transform> children() {
@@ -155,7 +140,7 @@ public class Transform {
   private Matrix4f world(Matrix4f dest, Scratch s, int depth) {
     localMatrix(dest);
     if (this.parent != null) {
-      final Matrix4f pm = s.parentMatrix(depth);
+      final var pm = s.parentMatrix(depth);
       this.parent.world(pm, s, depth + 1);
       pm.mul(dest, dest);
     }
@@ -163,7 +148,7 @@ public class Transform {
   }
 
   public Vector3f worldPosition(Vector3f dest) {
-    final Scratch s = SCRATCH.get();
+    final var s = SCRATCH.get();
     return world(s.tmp, s, 0).getTranslation(dest);
   }
 
@@ -173,7 +158,7 @@ public class Transform {
       this.position.add(delta);
       return;
     }
-    final Scratch s = SCRATCH.get();
+    final var s = SCRATCH.get();
     this.parent.world(s.inverse, s, 0).invert().transformDirection(delta, s.v);
     this.position.add(s.v);
   }

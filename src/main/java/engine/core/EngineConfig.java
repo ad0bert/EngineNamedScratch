@@ -10,7 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 public record EngineConfig(String title, String version, int width, int height, double updateStep) {
 
   public static EngineConfig load(String resource) {
-    final Properties p = new Properties();
+    final var p = new Properties();
     try (InputStream in = EngineConfig.class.getClassLoader().getResourceAsStream(resource)) {
       if (in != null) {
         p.load(in);

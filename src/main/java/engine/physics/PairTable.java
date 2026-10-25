@@ -79,8 +79,8 @@ final class PairTable {
 
   private void grow() {
     final long[] oldKeys = this.keys;
-    final Entity[] oldFirst = this.first;
-    final Entity[] oldSecond = this.second;
+    final var oldFirst = this.first;
+    final var oldSecond = this.second;
     final int[] oldStamps = this.stamps;
     final int n = oldKeys.length * 2;
     this.keys = new long[n];

@@ -41,7 +41,7 @@ public final class ShadowMath {
     outCenter.set(camPos).fma(c, forward);
 
     float radiusSq = 0f;
-    final Vector3f corner = new Vector3f();
+    final var corner = new Vector3f();
     for (int i = 0; i < 8; i++) {
       final float d = (i & 1) == 0 ? near : far;
       final float sx = (i & 2) == 0 ? -1f : 1f;
@@ -60,20 +60,20 @@ public final class ShadowMath {
    */
   public static Matrix4f cascadeViewProj(Vector3f lightDir, Vector3f center, float radius, int mapSize,
       Matrix4f dest) {
-    final Vector3f d = new Vector3f(lightDir).normalize();
-    final Vector3f helper = Math.abs(d.y) > 0.99f ? new Vector3f(1f, 0f, 0f) : new Vector3f(0f, 1f, 0f);
-    final Vector3f right = d.cross(helper, new Vector3f()).normalize();
-    final Vector3f up = right.cross(d, new Vector3f()).normalize();
+    final var d = new Vector3f(lightDir).normalize();
+    final var helper = Math.abs(d.y) > 0.99f ? new Vector3f(1f, 0f, 0f) : new Vector3f(0f, 1f, 0f);
+    final var right = d.cross(helper, new Vector3f()).normalize();
+    final var up = right.cross(d, new Vector3f()).normalize();
 
     final float texel = 2f * radius / mapSize;
-    final Vector3f snapped = new Vector3f(center);
+    final var snapped = new Vector3f(center);
     snapped.fma(-mod(center.dot(right), texel), right);
     snapped.fma(-mod(center.dot(up), texel), up);
 
     final float back = radius * 4f;
-    final Vector3f eye = snapped.fma(-back, d, new Vector3f());
-    final Matrix4f view = new Matrix4f().lookAt(eye, snapped, up);
-    final Matrix4f proj = new Matrix4f().setOrtho(-radius, radius, -radius, radius, 0.1f, back + radius);
+    final var eye = snapped.fma(-back, d, new Vector3f());
+    final var view = new Matrix4f().lookAt(eye, snapped, up);
+    final var proj = new Matrix4f().setOrtho(-radius, radius, -radius, radius, 0.1f, back + radius);
     return proj.mul(view, dest);
   }
 
@@ -86,10 +86,10 @@ public final class ShadowMath {
    * the radius (scaled by the largest axis scale).
    */
   public static float worldSphere(MeshData data, Matrix4f model, Vector3f outCenter) {
-    final Vector3f localCenter = data.center();
+    final var localCenter = data.center();
     final float localRadius = data.halfExtents().length();
     model.transformPosition(localCenter, outCenter);
-    final Vector3f s = model.getScale(new Vector3f());
+    final var s = model.getScale(new Vector3f());
     return localRadius * Math.max(s.x, Math.max(s.y, s.z));
   }
 }

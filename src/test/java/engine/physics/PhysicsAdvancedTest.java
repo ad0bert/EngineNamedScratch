@@ -195,7 +195,7 @@ class PhysicsAdvancedTest {
     giant.add(new BoxCollider(200f, 0.1f, 200f));
     this.scene.add(giant);
     this.scene.flush();
-    final List<Collider> colliders = this.scene.components(Collider.class);
+    final var colliders = this.scene.components(Collider.class);
 
     final var grid = keys(this.physics.findPairs(colliders));
     this.physics.bruteForceBroadphase = true;

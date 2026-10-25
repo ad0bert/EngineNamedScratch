@@ -6,6 +6,7 @@ import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
+import lombok.Getter;
 
 /**
  * Monospaced glyph atlas for ASCII 32..126 rendered with Java2D (works headless). The last cell is solid white and is
@@ -18,25 +19,26 @@ public final class FontAtlas {
   private static final int ROWS = 6;
   private static final int PAD = 1;
 
-  private final ImageData image;
+  @Getter private final ImageData image;
   private final int cellW;
   private final int cellH;
-  private final int advance;
+  /** Horizontal distance between two characters, in pixels at scale 1. */
+  @Getter private final int advance;
 
   public FontAtlas(int pixelSize) {
     System.setProperty("java.awt.headless", "true");
-    final Font font = new Font(Font.MONOSPACED, Font.BOLD, pixelSize);
-    final BufferedImage probe = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
-    final Graphics2D pg = probe.createGraphics();
-    final FontMetrics fm = pg.getFontMetrics(font);
+    final var font = new Font(Font.MONOSPACED, Font.BOLD, pixelSize);
+    final var probe = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+    final var pg = probe.createGraphics();
+    final var fm = pg.getFontMetrics(font);
     this.advance = Math.max(1, fm.charWidth('M'));
     this.cellW = this.advance + 2 * PAD;
     this.cellH = fm.getHeight() + 2 * PAD;
     final int ascent = fm.getAscent();
     pg.dispose();
 
-    final BufferedImage img = new BufferedImage(COLS * this.cellW, ROWS * this.cellH, BufferedImage.TYPE_INT_ARGB);
-    final Graphics2D g = img.createGraphics();
+    final var img = new BufferedImage(COLS * this.cellW, ROWS * this.cellH, BufferedImage.TYPE_INT_ARGB);
+    final var g = img.createGraphics();
     g.setFont(font);
     g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
     g.setColor(Color.WHITE);
@@ -52,15 +54,6 @@ public final class FontAtlas {
 
   private static int solidIndex() {
     return COLS * ROWS - 1;
-  }
-
-  public ImageData image() {
-    return this.image;
-  }
-
-  /** Horizontal distance between two characters, in pixels at scale 1. */
-  public int advance() {
-    return this.advance;
   }
 
   public int lineHeight() {

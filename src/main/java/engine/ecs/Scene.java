@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import engine.render.Camera;
+import lombok.Getter;
 
 /**
  * Holds entities. Adds and removes are deferred to {@link #flush()} so systems can mutate during iteration.
@@ -22,7 +23,8 @@ public class Scene {
   private final List<Entity> toAdd = new ArrayList<>();
   private final Set<Entity> toRemove = new HashSet<>();
 
-  private int version;
+  /** Increases whenever entities were added to or removed from the scene. */
+  @Getter private int version;
   private final Map<Class<?>, List<?>> queryCache = new HashMap<>();
   private int cachedSceneVersion = -1;
   private int cachedGlobalVersion = -1;
@@ -57,11 +59,6 @@ public class Scene {
     }
   }
 
-  /** Increases whenever entities were added to or removed from the scene. */
-  public int version() {
-    return this.version;
-  }
-
   public List<Entity> entities() {
     return Collections.unmodifiableList(this.entities);
   }
@@ -77,7 +74,7 @@ public class Scene {
       this.cachedSceneVersion = this.version;
       this.cachedGlobalVersion = Entity.structureVersion();
     }
-    List<?> cached = this.queryCache.get(type);
+    var cached = this.queryCache.get(type);
     if (cached == null) {
       final List<T> out = new ArrayList<>();
       for (Entity e : this.entities) {
@@ -98,7 +95,7 @@ public class Scene {
   }
 
   public Optional<Camera> activeCamera() {
-    final List<Camera> cameras = components(Camera.class);
+    final var cameras = components(Camera.class);
     return cameras.isEmpty() ? Optional.empty() : Optional.of(cameras.get(0));
   }
 }

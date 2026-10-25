@@ -23,8 +23,8 @@ public record MeshData(float[] vertices, int[] indices, DrawMode drawMode, Vecto
   }
 
   private static MeshData build(float[] vertices, int[] indices, DrawMode mode) {
-    final Vector3f min = new Vector3f(Float.MAX_VALUE);
-    final Vector3f max = new Vector3f(-Float.MAX_VALUE);
+    final var min = new Vector3f(Float.MAX_VALUE);
+    final var max = new Vector3f(-Float.MAX_VALUE);
     for (int i = 0; i < vertices.length; i += FLOATS_PER_VERTEX) {
       min.min(new Vector3f(vertices[i], vertices[i + 1], vertices[i + 2]));
       max.max(new Vector3f(vertices[i], vertices[i + 1], vertices[i + 2]));

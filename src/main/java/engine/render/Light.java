@@ -38,7 +38,7 @@ public class Light extends Component {
   public float cascadeLambda = 0.7f;
 
   public static Light point(float r, float g, float b, float intensity, float range) {
-    final Light l = new Light();
+    final var l = new Light();
     l.type = Type.POINT;
     l.color.set(r, g, b);
     l.intensity = intensity;

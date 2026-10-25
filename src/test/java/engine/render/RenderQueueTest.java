@@ -52,17 +52,17 @@ class RenderQueueTest {
   private static final float CUBE_RADIUS = (float) Math.sqrt(3) * 0.5f;
 
   private MeshRenderer add(float x, float y, float z, boolean isStatic) {
-    final Entity e = new Entity();
+    final var e = new Entity();
     e.transform().position().set(x, y, z);
-    final MeshRenderer r = e.add(new MeshRenderer(this.cube, this.material));
+    final var r = e.add(new MeshRenderer(this.cube, this.material));
     r.setStaticGeometry(isStatic);
     this.scene.add(e);
     return r;
   }
 
   private static FrustumIntersection frustum() {
-    final Matrix4f proj = new Matrix4f().setPerspective((float) Math.toRadians(60), 1.5f, 0.1f, 300f);
-    final Matrix4f view = new Matrix4f().lookAt(0f, 0f, 0f, 0f, 0f, -1f, 0f, 1f, 0f);
+    final var proj = new Matrix4f().setPerspective((float) Math.toRadians(60), 1.5f, 0.1f, 300f);
+    final var view = new Matrix4f().lookAt(0f, 0f, 0f, 0f, 0f, -1f, 0f, 1f, 0f);
     return new FrustumIntersection(proj.mul(view));
   }
 
@@ -108,8 +108,8 @@ class RenderQueueTest {
     }
 
     this.queue.collect(this.scene, 0.5f, new Vector3f());
-    final FrustumIntersection f = frustum();
-    final Set<MeshRenderer> got = identitySet(cull(f, RenderQueue.Pass.MAIN));
+    final var f = frustum();
+    final var got = identitySet(cull(f, RenderQueue.Pass.MAIN));
 
     int expectedVisible = 0;
     for (int i = 0; i < all.size(); i++) {
@@ -132,7 +132,7 @@ class RenderQueueTest {
     this.scene.flush();
     this.queue.collect(this.scene, 0f, new Vector3f());
 
-    final Matrix4f viewProj = new Matrix4f().setPerspective((float) Math.toRadians(70), 1.6f, 0.1f, 250f)
+    final var viewProj = new Matrix4f().setPerspective((float) Math.toRadians(70), 1.6f, 0.1f, 250f)
         .mul(new Matrix4f().lookAt(10f, 5f, 10f, 100f, 5f, -50f, 0f, 1f, 0f));
     final var expected = identitySet(cull(new FrustumIntersection(viewProj), RenderQueue.Pass.MAIN));
     final List<MeshRenderer> viaMatrix = new ArrayList<>();
@@ -141,7 +141,7 @@ class RenderQueueTest {
     assertTrue(expected.size() > 10 && expected.size() < 1500);
 
     // orthographic volumes (shadow maps) work too
-    final Matrix4f ortho = new Matrix4f().setOrtho(-50f, 50f, -50f, 50f, 0.1f, 200f)
+    final var ortho = new Matrix4f().setOrtho(-50f, 50f, -50f, 50f, 0.1f, 200f)
         .mul(new Matrix4f().lookAt(0f, 100f, 0f, 0f, 0f, 0f, 0f, 0f, -1f));
     final var expectedOrtho = identitySet(cull(new FrustumIntersection(ortho), RenderQueue.Pass.SHADOW));
     final List<MeshRenderer> orthoViaMatrix = new ArrayList<>();
@@ -153,15 +153,15 @@ class RenderQueueTest {
   void frustumBoundsContainAllCornersOfThePerspectiveAndOrthoVolumes() {
     final var min = new Vector3f();
     final var max = new Vector3f();
-    final Matrix4f view = new Matrix4f().lookAt(0f, 0f, 0f, 0f, 0f, -1f, 0f, 1f, 0f);
-    final Matrix4f persp = new Matrix4f().setPerspective((float) Math.toRadians(90), 1f, 1f, 10f).mul(view);
+    final var view = new Matrix4f().lookAt(0f, 0f, 0f, 0f, 0f, -1f, 0f, 1f, 0f);
+    final var persp = new Matrix4f().setPerspective((float) Math.toRadians(90), 1f, 1f, 10f).mul(view);
     RenderQueue.frustumBounds(persp, min, max);
     assertEquals(-10f, min.z, 1e-3f); // far plane
     assertEquals(-1f, max.z, 1e-3f); // near plane
     assertEquals(-10f, min.x, 1e-3f); // 90 degrees: half width equals distance at the far plane
     assertEquals(10f, max.y, 1e-3f);
 
-    final Matrix4f ortho = new Matrix4f().setOrtho(-3f, 3f, -2f, 2f, 1f, 5f).mul(view);
+    final var ortho = new Matrix4f().setOrtho(-3f, 3f, -2f, 2f, 1f, 5f).mul(view);
     RenderQueue.frustumBounds(ortho, min, max);
     assertEquals(-3f, min.x, 1e-3f);
     assertEquals(2f, max.y, 1e-3f);
@@ -300,7 +300,7 @@ class RenderQueueTest {
     final var normal = add(0f, 0f, -10f, false);
     final var noShadow = add(1f, 0f, -10f, false);
     noShadow.castShadows = false;
-    final Material glass = new Material().color(1f, 1f, 1f, 0.5f);
+    final var glass = new Material().color(1f, 1f, 1f, 0.5f);
     final var transparent = new Entity();
     transparent.transform().position().set(2f, 0f, -10f);
     final var tr = transparent.add(new MeshRenderer(this.cube, glass));
@@ -324,8 +324,8 @@ class RenderQueueTest {
 
   @Test
   void batchingGroupsSameMeshAndMaterial() {
-    final Material other = new Material();
-    final GpuMesh sphere = mesh(MeshFactory.quad(1f, 1f));
+    final var other = new Material();
+    final var sphere = mesh(MeshFactory.quad(1f, 1f));
     final List<MeshRenderer> list = new ArrayList<>();
     for (int i = 0; i < 6; i++) {
       final var e = new Entity();
@@ -362,7 +362,7 @@ class RenderQueueTest {
     final var mid = add(0f, 0f, -20f, false);
     this.scene.flush();
     this.queue.collect(this.scene, 0f, new Vector3f());
-    final List<MeshRenderer> visible = cull(frustum(), RenderQueue.Pass.MAIN);
+    final var visible = cull(frustum(), RenderQueue.Pass.MAIN);
     RenderQueue.sortBackToFront(visible);
     assertEquals(List.of(far, mid, near), visible);
   }
@@ -373,7 +373,7 @@ class RenderQueueTest {
     r.entity().transform().scale().set(2f, 1f, 1f);
     this.scene.flush();
     this.queue.collect(this.scene, 0f, new Vector3f());
-    final FloatBuffer buf = Buffers.newDirectFloatBuffer(RenderQueue.FLOATS_PER_INSTANCE * 2);
+    final var buf = Buffers.newDirectFloatBuffer(RenderQueue.FLOATS_PER_INSTANCE * 2);
     RenderQueue.writeInstance(r, buf, 1);
     final int o = RenderQueue.FLOATS_PER_INSTANCE;
     assertEquals(2f, buf.get(o), 1e-6f); // model m00 (x scale)
