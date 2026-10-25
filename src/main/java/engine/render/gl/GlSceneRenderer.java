@@ -2,12 +2,8 @@ package engine.render.gl;
 
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
-import org.joml.FrustumIntersection;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
@@ -18,53 +14,48 @@ import engine.ecs.Scene;
 import engine.render.Camera;
 import engine.render.Light;
 import engine.render.Material;
-import engine.render.MeshData;
 import engine.render.MeshRenderer;
+import engine.render.RenderQueue;
 import engine.render.RenderStats;
 import engine.render.ShadowMath;
 
 /**
- * Forward scene renderer. Per frame: collect renderables at the interpolated state, frustum-cull, render a shadow map
- * for the first shadow-casting directional light, then draw opaque geometry batched by (mesh, material) with GPU
- * instancing, then transparent geometry sorted back to front.
+ * Forward scene renderer. All scene bookkeeping (interpolated matrices, caching, culling) lives in
+ * {@link RenderQueue}; this class only issues GL calls: a shadow map for the first shadow-casting directional light,
+ * then opaque geometry batched by (mesh, material) with GPU instancing, then transparent geometry back to front.
+ * Per-frame work reuses its lists, buffers and matrices.
  */
 final class GlSceneRenderer {
   private static final int SHADOW_SIZE = 2048;
 
-  private static final class Item {
-    MeshRenderer renderer;
-    GlMesh mesh;
-    final Matrix4f model = new Matrix4f();
-    final Vector3f center = new Vector3f();
-    float radius;
-    float distSq;
-  }
-
-  private record BatchKey(GlMesh mesh, Material material) {
-  }
-
   private final RenderStats stats;
+  private final RenderQueue queue = new RenderQueue();
   private ShaderProgram basic;
   private ShaderProgram depth;
   private ShadowMap shadowMap;
   private GlTexture white;
 
-  private final List<Item> pool = new ArrayList<>();
-  private int itemCount;
-  private FloatBuffer instanceBuffer = Buffers.newDirectFloatBuffer(16 * 256);
+  private final List<MeshRenderer> visible = new ArrayList<>();
+  private final List<MeshRenderer> casters = new ArrayList<>();
+  private final List<MeshRenderer> opaque = new ArrayList<>();
+  private final List<MeshRenderer> transparent = new ArrayList<>();
+  private FloatBuffer instanceBuffer = Buffers.newDirectFloatBuffer(RenderQueue.FLOATS_PER_INSTANCE * 256);
 
   private final Matrix4f view = new Matrix4f();
   private final Matrix4f proj = new Matrix4f();
   private final Matrix4f viewProj = new Matrix4f();
   private final Matrix4f lightViewProj = new Matrix4f();
   private final Matrix4f identity = new Matrix4f();
-  private final FrustumIntersection cameraFrustum = new FrustumIntersection();
-  private final FrustumIntersection lightFrustum = new FrustumIntersection();
+  private final Matrix4f world = new Matrix4f();
   private final Vector3f cameraPos = new Vector3f();
+  private final Vector3f cameraForward = new Vector3f();
+  private final Vector3f focus = new Vector3f();
+  private final Vector3f direction = new Vector3f();
   private final Vector3f ambient = new Vector3f(0.25f, 0.25f, 0.28f);
 
   private final float[] lightPos = new float[Light.MAX_LIGHTS * 4];
   private final float[] lightColor = new float[Light.MAX_LIGHTS * 4];
+  private final List<Light> orderedLights = new ArrayList<>();
   private int lightCount;
   private Light shadowLight;
 
@@ -94,88 +85,66 @@ final class GlSceneRenderer {
     camera.viewMatrix(alpha, this.view);
     camera.projectionMatrix((float) width / Math.max(height, 1), this.proj);
     this.proj.mul(this.view, this.viewProj);
-    this.cameraFrustum.set(this.viewProj);
-    final Matrix4f camWorld = camera.entity().transform().interpolatedWorldMatrix(alpha, new Matrix4f());
-    camWorld.getTranslation(this.cameraPos);
-    final Vector3f camForward = camWorld.transformDirection(new Vector3f(0f, 0f, -1f)).normalize();
+    camera.entity().transform().interpolatedWorldMatrix(alpha, this.world);
+    this.world.getTranslation(this.cameraPos);
+    this.world.transformDirection(this.cameraForward.set(0f, 0f, -1f)).normalize();
 
-    collectItems(scene, alpha);
+    this.queue.collect(scene, alpha, this.cameraPos);
     prepareLights(scene, alpha);
 
     final boolean shadows = this.shadowLight != null;
     if (shadows) {
       final float half = this.shadowLight.shadowDistance;
-      final Vector3f focus = this.cameraPos.fma(half * 0.4f, camForward, new Vector3f());
-      final Vector3f dir = this.shadowLight.entity().transform().interpolatedWorldMatrix(alpha, new Matrix4f())
-          .transformDirection(new Vector3f(0f, 0f, -1f)).normalize();
-      ShadowMath.lightViewProj(dir, focus, half, SHADOW_SIZE, this.lightViewProj);
+      this.focus.set(this.cameraPos).fma(half * 0.4f, this.cameraForward);
+      this.shadowLight.entity().transform().interpolatedWorldMatrix(alpha, this.world);
+      this.world.transformDirection(this.direction.set(0f, 0f, -1f)).normalize();
+      ShadowMath.lightViewProj(this.direction, this.focus, half, SHADOW_SIZE, this.lightViewProj);
       shadowPass(gl, width, height);
     }
-
     mainPass(gl, shadows);
-  }
-
-  private Item obtain() {
-    if (this.itemCount == this.pool.size()) {
-      this.pool.add(new Item());
-    }
-    return this.pool.get(this.itemCount++);
-  }
-
-  private void collectItems(Scene scene, float alpha) {
-    this.itemCount = 0;
-    for (MeshRenderer r : scene.components(MeshRenderer.class)) {
-      final Item it = obtain();
-      it.renderer = r;
-      it.mesh = (GlMesh) r.mesh;
-      r.entity().transform().interpolatedWorldMatrix(alpha, it.model);
-      it.radius = ShadowMath.worldSphere(r.mesh.data(), it.model, it.center);
-      it.distSq = it.center.distanceSquared(this.cameraPos);
-    }
   }
 
   private void prepareLights(Scene scene, float alpha) {
     final List<Light> all = scene.components(Light.class);
     this.shadowLight = null;
-    for (Light l : all) {
+    for (int i = 0; i < all.size(); i++) {
+      final Light l = all.get(i);
       if (l.type == Light.Type.DIRECTIONAL && l.castShadows) {
         this.shadowLight = l;
         break;
       }
     }
-    final List<Light> ordered = new ArrayList<>();
+    this.orderedLights.clear();
     if (this.shadowLight != null) {
-      ordered.add(this.shadowLight); // index 0 is the shadowed one
+      this.orderedLights.add(this.shadowLight); // index 0 is the shadowed one
     }
-    for (Light l : all) {
-      if (l != this.shadowLight && ordered.size() < Light.MAX_LIGHTS) {
-        ordered.add(l);
+    for (int i = 0; i < all.size() && this.orderedLights.size() < Light.MAX_LIGHTS; i++) {
+      if (all.get(i) != this.shadowLight) {
+        this.orderedLights.add(all.get(i));
       }
     }
-    this.lightCount = ordered.size();
-    final Matrix4f m = new Matrix4f();
-    final Vector3f v = new Vector3f();
-    for (int i = 0; i < ordered.size(); i++) {
-      final Light l = ordered.get(i);
-      l.entity().transform().interpolatedWorldMatrix(alpha, m);
+    this.lightCount = this.orderedLights.size();
+    for (int i = 0; i < this.lightCount; i++) {
+      final Light l = this.orderedLights.get(i);
+      l.entity().transform().interpolatedWorldMatrix(alpha, this.world);
       if (l.type == Light.Type.DIRECTIONAL) {
-        m.transformDirection(v.set(0f, 0f, -1f)).normalize().negate();
-        put(this.lightPos, i, v.x, v.y, v.z, 0f);
+        this.world.transformDirection(this.direction.set(0f, 0f, -1f)).normalize().negate();
+        put(this.lightPos, i, this.direction.x, this.direction.y, this.direction.z, 0f);
       } else {
-        m.getTranslation(v);
-        put(this.lightPos, i, v.x, v.y, v.z, 1f);
+        this.world.getTranslation(this.direction);
+        put(this.lightPos, i, this.direction.x, this.direction.y, this.direction.z, 1f);
       }
       put(this.lightColor, i, l.color.x * l.intensity, l.color.y * l.intensity, l.color.z * l.intensity,
           Math.max(l.range, 0.01f));
     }
-    if (ordered.isEmpty()) { // no lights in the scene: fall back to a default sun so nothing renders black
+    if (this.lightCount == 0) { // no lights in the scene: fall back to a default sun so nothing renders black
       this.lightCount = 1;
-      v.set(0.4f, 0.8f, 0.5f).normalize();
-      put(this.lightPos, 0, v.x, v.y, v.z, 0f);
+      this.direction.set(0.4f, 0.8f, 0.5f).normalize();
+      put(this.lightPos, 0, this.direction.x, this.direction.y, this.direction.z, 0f);
       put(this.lightColor, 0, 1f, 1f, 1f, 1f);
       this.ambient.set(0.25f, 0.25f, 0.28f);
     } else {
-      this.ambient.set(ordered.get(0).ambient);
+      this.ambient.set(this.orderedLights.get(0).ambient);
     }
     this.stats.lights = this.lightCount;
   }
@@ -188,24 +157,16 @@ final class GlSceneRenderer {
   }
 
   private void shadowPass(GL3 gl, int width, int height) {
-    this.lightFrustum.set(this.lightViewProj);
-    final List<Item> casters = new ArrayList<>();
-    for (int i = 0; i < this.itemCount; i++) {
-      final Item it = this.pool.get(i);
-      final MeshRenderer r = it.renderer;
-      if (r.castShadows && !r.material.transparent && it.mesh.data().drawMode() == MeshData.DrawMode.TRIANGLES
-          && this.lightFrustum.testSphere(it.center.x, it.center.y, it.center.z, it.radius)) {
-        casters.add(it);
-      }
-    }
-    this.stats.shadowCasters = casters.size();
+    this.queue.cull(this.lightViewProj, RenderQueue.Pass.SHADOW, this.casters);
+    this.stats.shadowCasters = this.casters.size();
+    RenderQueue.sortForBatching(this.casters, false);
 
     this.shadowMap.beginPass(gl);
     gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
     gl.glPolygonOffset(2f, 4f);
     this.depth.use(gl);
     this.depth.set(gl, "uLightViewProj", this.lightViewProj);
-    drawBatches(gl, casters, false);
+    drawList(gl, this.casters, false, true);
     gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
     this.shadowMap.endPass(gl, width, height);
   }
@@ -225,60 +186,57 @@ final class GlSceneRenderer {
     this.basic.set(gl, "uShadowMap", 1);
     this.shadowMap.bindTexture(gl, 1);
 
-    final List<Item> opaque = new ArrayList<>();
-    final List<Item> transparent = new ArrayList<>();
-    for (int i = 0; i < this.itemCount; i++) {
-      final Item it = this.pool.get(i);
-      if (!this.cameraFrustum.testSphere(it.center.x, it.center.y, it.center.z, it.radius)) {
-        this.stats.culled++;
-      } else if (it.renderer.material.transparent) {
-        transparent.add(it);
-      } else {
-        opaque.add(it);
-      }
+    this.queue.cull(this.viewProj, RenderQueue.Pass.MAIN, this.visible);
+    this.stats.culled = this.queue.candidates() - this.visible.size();
+    this.opaque.clear();
+    this.transparent.clear();
+    for (int i = 0; i < this.visible.size(); i++) {
+      final MeshRenderer r = this.visible.get(i);
+      (r.material.transparent ? this.transparent : this.opaque).add(r);
     }
-    drawBatches(gl, opaque, true);
+    RenderQueue.sortForBatching(this.opaque, true);
+    drawList(gl, this.opaque, true, true);
 
-    if (!transparent.isEmpty()) {
-      transparent.sort(Comparator.comparingDouble((Item it) -> it.distSq).reversed());
+    if (!this.transparent.isEmpty()) {
+      RenderQueue.sortBackToFront(this.transparent);
       gl.glEnable(GL3.GL_BLEND);
       gl.glBlendFunc(GL3.GL_SRC_ALPHA, GL3.GL_ONE_MINUS_SRC_ALPHA);
       gl.glDepthMask(false);
-      drawBatches(gl, transparent, true, false); // sorted individually: no batching
+      drawList(gl, this.transparent, true, false); // sorted individually: no batching
       gl.glDepthMask(true);
       gl.glDisable(GL3.GL_BLEND);
     }
   }
 
-  private void drawBatches(GL3 gl, List<Item> items, boolean byMaterial) {
-    drawBatches(gl, items, byMaterial, true);
-  }
-
-  private void drawBatches(GL3 gl, List<Item> items, boolean byMaterial, boolean batch) {
-    final Map<Object, List<Item>> groups = new LinkedHashMap<>();
-    int unique = 0;
-    for (Item it : items) {
-      final Object key = !batch ? Integer.valueOf(unique++)
-          : new BatchKey(it.mesh, byMaterial ? it.renderer.material : null);
-      groups.computeIfAbsent(key, k -> new ArrayList<>()).add(it);
-    }
-    for (List<Item> group : groups.values()) {
-      final Item first = group.get(0);
-      if (byMaterial) {
-        applyMaterial(gl, first.renderer.material);
+  /** Draws a sorted list; runs of the same mesh (and material) become one instanced call when {@code batch}. */
+  private void drawList(GL3 gl, List<MeshRenderer> list, boolean byMaterial, boolean batch) {
+    final int n = list.size();
+    int i = 0;
+    while (i < n) {
+      final MeshRenderer first = list.get(i);
+      int j = i + 1;
+      if (batch) {
+        while (j < n && RenderQueue.sameBatch(first, list.get(j), byMaterial)) {
+          j++;
+        }
       }
-      final int count = group.size();
-      if (this.instanceBuffer.capacity() < count * 16) {
-        this.instanceBuffer = Buffers.newDirectFloatBuffer(Math.max(count * 16, this.instanceBuffer.capacity() * 2));
+      final int count = j - i;
+      if (byMaterial) {
+        applyMaterial(gl, first.material);
+      }
+      final int floats = count * RenderQueue.FLOATS_PER_INSTANCE;
+      if (this.instanceBuffer.capacity() < floats) {
+        this.instanceBuffer = Buffers.newDirectFloatBuffer(Math.max(floats, this.instanceBuffer.capacity() * 2));
       }
       this.instanceBuffer.clear();
-      for (int i = 0; i < count; i++) {
-        group.get(i).model.get(i * 16, this.instanceBuffer);
+      for (int k = 0; k < count; k++) {
+        RenderQueue.writeInstance(list.get(i + k), this.instanceBuffer, k);
       }
-      this.instanceBuffer.position(0).limit(count * 16);
-      first.mesh.draw(gl, this.instanceBuffer, count);
+      this.instanceBuffer.position(0).limit(floats);
+      ((GlMesh) first.mesh).draw(gl, this.instanceBuffer, count);
       this.stats.drawCalls++;
       this.stats.instances += count;
+      i = j;
     }
   }
 

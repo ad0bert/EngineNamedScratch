@@ -9,7 +9,7 @@ import com.jogamp.newt.event.KeyEvent;
 import engine.core.Engine;
 import engine.ecs.ISystem;
 import engine.ecs.Scene;
-import engine.physics.Rigidbody;
+import engine.physics.PhysicsStats;
 import engine.render.Overlay;
 import engine.render.RenderStats;
 import engine.render.UiCanvas;
@@ -41,11 +41,13 @@ public class DebugOverlay implements ISystem, Overlay {
       final Vector3f p = c.entity().transform().worldPosition(new Vector3f());
       return String.format(Locale.ROOT, "%.1f %.1f %.1f", p.x, p.y, p.z);
     }).orElse("-");
-    this.text = String.format(Locale.ROOT, "%s %s\n%.0f fps\nentities %d  bodies %d\n"
-        + "draw calls %d  instances %d\nculled %d  shadow casters %d  lights %d\ncamera %s",
+    final PhysicsStats p = this.engine.physics().stats();
+    this.text = String.format(Locale.ROOT, "%s %s\n%.0f fps\nentities %d\n"
+        + "draw calls %d  instances %d\nculled %d  shadow casters %d  lights %d\n"
+        + "bodies %d (%d asleep)  pairs %d  contacts %d\ncamera %s",
         this.engine.config().title(), this.engine.config().version(), this.engine.fps(), scene.entities().size(),
-        scene.components(Rigidbody.class).size(), s.drawCalls, s.instances, s.culled, s.shadowCasters, s.lights,
-        cam);
+        s.drawCalls, s.instances, s.culled, s.shadowCasters, s.lights, p.bodies, p.sleepingBodies,
+        p.candidatePairs, p.contacts, cam);
   }
 
   @Override
@@ -54,7 +56,7 @@ public class DebugOverlay implements ISystem, Overlay {
       return;
     }
     final float pad = 6f;
-    ui.drawRect(pad, pad, ui.textWidth(this.text, 1f) + 2 * pad, ui.lineHeight(1f) * 6 + 2 * pad, 0f, 0f, 0f,
+    ui.drawRect(pad, pad, ui.textWidth(this.text, 1f) + 2 * pad, ui.lineHeight(1f) * 7 + 2 * pad, 0f, 0f, 0f,
         0.55f);
     ui.drawText(this.text, 2 * pad, 2 * pad, 1f, 1f, 1f, 1f, 1f);
   }

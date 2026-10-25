@@ -2,7 +2,10 @@ package engine.core;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+
+import org.joml.Vector3f;
 
 import com.jogamp.newt.event.KeyEvent;
 import com.jogamp.newt.event.MouseAdapter;
@@ -30,6 +33,7 @@ import engine.input.InputState;
 import engine.messaging.IMessageService;
 import engine.messaging.MessageService;
 import engine.physics.PhysicsSystem;
+import engine.physics.RayHit;
 import engine.render.Overlay;
 import engine.render.RenderBackend;
 import engine.render.gl.GlBackend;
@@ -98,6 +102,11 @@ public class Engine {
 
   public PhysicsSystem physics() {
     return this.physics;
+  }
+
+  /** Nearest solid (non-trigger) collider hit by the ray, see {@link PhysicsSystem#raycast}. */
+  public Optional<RayHit> raycast(Vector3f origin, Vector3f direction, float maxDistance) {
+    return this.physics.raycast(this.scene, origin, direction, maxDistance);
   }
 
   public ResourceManager resources() {

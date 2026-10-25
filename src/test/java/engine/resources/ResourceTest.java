@@ -34,6 +34,7 @@ class ResourceTest {
     final GpuTexture white = () -> {
     };
     int disposed;
+    int nextId;
 
     @Override
     public void init() {
@@ -47,6 +48,11 @@ class ResourceTest {
     public GpuMesh createMesh(MeshData data) {
       this.meshes.add(data);
       return new GpuMesh() {
+        @Override
+        public int id() {
+          return ++FakeBackend.this.nextId;
+        }
+
         @Override
         public MeshData data() {
           return data;

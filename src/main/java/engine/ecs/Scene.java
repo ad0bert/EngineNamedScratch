@@ -2,17 +2,30 @@ package engine.ecs;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import engine.render.Camera;
 
-/** Holds entities. Adds and removes are deferred to {@link #flush()} so systems can mutate during iteration. */
+/**
+ * Holds entities. Adds and removes are deferred to {@link #flush()} so systems can mutate during iteration.
+ * Component queries are cached until the scene's entities or any component's presence/enabled flag change.
+ */
 public class Scene {
   private final List<Entity> entities = new ArrayList<>();
+  private final Set<Entity> entitySet = new HashSet<>();
   private final List<Entity> toAdd = new ArrayList<>();
-  private final List<Entity> toRemove = new ArrayList<>();
+  private final Set<Entity> toRemove = new HashSet<>();
+
+  private int version;
+  private final Map<Class<?>, List<?>> queryCache = new HashMap<>();
+  private int cachedSceneVersion = -1;
+  private int cachedGlobalVersion = -1;
 
   public Entity add(Entity entity) {
     this.toAdd.add(entity);
@@ -26,35 +39,58 @@ public class Scene {
   /** Applies pending adds and removes. Called by the engine at the start of every update step. */
   public void flush() {
     if (!this.toRemove.isEmpty()) {
-      this.entities.removeAll(this.toRemove);
+      if (this.entities.removeIf(this.toRemove::contains)) {
+        this.version++;
+      }
+      this.entitySet.removeAll(this.toRemove);
       this.toRemove.clear();
     }
     if (!this.toAdd.isEmpty()) {
       for (Entity e : this.toAdd) {
-        if (!this.entities.contains(e)) {
+        if (this.entitySet.add(e)) {
           this.entities.add(e);
           e.transform().snapshot(); // no interpolation smear from the origin
+          this.version++;
         }
       }
       this.toAdd.clear();
     }
   }
 
+  /** Increases whenever entities were added to or removed from the scene. */
+  public int version() {
+    return this.version;
+  }
+
   public List<Entity> entities() {
     return Collections.unmodifiableList(this.entities);
   }
 
-  /** All enabled components of the given type. */
+  /**
+   * All enabled components of the given type. The returned list is a read-only snapshot: it stays valid (and is the
+   * same instance) until something changes, after which a new list is returned. Do not modify it.
+   */
+  @SuppressWarnings("unchecked")
   public <T extends Component> List<T> components(Class<T> type) {
-    final List<T> out = new ArrayList<>();
-    for (Entity e : this.entities) {
-      for (Component c : e.components()) {
-        if (c.isEnabled() && type.isInstance(c)) {
-          out.add(type.cast(c));
+    if (this.cachedSceneVersion != this.version || this.cachedGlobalVersion != Entity.structureVersion()) {
+      this.queryCache.clear();
+      this.cachedSceneVersion = this.version;
+      this.cachedGlobalVersion = Entity.structureVersion();
+    }
+    List<?> cached = this.queryCache.get(type);
+    if (cached == null) {
+      final List<T> out = new ArrayList<>();
+      for (Entity e : this.entities) {
+        for (Component c : e.components()) {
+          if (c.isEnabled() && type.isInstance(c)) {
+            out.add(type.cast(c));
+          }
         }
       }
+      cached = Collections.unmodifiableList(out);
+      this.queryCache.put(type, cached);
     }
-    return out;
+    return (List<T>) cached;
   }
 
   public Stream<Entity> stream() {
@@ -62,6 +98,7 @@ public class Scene {
   }
 
   public Optional<Camera> activeCamera() {
-    return components(Camera.class).stream().findFirst();
+    final List<Camera> cameras = components(Camera.class);
+    return cameras.isEmpty() ? Optional.empty() : Optional.of(cameras.get(0));
   }
 }

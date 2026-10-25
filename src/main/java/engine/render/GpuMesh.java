@@ -4,5 +4,8 @@ package engine.render;
 public interface GpuMesh {
   MeshData data();
 
+  /** Unique per mesh; used to group draws of the same mesh together. */
+  int id();
+
   void dispose();
 }

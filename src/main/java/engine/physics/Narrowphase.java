@@ -34,6 +34,101 @@ public final class Narrowphase {
     return null;
   }
 
+  /** Distance along a ray to a surface, and the surface normal there (facing the ray). */
+  record RayResult(float distance, Vector3f normal) {
+  }
+
+  /** @param dir must be normalized; returns null for a miss or a hit beyond {@code maxDistance} */
+  static RayResult ray(Collider c, Vector3f origin, Vector3f dir, float maxDistance) {
+    if (c instanceof BoxCollider b) {
+      return rayBox(b.world(), origin, dir, maxDistance);
+    }
+    if (c instanceof SphereCollider s) {
+      return raySphere(s.world(), origin, dir, maxDistance);
+    }
+    return null;
+  }
+
+  static RayResult raySphere(Sphere s, Vector3f o, Vector3f d, float maxDistance) {
+    final Vector3f oc = new Vector3f(o).sub(s.c());
+    final float b = oc.dot(d);
+    final float cc = oc.lengthSquared() - s.r() * s.r();
+    if (cc > 0f && b > 0f) {
+      return null; // outside and pointing away
+    }
+    final float disc = b * b - cc;
+    if (disc < 0f) {
+      return null;
+    }
+    final float t = -b - (float) Math.sqrt(disc);
+    if (t < 0f) {
+      return new RayResult(0f, new Vector3f(d).negate()); // started inside
+    }
+    if (t > maxDistance) {
+      return null;
+    }
+    return new RayResult(t, oc.fma(t, d).div(s.r()));
+  }
+
+  /** Slab test in the box's own axes, so rotated boxes are hit exactly. */
+  static RayResult rayBox(Box box, Vector3f o, Vector3f d, float maxDistance) {
+    final Vector3f rel = new Vector3f(o).sub(box.c());
+    float tMin = -Float.MAX_VALUE;
+    float tMax = Float.MAX_VALUE;
+    int hitAxis = -1;
+    float hitSign = 1f;
+    for (int i = 0; i < 3; i++) {
+      final float lo = rel.dot(box.axes()[i]);
+      final float ld = d.dot(box.axes()[i]);
+      final float h = box.half()[i];
+      if (Math.abs(ld) < 1e-8f) {
+        if (Math.abs(lo) > h) {
+          return null; // parallel to this slab and outside it
+        }
+        continue;
+      }
+      float t1 = (-h - lo) / ld;
+      float t2 = (h - lo) / ld;
+      float sign = -1f; // entering through the negative face
+      if (t1 > t2) {
+        final float tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+        sign = 1f;
+      }
+      if (t1 > tMin) {
+        tMin = t1;
+        hitAxis = i;
+        hitSign = sign;
+      }
+      tMax = Math.min(tMax, t2);
+      if (tMin > tMax) {
+        return null;
+      }
+    }
+    if (tMax < 0f) {
+      return null; // box is behind the ray
+    }
+    if (tMin < 0f || hitAxis < 0) {
+      return new RayResult(0f, new Vector3f(d).negate()); // started inside
+    }
+    if (tMin > maxDistance) {
+      return null;
+    }
+    return new RayResult(tMin, new Vector3f(box.axes()[hitAxis]).mul(hitSign));
+  }
+
+  /** True if the collider overlaps the sphere. */
+  static boolean overlapsSphere(Collider c, Sphere s) {
+    if (c instanceof BoxCollider b) {
+      return sphereBox(s, b.world()) != null;
+    }
+    if (c instanceof SphereCollider other) {
+      return sphereSphere(s, other.world()) != null;
+    }
+    return false;
+  }
+
   static Contact sphereSphere(Sphere a, Sphere b) {
     final Vector3f d = new Vector3f(b.c()).sub(a.c());
     final float len = d.length();

@@ -37,7 +37,23 @@ public class Entity {
   public <T extends Component> T add(T component) {
     component.attach(this);
     this.components.add(component);
+    touch();
     return component;
+  }
+
+  // Bumped whenever a component is added or enabled/disabled anywhere; invalidates Scene's query caches.
+  private static volatile int structureVersion;
+
+  static int structureVersion() {
+    return structureVersion;
+  }
+
+  /**
+   * Marks the component structure as changed so cached scene queries are rebuilt. Only needed by components that
+   * change something other than {@link Component#setEnabled} which affects how they are grouped or queried.
+   */
+  public static synchronized void touch() {
+    structureVersion++;
   }
 
   public <T> Optional<T> find(Class<T> type) {

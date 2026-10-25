@@ -2,6 +2,7 @@ package game;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import org.joml.Vector3f;
 
@@ -37,12 +38,14 @@ public class DemoGame implements Game {
   private GpuMesh crateMesh;
   private Material crateMaterial;
   private Entity player;
+  private String aim = "";
 
   @Override
   public void init(Engine engine) {
     final var res = engine.resources();
     final var scene = engine.scene();
     engine.input().bind("spawn", KeyEvent.VK_F);
+    engine.input().bind("poke", KeyEvent.VK_E);
 
     final Entity sun = new Entity("sun");
     sun.transform().setEulerDegrees(-50f, -30f, 0f);
@@ -63,7 +66,7 @@ public class DemoGame implements Game {
     ground.transform().position().set(0f, -1f, 0f);
     final Material grass = new Material().color(0.35f, 0.55f, 0.3f, 1f);
     grass.specular = 0f;
-    ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(60f, 60f)), grass));
+    ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(60f, 60f)), grass)).setStaticGeometry(true);
     scene.add(ground);
 
     final Entity groundBody = new Entity("ground-collider");
@@ -91,6 +94,11 @@ public class DemoGame implements Game {
     final Entity box = new Entity("box");
     box.transform().position().set(-4f, 0f, 0f);
     boxModel.attachTo(box);
+    box.components().forEach(c -> {
+      if (c instanceof MeshRenderer r) {
+        r.setStaticGeometry(true);
+      }
+    });
     box.add(new BoxCollider(boxModel.halfExtents()));
     scene.add(box);
 
@@ -115,7 +123,8 @@ public class DemoGame implements Game {
       ring.add(new Vector3f((float) Math.cos(a) * 3f, 2.5f, (float) Math.sin(a) * 3f));
     }
     final Entity points = new Entity("points");
-    points.add(new MeshRenderer(res.mesh(MeshFactory.points(ring)), new Material().color(1f, 0.9f, 0.1f, 1f).unlit()));
+    points.add(new MeshRenderer(res.mesh(MeshFactory.points(ring)), new Material().color(1f, 0.9f, 0.1f, 1f).unlit()))
+        .setStaticGeometry(true);
     scene.add(points);
 
     final Entity sprite = new Entity("sprite");
@@ -134,11 +143,29 @@ public class DemoGame implements Game {
     // many identical crates: one mesh + one material, so they render as a single instanced draw call
     this.crateMesh = res.mesh(MeshFactory.cube(0.5f));
     this.crateMaterial = new Material(res.texture("textures/cubeFace.png"));
-    for (int x = -1; x <= 1; x++) {
-      for (int z = 0; z < 4; z++) {
-        for (int y = 0; y < 3; y++) {
-          spawnCrate(engine, new Vector3f(x * 1.2f + 0.05f * z, 1.5f + y * 1.4f, -9f + z * 1.2f), new Vector3f());
+    for (int x = -3; x < 3; x++) {
+      for (int z = 0; z < 6; z++) {
+        for (int y = 0; y < 4; y++) {
+          spawnCrate(engine, new Vector3f((x + 0.5f) * 1.15f + 0.03f * z, 1.5f + y * 1.3f, -17f + z * 1.15f),
+              new Vector3f());
         }
+      }
+    }
+
+    // static scenery: cached matrices and grid-based culling; only the pillars near the view cost anything
+    final GpuMesh pillarMesh = res.mesh(MeshFactory.cube(0.5f));
+    final Material stone = new Material().color(0.6f, 0.58f, 0.55f, 1f);
+    for (int x = -7; x <= 7; x++) {
+      for (int z = -7; z <= 7; z++) {
+        if (Math.abs(x) < 4 && z > -6 && z < 4) {
+          continue; // keep the play area free
+        }
+        final Entity pillar = new Entity("pillar");
+        pillar.transform().position().set(x * 4f, 0f + ((x * 7 + z * 13) & 3) * 0.5f, z * 4f);
+        pillar.transform().scale().set(1f, 4f + ((x * 3 + z * 5) & 3), 1f);
+        pillar.add(new MeshRenderer(pillarMesh, stone)).setStaticGeometry(true);
+        pillar.add(new BoxCollider(0.5f, 0.5f, 0.5f));
+        scene.add(pillar);
       }
     }
 
@@ -168,10 +195,26 @@ public class DemoGame implements Game {
 
   @Override
   public void update(Engine engine, double dt) {
+    final var t = this.player.transform();
+    final Vector3f forward = t.forward(new Vector3f());
     if (engine.input().wasActionPressed("spawn")) {
-      final var t = this.player.transform();
-      final Vector3f forward = t.forward(new Vector3f());
-      spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), forward.mul(10f));
+      spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(10f));
+    }
+
+    // what is the crosshair pointing at? E pushes it (wakes sleeping bodies)
+    final Vector3f origin = t.position();
+    final var hit = engine.physics().raycast(engine.scene(), origin, forward, 60f,
+        c -> c.entity() != this.player && !c.trigger);
+    if (hit.isPresent()) {
+      this.aim = String.format(Locale.ROOT, "%s  %.1f m", hit.get().entity().name(), hit.get().distance());
+      if (engine.input().wasActionPressed("poke")) {
+        hit.get().entity().find(Rigidbody.class).ifPresent(body -> {
+          body.wakeUp();
+          body.velocity.fma(8f, forward);
+        });
+      }
+    } else {
+      this.aim = "";
     }
   }
 
@@ -180,7 +223,11 @@ public class DemoGame implements Game {
     final float cy = height / 2f;
     ui.drawRect(cx - 8, cy - 1, 16, 2, 1f, 1f, 1f, 0.8f);
     ui.drawRect(cx - 1, cy - 8, 2, 16, 1f, 1f, 1f, 0.8f);
-    final String help = "WASD move  Space/Shift up/down  F throw crate  F3 debug  Esc free mouse";
+    if (!this.aim.isEmpty()) {
+      ui.drawText(this.aim, cx + 15f, cy + 9f, 1f, 0f, 0f, 0f, 0.8f);
+      ui.drawText(this.aim, cx + 14f, cy + 8f, 1f, 1f, 1f, 1f, 1f);
+    }
+    final String help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc free mouse";
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);
   }

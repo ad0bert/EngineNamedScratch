@@ -1,3 +1,10 @@
+Version 0.3.0
+Scaling work. Contains:
+- Physics: grid broadphase, sleeping, parented bodies, raycast / overlapSphere queries, Camera.viewRay
+- Rendering: RenderQueue (cached matrices, static geometry grid culling, batching), per-instance normal matrix,
+  allocation-free per-frame work, cached scene queries
+- Debug HUD shows physics and culling statistics; demo: E pushes the crate under the crosshair, 144 crates + static pillars
+
 Version 0.2.0
 Rendering, physics and UI upgrade. Contains:
 - RenderBackend abstraction with OpenGL implementation; GPU instancing, frustum culling, point + directional

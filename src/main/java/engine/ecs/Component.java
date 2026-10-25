@@ -13,7 +13,10 @@ public abstract class Component {
   }
 
   public void setEnabled(boolean enabled) {
-    this.enabled = enabled;
+    if (this.enabled != enabled) {
+      this.enabled = enabled;
+      Entity.touch();
+    }
   }
 
   /** Called once when added to an entity. */

@@ -1,6 +1,7 @@
 package engine.render.gl;
 
 import java.nio.FloatBuffer;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import com.jogamp.common.nio.Buffers;
@@ -8,12 +9,17 @@ import com.jogamp.opengl.GL3;
 
 import engine.render.GpuMesh;
 import engine.render.MeshData;
+import engine.render.RenderQueue;
 
 /**
- * VAO with static vertex/index buffers plus a dynamic per-instance buffer holding one model matrix per instance
- * (attribute locations 3-6), so every draw is an instanced draw.
+ * VAO with static vertex/index buffers plus a dynamic per-instance buffer holding a model and a normal matrix per
+ * instance (attribute locations 3-9), so every draw is an instanced draw.
  */
 final class GlMesh implements GpuMesh {
+  private static final int INSTANCE_STRIDE = RenderQueue.FLOATS_PER_INSTANCE * Float.BYTES;
+  private static final AtomicInteger NEXT_ID = new AtomicInteger();
+
+  private final int id = NEXT_ID.incrementAndGet();
   private final Supplier<GL3> glSupplier;
   private final MeshData data;
   private final int vao;
@@ -56,13 +62,19 @@ final class GlMesh implements GpuMesh {
       this.ebo = 0;
     }
 
+    // per instance: mat4 model (locations 3-6) followed by mat3 normal matrix (locations 7-9)
     gl.glGenBuffers(1, ids, 0);
     this.instanceVbo = ids[0];
     gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, this.instanceVbo);
     for (int col = 0; col < 4; col++) {
       gl.glEnableVertexAttribArray(3 + col);
-      gl.glVertexAttribPointer(3 + col, 4, GL3.GL_FLOAT, false, 64, (long) col * 16);
+      gl.glVertexAttribPointer(3 + col, 4, GL3.GL_FLOAT, false, INSTANCE_STRIDE, (long) col * 16);
       gl.glVertexAttribDivisor(3 + col, 1);
+    }
+    for (int col = 0; col < 3; col++) {
+      gl.glEnableVertexAttribArray(7 + col);
+      gl.glVertexAttribPointer(7 + col, 3, GL3.GL_FLOAT, false, INSTANCE_STRIDE, 64L + col * 12L);
+      gl.glVertexAttribDivisor(7 + col, 1);
     }
     gl.glBindVertexArray(0);
   }
@@ -72,11 +84,19 @@ final class GlMesh implements GpuMesh {
     return this.data;
   }
 
-  /** Draws {@code count} instances; {@code matrices} holds count*16 floats (position 0, limit count*16). */
-  void draw(GL3 gl, FloatBuffer matrices, int count) {
+  @Override
+  public int id() {
+    return this.id;
+  }
+
+  /**
+   * Draws {@code count} instances; {@code instances} holds count * {@link RenderQueue#FLOATS_PER_INSTANCE} floats
+   * (position 0, limit set accordingly).
+   */
+  void draw(GL3 gl, FloatBuffer instances, int count) {
     gl.glBindVertexArray(this.vao);
     gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, this.instanceVbo);
-    gl.glBufferData(GL3.GL_ARRAY_BUFFER, (long) count * 64, matrices, GL3.GL_STREAM_DRAW);
+    gl.glBufferData(GL3.GL_ARRAY_BUFFER, (long) count * INSTANCE_STRIDE, instances, GL3.GL_STREAM_DRAW);
     if (this.data.indices() != null) {
       gl.glDrawElementsInstanced(this.mode, this.data.indices().length, GL3.GL_UNSIGNED_INT, 0L, count);
     } else {

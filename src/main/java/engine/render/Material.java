@@ -1,9 +1,15 @@
 package engine.render;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.joml.Vector4f;
 
 /** Surface description. A {@code null} texture renders the plain colour. */
 public class Material {
+  private static final AtomicInteger NEXT_KEY = new AtomicInteger();
+
+  /** Unique per material; used to group draws that share a material. */
+  public final int sortKey = NEXT_KEY.incrementAndGet();
   public GpuTexture texture;
   public final Vector4f color = new Vector4f(1f, 1f, 1f, 1f);
   public float specular = 0.3f;
