@@ -1,3 +1,15 @@
+Version 0.1.0
+Engine rewrite. Contains:
+- Engine/Game lifecycle, fixed-timestep update, GL3 core renderer (shaders, VAO/VBO, directional light)
+- ECS with transform hierarchy, scene, systems
+- Thread-safe message service with working queue routing
+- Input state + key bindings, first-person camera
+- Resource manager (textures from streams, OBJ loader), AABB collisions, debug title-bar HUD
+- Unit tests and CI
+Fixed: queue routing, NPEs in message service, timer unit mix-up, game state mutated in draw(),
+texture loading from files (broke inside JARs).
+Removed: Spring, fixed-function rendering, test code in src/main.
+
 Version 0.0.1
 Init Version Contains:
 - Messaging system

@@ -1,52 +1,78 @@
 package engine.ecs;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
-import engine.ecs.components.IComponent;
-import engine.geometry.Point;
-import engine.render.interfaces.IDrawable;
-import engine.util.IdFactory;
-import lombok.AccessLevel;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.EqualsAndHashCode;
-import lombok.NoArgsConstructor;
-import lombok.experimental.FieldDefaults;
-import lombok.val;
+public class Entity {
+  private static final AtomicLong NEXT_ID = new AtomicLong(1);
 
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-@EqualsAndHashCode(onlyExplicitlyIncluded = true)
-@FieldDefaults(level = AccessLevel.PRIVATE)
-public abstract class Entity {
+  private final long id = NEXT_ID.getAndIncrement();
+  private final String name;
+  private final Transform transform = new Transform();
+  private final List<Component> components = new ArrayList<>();
 
-  @EqualsAndHashCode.Include
-  final long id = IdFactory.getNextId();
-  Point position = new Point(0f, 0f, 0f);
-  Point rotation = new Point(0f, 0f, 0f);
+  public Entity() {
+    this(null);
+  }
 
-  List<IComponent> components = new ArrayList<>();
+  public Entity(String name) {
+    this.name = name != null ? name : "entity-" + this.id;
+  }
 
-  public void addComponent(IComponent component) {
+  public long id() {
+    return this.id;
+  }
+
+  public String name() {
+    return this.name;
+  }
+
+  public Transform transform() {
+    return this.transform;
+  }
+
+  public <T extends Component> T add(T component) {
+    component.attach(this);
     this.components.add(component);
-    component.setEntity(this);
+    return component;
   }
 
-  public void activateComponent(Class<?> clazz) {
-    for (val comp : this.components) {
-      if (clazz.isAssignableFrom(comp.getClass())) {
-        comp.setActive(true);
+  public <T> Optional<T> find(Class<T> type) {
+    for (Component c : this.components) {
+      if (type.isInstance(c)) {
+        return Optional.of(type.cast(c));
       }
     }
+    return Optional.empty();
   }
 
-  public void deactivateComponent(Class<IDrawable> clazz) {
-    for (val comp : this.components) {
-      if (clazz.isAssignableFrom(comp.getClass())) {
-        comp.setActive(false);
-      }
-    }
+  public <T> T get(Class<T> type) {
+    return find(type).orElseThrow(() -> new IllegalStateException(this.name + " has no " + type.getSimpleName()));
+  }
+
+  public boolean has(Class<?> type) {
+    return find(type).isPresent();
+  }
+
+  public List<Component> components() {
+    return Collections.unmodifiableList(this.components);
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    return o instanceof Entity e && e.id == this.id;
+  }
+
+  @Override
+  public int hashCode() {
+    return Long.hashCode(this.id);
+  }
+
+  @Override
+  public String toString() {
+    return "Entity[" + this.id + ":" + this.name + "]";
   }
 }

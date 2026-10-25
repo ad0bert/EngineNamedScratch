@@ -1,0 +1,115 @@
+package engine.render;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.FloatBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+
+import org.joml.Matrix3f;
+import org.joml.Matrix4f;
+import org.joml.Vector3f;
+import org.joml.Vector4f;
+
+import com.jogamp.common.nio.Buffers;
+import com.jogamp.opengl.GL3;
+
+/** Compiled and linked GLSL program loaded from classpath resources. */
+public class ShaderProgram {
+  private final int id;
+  private final Map<String, Integer> uniforms = new HashMap<>();
+  private final FloatBuffer buf16 = Buffers.newDirectFloatBuffer(16);
+
+  public ShaderProgram(GL3 gl, String vertexResource, String fragmentResource) {
+    final int vs = compile(gl, GL3.GL_VERTEX_SHADER, vertexResource);
+    final int fs = compile(gl, GL3.GL_FRAGMENT_SHADER, fragmentResource);
+    this.id = gl.glCreateProgram();
+    gl.glAttachShader(this.id, vs);
+    gl.glAttachShader(this.id, fs);
+    gl.glLinkProgram(this.id);
+    final int[] ok = new int[1];
+    gl.glGetProgramiv(this.id, GL3.GL_LINK_STATUS, ok, 0);
+    if (ok[0] == GL3.GL_FALSE) {
+      throw new IllegalStateException("Shader link failed: " + infoLog(gl, this.id, true));
+    }
+    gl.glDeleteShader(vs);
+    gl.glDeleteShader(fs);
+  }
+
+  private static int compile(GL3 gl, int type, String resource) {
+    final String source;
+    try (InputStream in = ShaderProgram.class.getClassLoader().getResourceAsStream(resource)) {
+      if (in == null) {
+        throw new IllegalArgumentException("Shader resource not found: " + resource);
+      }
+      source = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+    } catch (IOException e) {
+      throw new IllegalStateException("Cannot read shader " + resource, e);
+    }
+    final int shader = gl.glCreateShader(type);
+    gl.glShaderSource(shader, 1, new String[] { source }, new int[] { source.length() }, 0);
+    gl.glCompileShader(shader);
+    final int[] ok = new int[1];
+    gl.glGetShaderiv(shader, GL3.GL_COMPILE_STATUS, ok, 0);
+    if (ok[0] == GL3.GL_FALSE) {
+      throw new IllegalStateException("Shader compile failed (" + resource + "): " + infoLog(gl, shader, false));
+    }
+    return shader;
+  }
+
+  private static String infoLog(GL3 gl, int object, boolean program) {
+    final int[] len = new int[1];
+    if (program) {
+      gl.glGetProgramiv(object, GL3.GL_INFO_LOG_LENGTH, len, 0);
+    } else {
+      gl.glGetShaderiv(object, GL3.GL_INFO_LOG_LENGTH, len, 0);
+    }
+    final byte[] log = new byte[Math.max(len[0], 1)];
+    final int[] written = new int[1];
+    if (program) {
+      gl.glGetProgramInfoLog(object, log.length, written, 0, log, 0);
+    } else {
+      gl.glGetShaderInfoLog(object, log.length, written, 0, log, 0);
+    }
+    return new String(log, 0, written[0], StandardCharsets.UTF_8);
+  }
+
+  public void use(GL3 gl) {
+    gl.glUseProgram(this.id);
+  }
+
+  private int loc(GL3 gl, String name) {
+    return this.uniforms.computeIfAbsent(name, n -> gl.glGetUniformLocation(this.id, n));
+  }
+
+  public void set(GL3 gl, String name, Matrix4f m) {
+    m.get(this.buf16.clear());
+    gl.glUniformMatrix4fv(loc(gl, name), 1, false, this.buf16);
+  }
+
+  public void set(GL3 gl, String name, Matrix3f m) {
+    m.get(this.buf16.clear());
+    gl.glUniformMatrix3fv(loc(gl, name), 1, false, this.buf16);
+  }
+
+  public void set(GL3 gl, String name, Vector3f v) {
+    gl.glUniform3f(loc(gl, name), v.x, v.y, v.z);
+  }
+
+  public void set(GL3 gl, String name, Vector4f v) {
+    gl.glUniform4f(loc(gl, name), v.x, v.y, v.z, v.w);
+  }
+
+  public void set(GL3 gl, String name, float v) {
+    gl.glUniform1f(loc(gl, name), v);
+  }
+
+  public void set(GL3 gl, String name, int v) {
+    gl.glUniform1i(loc(gl, name), v);
+  }
+
+  public void dispose(GL3 gl) {
+    gl.glDeleteProgram(this.id);
+  }
+}
