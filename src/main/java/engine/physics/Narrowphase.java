@@ -2,36 +2,91 @@ package engine.physics;
 
 import org.joml.Vector3f;
 
-/** Pairwise overlap tests. Contact normals point from shape A towards shape B. */
+/**
+ * Pairwise overlap tests. Contact normals point from shape A towards shape B.
+ *
+ * <p>
+ * The tests that run every physics step ({@link #test}, and the shape-pair methods taking a {@link Contact} to fill)
+ * do not allocate; the convenience overloads that return a new {@link Contact} are meant for queries and tests.
+ */
 public final class Narrowphase {
   private Narrowphase() {
   }
 
   /** Penetration of A into B: push A by {@code -normal * depth} (or B by {@code +normal * depth}) to separate. */
-  public record Contact(Vector3f normal, float depth) {
+  public static final class Contact {
+    private final Vector3f normal = new Vector3f();
+    private float depth;
+
+    public Contact() {
+    }
+
+    public Contact(Vector3f normal, float depth) {
+      this.normal.set(normal);
+      this.depth = depth;
+    }
+
+    public Vector3f normal() {
+      return this.normal;
+    }
+
+    public float depth() {
+      return this.depth;
+    }
   }
+
+  /** Per-thread scratch vectors so the tests below do not allocate. */
+  private static final class Scratch {
+    final Vector3f t = new Vector3f();
+    final Vector3f l = new Vector3f();
+    final Vector3f closest = new Vector3f();
+    final Vector3f diff = new Vector3f();
+    final float[] p = new float[3];
+  }
+
+  private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
 
   record Box(Vector3f c, Vector3f[] axes, float[] half) {
   }
 
-  record Sphere(Vector3f c, float r) {
+  /** Mutable so a collider can keep one instance and refresh it in place. */
+  static final class Sphere {
+    private final Vector3f c;
+    float r;
+
+    Sphere(Vector3f c, float r) {
+      this.c = c;
+      this.r = r;
+    }
+
+    Vector3f c() {
+      return this.c;
+    }
+
+    float r() {
+      return this.r;
+    }
   }
 
-  static Contact test(Collider a, Collider b) {
+  /** Tests the colliders' cached world shapes (see {@link Collider#refresh()}); fills {@code out} on overlap. */
+  static boolean test(Collider a, Collider b, Contact out) {
     if (a instanceof BoxCollider ba && b instanceof BoxCollider bb) {
-      return boxBox(ba.world(), bb.world());
+      return boxBox(ba.cachedBox(), bb.cachedBox(), out);
     }
     if (a instanceof SphereCollider sa && b instanceof SphereCollider sb) {
-      return sphereSphere(sa.world(), sb.world());
+      return sphereSphere(sa.cachedSphere(), sb.cachedSphere(), out);
     }
     if (a instanceof SphereCollider sa && b instanceof BoxCollider bb) {
-      return sphereBox(sa.world(), bb.world());
+      return sphereBox(sa.cachedSphere(), bb.cachedBox(), out);
     }
     if (a instanceof BoxCollider ba && b instanceof SphereCollider sb) {
-      final Contact c = sphereBox(sb.world(), ba.world());
-      return c == null ? null : new Contact(c.normal().negate(), c.depth());
+      if (!sphereBox(sb.cachedSphere(), ba.cachedBox(), out)) {
+        return false;
+      }
+      out.normal.negate();
+      return true;
     }
-    return null;
+    return false;
   }
 
   /** Distance along a ray to a surface, and the surface normal there (facing the ray). */
@@ -120,44 +175,63 @@ public final class Narrowphase {
 
   /** True if the collider overlaps the sphere. */
   static boolean overlapsSphere(Collider c, Sphere s) {
+    final Contact scratch = new Contact();
     if (c instanceof BoxCollider b) {
-      return sphereBox(s, b.world()) != null;
+      return sphereBox(s, b.world(), scratch);
     }
     if (c instanceof SphereCollider other) {
-      return sphereSphere(s, other.world()) != null;
+      return sphereSphere(s, other.world(), scratch);
     }
     return false;
   }
 
   static Contact sphereSphere(Sphere a, Sphere b) {
-    final Vector3f d = new Vector3f(b.c()).sub(a.c());
-    final float len = d.length();
+    final Contact c = new Contact();
+    return sphereSphere(a, b, c) ? c : null;
+  }
+
+  static boolean sphereSphere(Sphere a, Sphere b, Contact out) {
+    final Vector3f n = out.normal.set(b.c()).sub(a.c());
+    final float len = n.length();
     final float sum = a.r() + b.r();
     if (len >= sum) {
-      return null;
+      return false;
     }
-    final Vector3f n = len > 1e-6f ? d.div(len) : new Vector3f(0f, 1f, 0f);
-    return new Contact(n, sum - len);
+    if (len > 1e-6f) {
+      n.div(len);
+    } else {
+      n.set(0f, 1f, 0f);
+    }
+    out.depth = sum - len;
+    return true;
   }
 
   /** Normal points from the sphere towards the box. */
   static Contact sphereBox(Sphere s, Box b) {
-    final Vector3f d = new Vector3f(s.c()).sub(b.c());
-    final float[] p = new float[3];
-    final Vector3f closest = new Vector3f(b.c());
+    final Contact c = new Contact();
+    return sphereBox(s, b, c) ? c : null;
+  }
+
+  static boolean sphereBox(Sphere s, Box b, Contact out) {
+    final Scratch sc = SCRATCH.get();
+    final Vector3f d = sc.t.set(s.c()).sub(b.c());
+    final float[] p = sc.p;
+    final Vector3f closest = sc.closest.set(b.c());
     for (int i = 0; i < 3; i++) {
       p[i] = d.dot(b.axes()[i]);
       final float q = Math.max(-b.half()[i], Math.min(b.half()[i], p[i]));
       closest.fma(q, b.axes()[i]);
     }
-    final Vector3f diff = closest.sub(s.c(), new Vector3f()); // sphere centre -> nearest box point
+    final Vector3f diff = closest.sub(s.c(), sc.diff); // sphere centre -> nearest box point
     final float dist2 = diff.lengthSquared();
     if (dist2 > s.r() * s.r()) {
-      return null;
+      return false;
     }
     if (dist2 > 1e-10f) {
       final float dist = (float) Math.sqrt(dist2);
-      return new Contact(diff.div(dist), s.r() - dist);
+      out.normal.set(diff).div(dist);
+      out.depth = s.r() - dist;
+      return true;
     }
     // centre inside the box: leave through the nearest face
     int axis = 0;
@@ -169,16 +243,23 @@ public final class Narrowphase {
         axis = i;
       }
     }
-    final Vector3f outward = new Vector3f(b.axes()[axis]).mul(p[axis] >= 0f ? 1f : -1f);
-    return new Contact(outward.negate(), s.r() + bestGap);
+    out.normal.set(b.axes()[axis]).mul(p[axis] >= 0f ? -1f : 1f); // the negated outward direction
+    out.depth = s.r() + bestGap;
+    return true;
   }
 
   /** Separating-axis test over the 15 candidate axes; keeps the axis of least penetration. */
   static Contact boxBox(Box a, Box b) {
-    final Vector3f t = new Vector3f(b.c()).sub(a.c());
+    final Contact c = new Contact();
+    return boxBox(a, b, c) ? c : null;
+  }
+
+  static boolean boxBox(Box a, Box b, Contact out) {
+    final Scratch sc = SCRATCH.get();
+    final Vector3f t = sc.t.set(b.c()).sub(a.c());
     float best = Float.MAX_VALUE;
-    Vector3f bestAxis = null;
-    final Vector3f l = new Vector3f();
+    boolean found = false;
+    final Vector3f l = sc.l;
     for (int i = 0; i < 15; i++) {
       if (i < 3) {
         l.set(a.axes()[i]);
@@ -194,22 +275,24 @@ public final class Narrowphase {
       }
       final float overlap = radius(a, l) + radius(b, l) - Math.abs(t.dot(l));
       if (overlap <= 0f) {
-        return null; // separating axis found
+        return false; // separating axis found
       }
       // prefer face axes: an edge axis must be clearly better to win
       final boolean better = i < 6 ? overlap < best : overlap < best * 0.95f - 1e-4f;
       if (better) {
         best = overlap;
-        bestAxis = new Vector3f(l);
+        out.normal.set(l);
+        found = true;
       }
     }
-    if (bestAxis == null) {
-      return null;
+    if (!found) {
+      return false;
     }
-    if (t.dot(bestAxis) < 0f) {
-      bestAxis.negate();
+    if (t.dot(out.normal) < 0f) {
+      out.normal.negate();
     }
-    return new Contact(bestAxis, best);
+    out.depth = best;
+    return true;
   }
 
   private static float radius(Box box, Vector3f axis) {

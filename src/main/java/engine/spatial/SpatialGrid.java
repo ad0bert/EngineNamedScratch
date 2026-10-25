@@ -2,15 +2,17 @@ package engine.spatial;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Uniform grid over bounding spheres, keyed by integer ids chosen by the caller. A sphere is registered in every cell
  * its bounding box touches; spheres bigger than one cell (radius &gt; cellSize) go to a separate "large" list instead,
  * so a ground plane does not fill thousands of cells. Used for the physics broadphase (rebuilt every step) and for
  * culling static render geometry (persistent, updated incrementally).
+ *
+ * <p>
+ * Cells live in a primitive-keyed hash map and cell lists and per-id bookkeeping arrays are recycled, so rebuilding the
+ * grid every step ({@link #clear()} followed by inserts) allocates nothing once it has warmed up.
  */
 public final class SpatialGrid {
 
@@ -54,11 +56,112 @@ public final class SpatialGrid {
     void visit(IntList ids, float minX, float minY, float minZ, float maxX, float maxY, float maxZ);
   }
 
+  /** Open-addressing long to IntList map (linear probing, backward-shift deletion): no key boxing. */
+  private static final class CellMap {
+    private long[] keys = new long[64];
+    private IntList[] vals = new IntList[64];
+    private int size;
+
+    private static int hash(long k) {
+      return (int) ((k * 0x9E3779B97F4A7C15L) >>> 32);
+    }
+
+    int size() {
+      return this.size;
+    }
+
+    IntList get(long key) {
+      final int mask = this.keys.length - 1;
+      int i = hash(key) & mask;
+      while (this.vals[i] != null) {
+        if (this.keys[i] == key) {
+          return this.vals[i];
+        }
+        i = (i + 1) & mask;
+      }
+      return null;
+    }
+
+    void put(long key, IntList list) {
+      if ((this.size + 1) * 2 > this.keys.length) {
+        grow();
+      }
+      final int mask = this.keys.length - 1;
+      int i = hash(key) & mask;
+      while (this.vals[i] != null) {
+        i = (i + 1) & mask;
+      }
+      this.keys[i] = key;
+      this.vals[i] = list;
+      this.size++;
+    }
+
+    void remove(long key) {
+      final int mask = this.keys.length - 1;
+      int i = hash(key) & mask;
+      while (this.vals[i] != null && this.keys[i] != key) {
+        i = (i + 1) & mask;
+      }
+      if (this.vals[i] == null) {
+        return;
+      }
+      this.vals[i] = null;
+      this.size--;
+      int j = i;
+      while (true) {
+        j = (j + 1) & mask;
+        if (this.vals[j] == null) {
+          return;
+        }
+        final int home = hash(this.keys[j]) & mask;
+        final boolean stays = i <= j ? i < home && home <= j : i < home || home <= j;
+        if (!stays) {
+          this.keys[i] = this.keys[j];
+          this.vals[i] = this.vals[j];
+          this.vals[j] = null;
+          i = j;
+        }
+      }
+    }
+
+    /** Empties the map, handing the lists to {@code pool}. */
+    void clear(List<IntList> pool) {
+      if (this.size == 0) {
+        return;
+      }
+      for (int i = 0; i < this.vals.length; i++) {
+        if (this.vals[i] != null) {
+          this.vals[i].clear();
+          pool.add(this.vals[i]);
+          this.vals[i] = null;
+        }
+      }
+      this.size = 0;
+    }
+
+    private void grow() {
+      final long[] oldKeys = this.keys;
+      final IntList[] oldVals = this.vals;
+      this.keys = new long[oldKeys.length * 2];
+      this.vals = new IntList[oldKeys.length * 2];
+      this.size = 0;
+      for (int i = 0; i < oldKeys.length; i++) {
+        if (oldVals[i] != null) {
+          put(oldKeys[i], oldVals[i]);
+        }
+      }
+    }
+  }
+
   private final float cellSize;
-  private final Map<Long, IntList> cells = new HashMap<>();
+  private final CellMap cells = new CellMap();
+  private final List<IntList> pool = new ArrayList<>();
   private final IntList large = new IntList();
-  private final List<long[]> membership = new ArrayList<>(); // id -> cell keys, or null for large/absent
-  private final List<Boolean> isLarge = new ArrayList<>();
+  // per id: the cell keys it is registered in (arrays are reused) and whether it went to the large list
+  private long[][] memberKeys = new long[16][];
+  private int[] memberCount = new int[16];
+  private boolean[] isLarge = new boolean[16];
+  private int idLimit; // ids >= idLimit have not been inserted since the last clear()
   // extent of all cells ever used since the last clear(); shrinking on removal is not worth the bookkeeping
   private final int[] boundsMin = { Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE };
   private final int[] boundsMax = { Integer.MIN_VALUE, Integer.MIN_VALUE, Integer.MIN_VALUE };
@@ -77,13 +180,16 @@ public final class SpatialGrid {
   /** Registers (or re-registers) {@code id}. */
   public void insert(int id, float x, float y, float z, float radius) {
     remove(id);
-    while (this.membership.size() <= id) {
-      this.membership.add(null);
-      this.isLarge.add(Boolean.FALSE);
+    if (id >= this.memberKeys.length) {
+      final int n = Math.max(id + 1, this.memberKeys.length * 2);
+      this.memberKeys = Arrays.copyOf(this.memberKeys, n);
+      this.memberCount = Arrays.copyOf(this.memberCount, n);
+      this.isLarge = Arrays.copyOf(this.isLarge, n);
     }
+    this.idLimit = Math.max(this.idLimit, id + 1);
     if (radius > this.cellSize) {
       this.large.add(id);
-      this.isLarge.set(id, Boolean.TRUE);
+      this.isLarge[id] = true;
       return;
     }
     final int x0 = cell(x - radius);
@@ -98,51 +204,63 @@ public final class SpatialGrid {
     this.boundsMax[0] = Math.max(this.boundsMax[0], x1);
     this.boundsMax[1] = Math.max(this.boundsMax[1], y1);
     this.boundsMax[2] = Math.max(this.boundsMax[2], z1);
-    final long[] keys = new long[(x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1)];
+    final int cellCount = (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1);
+    long[] keys = this.memberKeys[id];
+    if (keys == null || keys.length < cellCount) {
+      keys = new long[cellCount];
+      this.memberKeys[id] = keys;
+    }
     int n = 0;
     for (int cx = x0; cx <= x1; cx++) {
       for (int cy = y0; cy <= y1; cy++) {
         for (int cz = z0; cz <= z1; cz++) {
           final long key = key(cx, cy, cz);
-          this.cells.computeIfAbsent(key, k -> new IntList()).add(id);
+          IntList list = this.cells.get(key);
+          if (list == null) {
+            list = this.pool.isEmpty() ? new IntList() : this.pool.remove(this.pool.size() - 1);
+            this.cells.put(key, list);
+          }
+          list.add(id);
           keys[n++] = key;
         }
       }
     }
-    this.membership.set(id, keys);
+    this.memberCount[id] = n;
   }
 
   public void remove(int id) {
-    if (id < 0 || id >= this.membership.size()) {
+    if (id < 0 || id >= this.idLimit) {
       return;
     }
-    if (this.isLarge.get(id)) {
+    if (this.isLarge[id]) {
       this.large.removeValue(id);
-      this.isLarge.set(id, Boolean.FALSE);
+      this.isLarge[id] = false;
       return;
     }
-    final long[] keys = this.membership.get(id);
-    if (keys != null) {
-      for (long key : keys) {
-        final IntList list = this.cells.get(key);
-        if (list != null) {
-          list.removeValue(id);
-          if (list.size() == 0) {
-            this.cells.remove(key);
-          }
+    final long[] keys = this.memberKeys[id];
+    final int count = this.memberCount[id];
+    for (int i = 0; i < count; i++) {
+      final long key = keys[i];
+      final IntList list = this.cells.get(key);
+      if (list != null) {
+        list.removeValue(id);
+        if (list.size() == 0) {
+          this.cells.remove(key);
+          this.pool.add(list);
         }
       }
-      this.membership.set(id, null);
     }
+    this.memberCount[id] = 0;
   }
 
   public void clear() {
-    this.cells.clear();
+    this.cells.clear(this.pool);
     this.large.clear();
-    this.membership.clear();
-    this.isLarge.clear();
-    java.util.Arrays.fill(this.boundsMin, Integer.MAX_VALUE);
-    java.util.Arrays.fill(this.boundsMax, Integer.MIN_VALUE);
+    Arrays.fill(this.memberCount, 0, this.idLimit, 0);
+    Arrays.fill(this.isLarge, 0, this.idLimit, false);
+    this.idLimit = 0;
+    Arrays.fill(this.boundsMin, Integer.MAX_VALUE);
+    Arrays.fill(this.boundsMax, Integer.MIN_VALUE);
   }
 
   /** Ids of spheres too large for the grid; callers must test them against everything. */
@@ -161,7 +279,7 @@ public final class SpatialGrid {
    */
   public void forEachCellInBox(float minX, float minY, float minZ, float maxX, float maxY, float maxZ,
       CellVisitor visitor) {
-    if (this.cells.isEmpty()) {
+    if (this.cells.size() == 0) {
       return;
     }
     final int x0 = Math.max(cell(minX), this.boundsMin[0]);
@@ -194,13 +312,16 @@ public final class SpatialGrid {
   }
 
   public void forEachCell(CellVisitor visitor) {
-    for (Map.Entry<Long, IntList> e : this.cells.entrySet()) {
-      final long k = e.getKey();
-      final float minX = decodeX(k) * this.cellSize;
-      final float minY = decodeY(k) * this.cellSize;
-      final float minZ = decodeZ(k) * this.cellSize;
-      visitor.visit(e.getValue(), minX, minY, minZ, minX + this.cellSize, minY + this.cellSize,
-          minZ + this.cellSize);
+    final CellMap m = this.cells;
+    for (int i = 0; i < m.vals.length; i++) {
+      final IntList list = m.vals[i];
+      if (list != null) {
+        final long k = m.keys[i];
+        final float minX = decodeX(k) * this.cellSize;
+        final float minY = decodeY(k) * this.cellSize;
+        final float minZ = decodeZ(k) * this.cellSize;
+        visitor.visit(list, minX, minY, minZ, minX + this.cellSize, minY + this.cellSize, minZ + this.cellSize);
+      }
     }
   }
 

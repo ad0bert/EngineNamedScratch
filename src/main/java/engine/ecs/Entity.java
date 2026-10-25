@@ -57,12 +57,18 @@ public class Entity {
   }
 
   public <T> Optional<T> find(Class<T> type) {
-    for (Component c : this.components) {
+    return Optional.ofNullable(findOrNull(type));
+  }
+
+  /** Like {@link #find} but returns null instead of an empty Optional; for hot paths. */
+  public <T> T findOrNull(Class<T> type) {
+    for (int i = 0; i < this.components.size(); i++) {
+      final Component c = this.components.get(i);
       if (type.isInstance(c)) {
-        return Optional.of(type.cast(c));
+        return type.cast(c);
       }
     }
-    return Optional.empty();
+    return null;
   }
 
   public <T> T get(Class<T> type) {
@@ -71,6 +77,14 @@ public class Entity {
 
   public boolean has(Class<?> type) {
     return find(type).isPresent();
+  }
+
+  public int componentCount() {
+    return this.components.size();
+  }
+
+  public Component componentAt(int index) {
+    return this.components.get(index);
   }
 
   public List<Component> components() {

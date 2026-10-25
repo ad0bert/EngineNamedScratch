@@ -1,12 +1,8 @@
 package engine.physics;
 
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.function.Predicate;
 
 import org.joml.Vector3f;
@@ -28,6 +24,10 @@ import engine.spatial.SpatialGrid;
  * <p>
  * Emits {@link CollisionEvent}s (also for triggers) when overlaps start and stop, and offers {@link #raycast} and
  * {@link #overlapSphere} queries against the current colliders.
+ *
+ * <p>
+ * A step does not allocate once it has warmed up: collider shapes are cached and refreshed in place, narrowphase tests
+ * fill a reused contact, pairs are pooled and the pair bookkeeping uses primitive hash tables.
  */
 public class PhysicsSystem implements ISystem {
   private static final float SLOP = 0.005f;
@@ -36,6 +36,8 @@ public class PhysicsSystem implements ISystem {
   private static final float REST_SPEED = 1.0f;
   /** Bounding spheres are grown by this much so near-touching pairs reach the narrowphase. */
   private static final float PAIR_MARGIN = 0.05f;
+  /** Stands in for the velocity of a static collider; never written to because its inverse mass is zero. */
+  private static final Vector3f NO_VELOCITY = new Vector3f();
 
   public final Vector3f gravity = new Vector3f(0f, -9.81f, 0f);
   public int solverIterations = 4;
@@ -47,10 +49,28 @@ public class PhysicsSystem implements ISystem {
 
   private final PhysicsStats stats = new PhysicsStats();
   private final IMessageService messages;
-  private Map<Long, Entity[]> active = new HashMap<>();
+  private PairTable active = new PairTable();
+  private PairTable now = new PairTable();
   private SpatialGrid grid;
   private final Vector3f tmp = new Vector3f();
   private final Vector3f tmpPos = new Vector3f();
+  private final Vector3f tmpCenter = new Vector3f();
+  private final Vector3f relativeVelocity = new Vector3f();
+  private final Vector3f tangent = new Vector3f();
+  private final Narrowphase.Contact contact = new Narrowphase.Contact();
+
+  // broadphase scratch, reused every step
+  private final List<Pair> pairs = new ArrayList<>();
+  private final List<Pair> sparePairs = new ArrayList<>();
+  private final List<Pair> solvable = new ArrayList<>();
+  private final LongSet seen = new LongSet();
+  private float[] cx = new float[64];
+  private float[] cy = new float[64];
+  private float[] cz = new float[64];
+  private float[] radius = new float[64];
+  private Rigidbody[] bodyOf = new Rigidbody[64];
+  private List<Collider> colliders;
+  private final SpatialGrid.CellVisitor cellPairs = this::visitCell;
 
   /** Test hook: pair every collider with every other one instead of using the grid. */
   boolean bruteForceBroadphase;
@@ -63,7 +83,29 @@ public class PhysicsSystem implements ISystem {
     return this.stats;
   }
 
-  record Pair(Collider a, Collider b, Rigidbody ra, Rigidbody rb) {
+  /** A candidate pair; instances are pooled and only valid until the next {@link #findPairs}. */
+  static final class Pair {
+    private Collider a;
+    private Collider b;
+    private Rigidbody ra;
+    private Rigidbody rb;
+    private boolean hit;
+
+    Collider a() {
+      return this.a;
+    }
+
+    Collider b() {
+      return this.b;
+    }
+
+    Rigidbody ra() {
+      return this.ra;
+    }
+
+    Rigidbody rb() {
+      return this.rb;
+    }
   }
 
   private static float awakeInverseMass(Rigidbody r) {
@@ -75,8 +117,8 @@ public class PhysicsSystem implements ISystem {
     final float dt = (float) dtD;
     final List<Rigidbody> bodies = scene.components(Rigidbody.class);
     final List<Collider> colliders = scene.components(Collider.class);
-    for (Rigidbody b : bodies) {
-      b.touchedThisStep = false;
+    for (int i = 0; i < bodies.size(); i++) {
+      bodies.get(i).touchedThisStep = false;
     }
     integrate(bodies, dt);
 
@@ -88,48 +130,62 @@ public class PhysicsSystem implements ISystem {
     final float wakeSpeedSq = wakeSpeed * wakeSpeed;
 
     // detection: events, wake-ups and "is resting on something" bookkeeping
-    final Map<Long, Entity[]> now = new HashMap<>();
+    this.now.clear();
     int contacts = 0;
-    for (Pair p : pairs) {
-      if (Narrowphase.test(p.a(), p.b()) == null) {
+    for (int i = 0; i < pairs.size(); i++) {
+      final Pair p = pairs.get(i);
+      p.hit = Narrowphase.test(p.a, p.b, this.contact);
+      if (!p.hit) {
         continue;
       }
       contacts++;
-      now.put(key(p.a().entity(), p.b().entity()), new Entity[] { p.a().entity(), p.b().entity() });
-      if (!p.a().trigger && !p.b().trigger) {
-        touch(p.ra());
-        touch(p.rb());
-        wakeOnImpact(p.ra(), p.rb(), wakeSpeedSq);
-        wakeOnImpact(p.rb(), p.ra(), wakeSpeedSq);
+      final Entity ea = p.a.entity();
+      final Entity eb = p.b.entity();
+      this.now.put(key(ea, eb), ea, eb);
+      if (!p.a.trigger && !p.b.trigger) {
+        touch(p.ra);
+        touch(p.rb);
+        wakeOnImpact(p.ra, p.rb, wakeSpeedSq);
+        wakeOnImpact(p.rb, p.ra, wakeSpeedSq);
       }
     }
-    for (Rigidbody b : bodies) {
+    for (int i = 0; i < bodies.size(); i++) {
+      final Rigidbody b = bodies.get(i);
       if (b.sleeping && !b.touchedThisStep) {
         b.wakeUp(); // lost its support (or never had one)
       }
     }
 
-    final List<Pair> solvable = new ArrayList<>();
-    for (Pair p : pairs) {
-      if (!p.a().trigger && !p.b().trigger && (awakeInverseMass(p.ra()) > 0f || awakeInverseMass(p.rb()) > 0f)) {
-        solvable.add(p);
+    // only pairs that touched at detection are solved: the rest were merely close
+    this.solvable.clear();
+    for (int i = 0; i < pairs.size(); i++) {
+      final Pair p = pairs.get(i);
+      if (p.hit && !p.a.trigger && !p.b.trigger
+          && (awakeInverseMass(p.ra) > 0f || awakeInverseMass(p.rb) > 0f)) {
+        this.solvable.add(p);
       }
     }
-    for (int i = 0; i < this.solverIterations; i++) {
-      for (Pair p : solvable) {
-        final Narrowphase.Contact c = Narrowphase.test(p.a(), p.b());
-        if (c != null) {
-          resolve(p, c);
+    for (int it = 0; it < this.solverIterations; it++) {
+      for (int i = 0; i < this.solvable.size(); i++) {
+        final Pair p = this.solvable.get(i);
+        if (Narrowphase.test(p.a, p.b, this.contact)) {
+          resolve(p, this.contact);
         }
       }
     }
 
     updateSleep(bodies, dt);
-    sendEvents(now);
+    sendEvents();
 
+    int sleeping = 0;
+    for (int i = 0; i < bodies.size(); i++) {
+      if (bodies.get(i).sleeping) {
+        sleeping++;
+      }
+    }
     this.stats.colliders = colliders.size();
     this.stats.bodies = bodies.size();
-    this.stats.sleepingBodies = (int) bodies.stream().filter(b -> b.sleeping).count();
+    this.stats.sleepingBodies = sleeping;
     this.stats.candidatePairs = pairs.size();
     this.stats.contacts = contacts;
   }
@@ -151,7 +207,8 @@ public class PhysicsSystem implements ISystem {
   }
 
   private void integrate(List<Rigidbody> bodies, float dt) {
-    for (Rigidbody b : bodies) {
+    for (int i = 0; i < bodies.size(); i++) {
+      final Rigidbody b = bodies.get(i);
       final var t = b.entity().transform();
       t.worldPosition(this.tmpPos);
       if (b.sleeping) {
@@ -181,7 +238,8 @@ public class PhysicsSystem implements ISystem {
 
   private void updateSleep(List<Rigidbody> bodies, float dt) {
     final float limit = this.sleepSpeed * this.sleepSpeed;
-    for (Rigidbody b : bodies) {
+    for (int i = 0; i < bodies.size(); i++) {
+      final Rigidbody b = bodies.get(i);
       if (b.kinematic || b.sleeping || !b.allowSleep || !this.sleepingEnabled) {
         b.sleepTimer = 0f;
         continue;
@@ -200,39 +258,50 @@ public class PhysicsSystem implements ISystem {
     }
   }
 
+  /**
+   * Refreshes every collider's cached shape and returns the candidate pairs. The returned list and its pairs are
+   * reused by the next call.
+   */
   List<Pair> findPairs(List<Collider> colliders) {
     final int n = colliders.size();
-    final float[] cx = new float[n];
-    final float[] cy = new float[n];
-    final float[] cz = new float[n];
-    final float[] radius = new float[n];
-    final Rigidbody[] bodies = new Rigidbody[n];
-    final Vector3f c = new Vector3f();
+    ensureCapacity(n);
+    this.colliders = colliders;
+    for (int i = 0; i < this.pairs.size(); i++) {
+      final Pair p = this.pairs.get(i);
+      p.a = null;
+      p.b = null;
+      p.ra = null;
+      p.rb = null;
+      this.sparePairs.add(p);
+    }
+    this.pairs.clear();
+    this.seen.clear();
+
     float dynamicRadiusSum = 0f;
     int dynamicCount = 0;
     for (int i = 0; i < n; i++) {
       final Collider col = colliders.get(i);
-      col.worldCenter(c);
-      cx[i] = c.x;
-      cy[i] = c.y;
-      cz[i] = c.z;
-      radius[i] = col.boundingRadius();
-      bodies[i] = col.entity().find(Rigidbody.class).orElse(null);
-      if (bodies[i] != null && !bodies[i].kinematic) {
-        dynamicRadiusSum += radius[i];
+      col.refresh();
+      col.cachedCenter(this.tmpCenter);
+      this.cx[i] = this.tmpCenter.x;
+      this.cy[i] = this.tmpCenter.y;
+      this.cz[i] = this.tmpCenter.z;
+      this.radius[i] = col.cachedRadius();
+      final Rigidbody body = col.entity().findOrNull(Rigidbody.class);
+      this.bodyOf[i] = body;
+      if (body != null && !body.kinematic) {
+        dynamicRadiusSum += this.radius[i];
         dynamicCount++;
       }
     }
 
-    final List<Pair> pairs = new ArrayList<>();
-    final Set<Long> seen = new HashSet<>();
     if (this.bruteForceBroadphase) {
       for (int i = 0; i < n; i++) {
         for (int j = i + 1; j < n; j++) {
-          tryPair(colliders, bodies, cx, cy, cz, radius, i, j, seen, pairs);
+          tryPair(i, j);
         }
       }
-      return pairs;
+      return this.pairs;
     }
 
     // cells a bit larger than the typical moving body, so a body touches few cells and cells hold few bodies
@@ -244,52 +313,73 @@ public class PhysicsSystem implements ISystem {
     }
     this.stats.cellSize = this.grid.cellSize();
     for (int i = 0; i < n; i++) {
-      this.grid.insert(i, cx[i], cy[i], cz[i], radius[i] + PAIR_MARGIN);
+      this.grid.insert(i, this.cx[i], this.cy[i], this.cz[i], this.radius[i] + PAIR_MARGIN);
     }
-    this.grid.forEachCell((ids, x0, y0, z0, x1, y1, z1) -> {
-      for (int a = 0; a < ids.size(); a++) {
-        for (int b = a + 1; b < ids.size(); b++) {
-          tryPair(colliders, bodies, cx, cy, cz, radius, ids.get(a), ids.get(b), seen, pairs);
-        }
-      }
-    });
+    this.grid.forEachCell(this.cellPairs);
     final SpatialGrid.IntList large = this.grid.large();
     for (int k = 0; k < large.size(); k++) {
       for (int j = 0; j < n; j++) {
         if (j != large.get(k)) {
-          tryPair(colliders, bodies, cx, cy, cz, radius, large.get(k), j, seen, pairs);
+          tryPair(large.get(k), j);
         }
       }
     }
-    return pairs;
+    return this.pairs;
   }
 
-  private static void tryPair(List<Collider> colliders, Rigidbody[] bodies, float[] cx, float[] cy, float[] cz,
-      float[] radius, int i, int j, Set<Long> seen, List<Pair> out) {
-    final long k = (long) Math.min(i, j) << 32 | Math.max(i, j);
-    if (!seen.add(k)) {
+  private void ensureCapacity(int n) {
+    if (this.cx.length < n) {
+      final int size = Math.max(n, this.cx.length * 2);
+      this.cx = new float[size];
+      this.cy = new float[size];
+      this.cz = new float[size];
+      this.radius = new float[size];
+      this.bodyOf = new Rigidbody[size];
+    }
+  }
+
+  private void visitCell(SpatialGrid.IntList ids, float x0, float y0, float z0, float x1, float y1, float z1) {
+    for (int a = 0; a < ids.size(); a++) {
+      for (int b = a + 1; b < ids.size(); b++) {
+        tryPair(ids.get(a), ids.get(b));
+      }
+    }
+  }
+
+  private void tryPair(int i, int j) {
+    // the cheap rejects come first: most candidates die here without touching the set
+    final Rigidbody bi = this.bodyOf[i];
+    final Rigidbody bj = this.bodyOf[j];
+    final Collider a = this.colliders.get(i);
+    final Collider b = this.colliders.get(j);
+    if (bi == null && bj == null && !a.trigger && !b.trigger) {
+      return; // static vs static: nothing to resolve and no events wanted
+    }
+    final float dx = this.cx[i] - this.cx[j];
+    final float dy = this.cy[i] - this.cy[j];
+    final float dz = this.cz[i] - this.cz[j];
+    final float reach = this.radius[i] + this.radius[j] + 2f * PAIR_MARGIN;
+    if (dx * dx + dy * dy + dz * dz > reach * reach) {
       return;
     }
-    final Collider a = colliders.get(i);
-    final Collider b = colliders.get(j);
     if (a.entity() == b.entity()) {
       return;
     }
-    if (bodies[i] == null && bodies[j] == null && !a.trigger && !b.trigger) {
-      return; // static vs static: nothing to resolve and no events wanted
+    if (!this.seen.add((long) Math.min(i, j) << 32 | Math.max(i, j))) {
+      return; // reached through another cell already
     }
-    final float dx = cx[i] - cx[j];
-    final float dy = cy[i] - cy[j];
-    final float dz = cz[i] - cz[j];
-    final float reach = radius[i] + radius[j] + 2f * PAIR_MARGIN;
-    if (dx * dx + dy * dy + dz * dz <= reach * reach) {
-      out.add(new Pair(a, b, bodies[i], bodies[j]));
-    }
+    final Pair p = this.sparePairs.isEmpty() ? new Pair() : this.sparePairs.remove(this.sparePairs.size() - 1);
+    p.a = a;
+    p.b = b;
+    p.ra = bi;
+    p.rb = bj;
+    p.hit = false;
+    this.pairs.add(p);
   }
 
   private void resolve(Pair p, Narrowphase.Contact c) {
-    final float invA = awakeInverseMass(p.ra());
-    final float invB = awakeInverseMass(p.rb());
+    final float invA = awakeInverseMass(p.ra);
+    final float invB = awakeInverseMass(p.rb);
     final float total = invA + invB;
     if (total <= 0f) {
       return;
@@ -298,21 +388,25 @@ public class PhysicsSystem implements ISystem {
 
     // positional correction, split by inverse mass
     final float corr = Math.max(c.depth() - SLOP, 0f) / total * CORRECTION_PERCENT;
-    if (invA > 0f) {
-      p.a().entity().transform().translateWorld(this.tmp.set(n).mul(-corr * invA));
-    }
-    if (invB > 0f) {
-      p.b().entity().transform().translateWorld(this.tmp.set(n).mul(corr * invB));
+    if (corr > 0f) {
+      if (invA > 0f) {
+        p.a.entity().transform().translateWorld(this.tmp.set(n).mul(-corr * invA));
+        refreshColliders(p.a.entity());
+      }
+      if (invB > 0f) {
+        p.b.entity().transform().translateWorld(this.tmp.set(n).mul(corr * invB));
+        refreshColliders(p.b.entity());
+      }
     }
 
-    final Vector3f va = p.ra() != null ? p.ra().velocity : new Vector3f();
-    final Vector3f vb = p.rb() != null ? p.rb().velocity : new Vector3f();
-    final Vector3f rv = new Vector3f(vb).sub(va);
+    final Vector3f va = p.ra != null ? p.ra.velocity : NO_VELOCITY;
+    final Vector3f vb = p.rb != null ? p.rb.velocity : NO_VELOCITY;
+    final Vector3f rv = this.relativeVelocity.set(vb).sub(va);
     final float vn = rv.dot(n);
     if (vn >= 0f) {
       return; // already separating
     }
-    final float e = vn > -REST_SPEED ? 0f : combineMin(p.ra(), p.rb());
+    final float e = vn > -REST_SPEED ? 0f : combineMin(p.ra, p.rb);
     final float j = -(1f + e) * vn / total;
     if (invA > 0f) {
       va.fma(-j * invA, n);
@@ -323,17 +417,26 @@ public class PhysicsSystem implements ISystem {
 
     // friction along the tangent, limited by mu * normal impulse
     rv.set(vb).sub(va);
-    final Vector3f tangent = rv.fma(-rv.dot(n), n, new Vector3f());
-    final float tl = tangent.length();
+    final Vector3f tg = rv.fma(-rv.dot(n), n, this.tangent);
+    final float tl = tg.length();
     if (tl > 1e-6f) {
-      tangent.div(tl);
-      final float mu = (float) Math.sqrt(friction(p.ra()) * friction(p.rb()));
-      final float jt = Math.max(-mu * j, Math.min(mu * j, -rv.dot(tangent) / total));
+      tg.div(tl);
+      final float mu = (float) Math.sqrt(friction(p.ra) * friction(p.rb));
+      final float jt = Math.max(-mu * j, Math.min(mu * j, -rv.dot(tg) / total));
       if (invA > 0f) {
-        va.fma(-jt * invA, tangent);
+        va.fma(-jt * invA, tg);
       }
       if (invB > 0f) {
-        vb.fma(jt * invB, tangent);
+        vb.fma(jt * invB, tg);
+      }
+    }
+  }
+
+  /** The solver moved an entity: later contact tests in this step must see its colliders at the new position. */
+  private static void refreshColliders(Entity e) {
+    for (int i = 0; i < e.componentCount(); i++) {
+      if (e.componentAt(i) instanceof Collider c) {
+        c.refresh();
       }
     }
   }
@@ -358,24 +461,28 @@ public class PhysicsSystem implements ISystem {
     return i << 32 ^ j;
   }
 
-  private void sendEvents(Map<Long, Entity[]> now) {
-    for (Map.Entry<Long, Entity[]> e : now.entrySet()) {
-      if (!this.active.containsKey(e.getKey())) {
-        emit(e.getValue(), true);
+  private void sendEvents() {
+    final PairTable now = this.now;
+    final PairTable before = this.active;
+    for (int s = 0; s < now.capacity(); s++) {
+      if (now.occupied(s) && !before.contains(now.key(s))) {
+        emit(now.first(s), now.second(s), true);
       }
     }
-    for (Map.Entry<Long, Entity[]> e : this.active.entrySet()) {
-      if (!now.containsKey(e.getKey())) {
-        emit(e.getValue(), false);
+    for (int s = 0; s < before.capacity(); s++) {
+      if (before.occupied(s) && !now.contains(before.key(s))) {
+        emit(before.first(s), before.second(s), false);
       }
     }
     this.active = now;
+    this.now = before; // cleared at the start of the next detection
   }
 
-  private void emit(Entity[] pair, boolean started) {
+  private void emit(Entity a, Entity b, boolean started) {
     this.messages.send(MessageObject.builder().sender(this).queue(MessageQueue.COLLISION)
-        .payload(new CollisionEvent(pair[0], pair[1], started)).build());
+        .payload(new CollisionEvent(a, b, started)).build());
   }
+
 
   /** Nearest non-trigger collider hit by the ray within {@code maxDistance}; {@code dir} need not be normalized. */
   public Optional<RayHit> raycast(Scene scene, Vector3f origin, Vector3f dir, float maxDistance) {
