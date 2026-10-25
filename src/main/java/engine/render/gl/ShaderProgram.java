@@ -14,11 +14,14 @@ import org.joml.Vector4f;
 import com.jogamp.common.nio.Buffers;
 import com.jogamp.opengl.GL3;
 
+import engine.render.Light;
+
 /** Compiled and linked GLSL program loaded from classpath resources. */
 final class ShaderProgram {
   private final int id;
   private final Map<String, Integer> uniforms = new HashMap<>();
   private final FloatBuffer buf16 = Buffers.newDirectFloatBuffer(16);
+  private FloatBuffer bufArray = Buffers.newDirectFloatBuffer(16 * Light.MAX_CASCADES);
 
   ShaderProgram(GL3 gl, String vertexResource, String fragmentResource) {
     final int vs = compile(gl, GL3.GL_VERTEX_SHADER, vertexResource);
@@ -107,6 +110,26 @@ final class ShaderProgram {
   void setVec4Array(GL3 gl, String name, float[] data, int count) {
     if (count > 0) {
       gl.glUniform4fv(loc(gl, name), count, data, 0);
+    }
+  }
+
+  /** Uploads the first {@code count} matrices to a {@code mat4 name[N]} uniform array. */
+  void setMat4Array(GL3 gl, String name, Matrix4f[] matrices, int count) {
+    if (this.bufArray.capacity() < count * 16) {
+      this.bufArray = Buffers.newDirectFloatBuffer(count * 16);
+    }
+    this.bufArray.clear();
+    for (int i = 0; i < count; i++) {
+      matrices[i].get(i * 16, this.bufArray);
+    }
+    this.bufArray.position(0).limit(count * 16);
+    gl.glUniformMatrix4fv(loc(gl, name), count, false, this.bufArray);
+  }
+
+  /** Uploads the first {@code count} floats to a {@code float name[N]} uniform array. */
+  void setFloatArray(GL3 gl, String name, float[] data, int count) {
+    if (count > 0) {
+      gl.glUniform1fv(loc(gl, name), count, data, 0);
     }
   }
 

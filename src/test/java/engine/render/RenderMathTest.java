@@ -15,7 +15,7 @@ class RenderMathTest {
   @Test
   void shadowMatrixCentresTheFocusPoint() {
     final var focus = new Vector3f(3f, 0f, -2f);
-    final var m = ShadowMath.lightViewProj(new Vector3f(-0.4f, -0.8f, -0.3f), focus, 25f, 2048, new Matrix4f());
+    final var m = ShadowMath.cascadeViewProj(new Vector3f(-0.4f, -0.8f, -0.3f), focus, 25f, 2048, new Matrix4f());
     final Vector4f ndc = m.transform(new Vector4f(focus, 1f));
     // snapping moves the centre by less than one texel (2/2048 in NDC)
     assertEquals(0f, ndc.x / ndc.w, 0.002f);
@@ -36,18 +36,18 @@ class RenderMathTest {
         .fma(Math.round(2f / texel) * texel + 0.1f * texel, up);
     final var moved = new Vector3f(base).fma(0.5f * texel, right).fma(0.5f * texel, up);
 
-    final var a = ShadowMath.lightViewProj(dir, base, half, 2048, new Matrix4f());
-    final var b = ShadowMath.lightViewProj(dir, moved, half, 2048, new Matrix4f());
+    final var a = ShadowMath.cascadeViewProj(dir, base, half, 2048, new Matrix4f());
+    final var b = ShadowMath.cascadeViewProj(dir, moved, half, 2048, new Matrix4f());
     assertTrue(a.equals(b, 1e-3f), "sub-texel movement must not change the shadow matrix");
 
     final var far = new Vector3f(base).fma(3f * texel, right);
-    final var c = ShadowMath.lightViewProj(dir, far, half, 2048, new Matrix4f());
+    final var c = ShadowMath.cascadeViewProj(dir, far, half, 2048, new Matrix4f());
     assertTrue(!a.equals(c, 1e-6f), "a multi-texel move must shift the shadow map");
   }
 
   @Test
   void straightDownLightDoesNotProduceNaN() {
-    final var m = ShadowMath.lightViewProj(new Vector3f(0f, -1f, 0f), new Vector3f(), 10f, 1024, new Matrix4f());
+    final var m = ShadowMath.cascadeViewProj(new Vector3f(0f, -1f, 0f), new Vector3f(), 10f, 1024, new Matrix4f());
     assertTrue(Float.isFinite(m.m00()) && Float.isFinite(m.m11()) && Float.isFinite(m.m22()));
   }
 

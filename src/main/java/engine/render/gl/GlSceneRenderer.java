@@ -21,18 +21,22 @@ import engine.render.ShadowMath;
 
 /**
  * Forward scene renderer. All scene bookkeeping (interpolated matrices, caching, culling) lives in
- * {@link RenderQueue}; this class only issues GL calls: a shadow map for the first shadow-casting directional light,
- * then opaque geometry batched by (mesh, material) with GPU instancing, then transparent geometry back to front.
- * Per-frame work reuses its lists, buffers and matrices.
+ * {@link RenderQueue}; this class only issues GL calls: cascaded shadow maps for the first shadow-casting directional
+ * light, then opaque geometry batched by (mesh, material) with GPU instancing, then transparent geometry back to
+ * front. Per-frame work reuses its lists, buffers and matrices.
+ *
+ * <p>
+ * Texture units: 0 albedo, 1 shadow cascades (array texture), 2 normal map.
  */
 final class GlSceneRenderer {
   private static final int SHADOW_SIZE = 2048;
+  private static final boolean DEBUG_CASCADES = Boolean.getBoolean("engine.debugCascades");
 
   private final RenderStats stats;
   private final RenderQueue queue = new RenderQueue();
   private ShaderProgram basic;
   private ShaderProgram depth;
-  private ShadowMap shadowMap;
+  private CascadedShadowMap shadowMap;
   private GlTexture white;
 
   private final List<MeshRenderer> visible = new ArrayList<>();
@@ -44,11 +48,14 @@ final class GlSceneRenderer {
   private final Matrix4f view = new Matrix4f();
   private final Matrix4f proj = new Matrix4f();
   private final Matrix4f viewProj = new Matrix4f();
-  private final Matrix4f lightViewProj = new Matrix4f();
-  private final Matrix4f identity = new Matrix4f();
   private final Matrix4f world = new Matrix4f();
+  private final Matrix4f[] cascadeMatrix = new Matrix4f[Light.MAX_CASCADES];
+  private final float[] cascadeSplit = new float[Light.MAX_CASCADES];
+  private final float[] cascadeTexel = new float[Light.MAX_CASCADES];
   private final Vector3f cameraPos = new Vector3f();
   private final Vector3f cameraForward = new Vector3f();
+  private final Vector3f cameraRight = new Vector3f();
+  private final Vector3f cameraUp = new Vector3f();
   private final Vector3f focus = new Vector3f();
   private final Vector3f direction = new Vector3f();
   private final Vector3f ambient = new Vector3f(0.25f, 0.25f, 0.28f);
@@ -61,13 +68,16 @@ final class GlSceneRenderer {
 
   GlSceneRenderer(RenderStats stats) {
     this.stats = stats;
+    for (int i = 0; i < this.cascadeMatrix.length; i++) {
+      this.cascadeMatrix[i] = new Matrix4f();
+    }
   }
 
   void init(GL3 gl, GlTexture white) {
     this.white = white;
     this.basic = new ShaderProgram(gl, "shaders/basic.vert", "shaders/basic.frag");
     this.depth = new ShaderProgram(gl, "shaders/depth.vert", "shaders/depth.frag");
-    this.shadowMap = new ShadowMap(gl, SHADOW_SIZE);
+    this.shadowMap = new CascadedShadowMap(gl, SHADOW_SIZE, Light.MAX_CASCADES);
     gl.glClearColor(0.53f, 0.7f, 0.9f, 1f);
     gl.glClearDepth(1.0);
     gl.glEnable(GL3.GL_DEPTH_TEST);
@@ -82,26 +92,24 @@ final class GlSceneRenderer {
       return;
     }
     final Camera camera = activeCamera.get();
+    final float aspect = (float) width / Math.max(height, 1);
     camera.viewMatrix(alpha, this.view);
-    camera.projectionMatrix((float) width / Math.max(height, 1), this.proj);
+    camera.projectionMatrix(aspect, this.proj);
     this.proj.mul(this.view, this.viewProj);
     camera.entity().transform().interpolatedWorldMatrix(alpha, this.world);
     this.world.getTranslation(this.cameraPos);
     this.world.transformDirection(this.cameraForward.set(0f, 0f, -1f)).normalize();
+    this.world.transformDirection(this.cameraRight.set(1f, 0f, 0f)).normalize();
+    this.world.transformDirection(this.cameraUp.set(0f, 1f, 0f)).normalize();
 
     this.queue.collect(scene, alpha, this.cameraPos);
     prepareLights(scene, alpha);
 
-    final boolean shadows = this.shadowLight != null;
-    if (shadows) {
-      final float half = this.shadowLight.shadowDistance;
-      this.focus.set(this.cameraPos).fma(half * 0.4f, this.cameraForward);
-      this.shadowLight.entity().transform().interpolatedWorldMatrix(alpha, this.world);
-      this.world.transformDirection(this.direction.set(0f, 0f, -1f)).normalize();
-      ShadowMath.lightViewProj(this.direction, this.focus, half, SHADOW_SIZE, this.lightViewProj);
-      shadowPass(gl, width, height);
+    int cascades = 0;
+    if (this.shadowLight != null) {
+      cascades = shadowPasses(gl, camera, aspect, alpha, width, height);
     }
-    mainPass(gl, shadows);
+    mainPass(gl, cascades);
   }
 
   private void prepareLights(Scene scene, float alpha) {
@@ -156,22 +164,49 @@ final class GlSceneRenderer {
     a[i * 4 + 3] = w;
   }
 
-  private void shadowPass(GL3 gl, int width, int height) {
-    this.queue.cull(this.lightViewProj, RenderQueue.Pass.SHADOW, this.casters);
-    this.stats.shadowCasters = this.casters.size();
-    RenderQueue.sortForBatching(this.casters, false);
+  /** Renders every cascade into its layer; returns the number of cascades (0 if the range is empty). */
+  private int shadowPasses(GL3 gl, Camera camera, float aspect, float alpha, int width, int height) {
+    final Light light = this.shadowLight;
+    final int count = Math.max(1, Math.min(Light.MAX_CASCADES, light.shadowCascades));
+    final float near = camera.near;
+    final float far = Math.min(camera.far, light.shadowDistance);
+    if (far <= near * 1.001f) {
+      return 0;
+    }
+    final float[] splits = ShadowMath.cascadeSplits(near, far, count, light.cascadeLambda);
+    light.entity().transform().interpolatedWorldMatrix(alpha, this.world);
+    this.world.transformDirection(this.direction.set(0f, 0f, -1f)).normalize();
+    final float fovY = (float) Math.toRadians(camera.fovDegrees);
 
-    this.shadowMap.beginPass(gl);
+    gl.glEnable(GL3.GL_DEPTH_CLAMP); // casters closer to the light than the near plane still shadow the cascade
     gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
-    gl.glPolygonOffset(2f, 4f);
+    gl.glPolygonOffset(1.5f, 2f);
     this.depth.use(gl);
-    this.depth.set(gl, "uLightViewProj", this.lightViewProj);
-    drawList(gl, this.casters, false, true);
+    int totalCasters = 0;
+    for (int i = 0; i < count; i++) {
+      final float d0 = i == 0 ? near : splits[i - 1];
+      final float radius = ShadowMath.sliceBoundingSphere(this.cameraPos, this.cameraRight, this.cameraUp,
+          this.cameraForward, fovY, aspect, d0, splits[i], this.focus);
+      ShadowMath.cascadeViewProj(this.direction, this.focus, radius, SHADOW_SIZE, this.cascadeMatrix[i]);
+      this.cascadeSplit[i] = splits[i];
+      this.cascadeTexel[i] = 2f * radius / SHADOW_SIZE;
+
+      this.queue.cull(this.cascadeMatrix[i], RenderQueue.Pass.SHADOW, this.casters);
+      totalCasters += this.casters.size();
+      RenderQueue.sortForBatching(this.casters, false);
+      this.shadowMap.beginLayer(gl, i);
+      this.depth.set(gl, "uLightViewProj", this.cascadeMatrix[i]);
+      drawList(gl, this.casters, false, true);
+    }
     gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
-    this.shadowMap.endPass(gl, width, height);
+    gl.glDisable(GL3.GL_DEPTH_CLAMP);
+    this.shadowMap.end(gl, width, height);
+    this.stats.shadowCasters = totalCasters;
+    this.stats.shadowCascades = count;
+    return count;
   }
 
-  private void mainPass(GL3 gl, boolean shadows) {
+  private void mainPass(GL3 gl, int cascades) {
     this.basic.use(gl);
     this.basic.set(gl, "uViewProj", this.viewProj);
     this.basic.set(gl, "uCameraPos", this.cameraPos);
@@ -179,11 +214,17 @@ final class GlSceneRenderer {
     this.basic.set(gl, "uLightCount", this.lightCount);
     this.basic.setVec4Array(gl, "uLightPos", this.lightPos, this.lightCount);
     this.basic.setVec4Array(gl, "uLightColor", this.lightColor, this.lightCount);
-    this.basic.set(gl, "uShadowEnabled", shadows ? 1 : 0);
-    this.basic.set(gl, "uShadowViewProj", shadows ? this.lightViewProj : this.identity);
+    this.basic.set(gl, "uCascadeCount", cascades);
+    if (cascades > 0) {
+      this.basic.setMat4Array(gl, "uCascadeMatrix", this.cascadeMatrix, cascades);
+      this.basic.setFloatArray(gl, "uCascadeSplit", this.cascadeSplit, cascades);
+      this.basic.setFloatArray(gl, "uCascadeTexel", this.cascadeTexel, cascades);
+    }
     this.basic.set(gl, "uShadowTexel", 1f / SHADOW_SIZE);
+    this.basic.set(gl, "uDebugCascades", DEBUG_CASCADES ? 1 : 0);
     this.basic.set(gl, "uTexture", 0);
     this.basic.set(gl, "uShadowMap", 1);
+    this.basic.set(gl, "uNormalMap", 2);
     this.shadowMap.bindTexture(gl, 1);
 
     this.queue.cull(this.viewProj, RenderQueue.Pass.MAIN, this.visible);
@@ -243,6 +284,15 @@ final class GlSceneRenderer {
   private void applyMaterial(GL3 gl, Material m) {
     final GlTexture tex = m.texture != null ? (GlTexture) m.texture : this.white;
     tex.bind(gl, 0);
+    if (m.normalMap != null) {
+      ((GlTexture) m.normalMap).bind(gl, 2);
+      this.basic.set(gl, "uHasNormalMap", 1);
+      this.basic.set(gl, "uNormalScale", m.normalScale);
+      this.basic.set(gl, "uNormalFlipY", m.normalMapFlipY ? -1f : 1f);
+    } else {
+      this.white.bind(gl, 2); // keep the sampler valid even though it is not read
+      this.basic.set(gl, "uHasNormalMap", 0);
+    }
     this.basic.set(gl, "uColor", m.color);
     this.basic.set(gl, "uSpecular", m.specular);
     this.basic.set(gl, "uShininess", m.shininess);

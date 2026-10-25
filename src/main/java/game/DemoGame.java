@@ -49,7 +49,8 @@ public class DemoGame implements Game {
 
     final Entity sun = new Entity("sun");
     sun.transform().setEulerDegrees(-50f, -30f, 0f);
-    sun.add(new Light());
+    final Light sunLight = sun.add(new Light());
+    sunLight.shadowDistance = 70f; // three cascades reach 70 m from the camera
     scene.add(sun);
 
     this.player = new Entity("player");
@@ -66,7 +67,9 @@ public class DemoGame implements Game {
     ground.transform().position().set(0f, -1f, 0f);
     final Material grass = new Material().color(0.35f, 0.55f, 0.3f, 1f);
     grass.specular = 0f;
-    ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(60f, 60f)), grass)).setStaticGeometry(true);
+    grass.normalMap = res.texture("gen:ground-bumps", ProceduralTextures.bumps(256, 5f, 4L));
+    grass.normalScale = 0.8f;
+    ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(60f, 60f, 24f, 24f)), grass)).setStaticGeometry(true);
     scene.add(ground);
 
     final Entity groundBody = new Entity("ground-collider");
@@ -101,6 +104,18 @@ public class DemoGame implements Game {
     });
     box.add(new BoxCollider(boxModel.halfExtents()));
     scene.add(box);
+
+    // a normal-mapped brick wall (generated in code); the orbiting light below sweeps across its relief
+    final var bricks = ProceduralTextures.bricks(256);
+    final Material brickMaterial = new Material(res.texture("gen:bricks-albedo", bricks.albedo()));
+    brickMaterial.normalMap = res.texture("gen:bricks-normal", bricks.normal());
+    brickMaterial.specular = 0.15f;
+    final Entity wall = new Entity("wall");
+    wall.transform().position().set(-6f, 0.5f, -2f);
+    wall.transform().setEulerDegrees(0f, 90f, 0f); // the quad faces +Z; turn it to face +X, towards the scene
+    wall.add(new MeshRenderer(res.mesh(MeshFactory.quad(6f, 3f, 3f, 1.5f)), brickMaterial)).setStaticGeometry(true);
+    wall.add(new BoxCollider(3f, 1.5f, 0.15f));
+    scene.add(wall);
 
     // hierarchy: a small glowing cube orbits through a pivot parent and carries a warm point light
     final Entity pivot = new Entity("pivot");

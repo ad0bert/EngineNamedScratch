@@ -7,20 +7,17 @@ layout(location = 3) in mat4 aModel;       // per instance, occupies locations 3
 layout(location = 7) in mat3 aNormalMat;   // per instance (inverse transpose of the model), locations 7-9
 
 uniform mat4 uViewProj;
-uniform mat4 uShadowViewProj;
 uniform float uPointSize;
 
 out vec3 vWorldPos;
 out vec3 vNormal;
 out vec2 vUv;
-out vec4 vShadowPos;
 
 void main() {
   vec4 world = aModel * vec4(aPos, 1.0);
   vWorldPos = world.xyz;
   vNormal = normalize(aNormalMat * aNormal);
   vUv = aUv;
-  vShadowPos = uShadowViewProj * world;
   gl_Position = uViewProj * world;
   gl_PointSize = uPointSize;
 }

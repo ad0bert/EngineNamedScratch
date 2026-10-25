@@ -6,6 +6,7 @@ public class RenderStats {
   public int instances;
   public int culled;
   public int shadowCasters;
+  public int shadowCascades;
   public int lights;
 
   public void reset() {
@@ -13,6 +14,7 @@ public class RenderStats {
     this.instances = 0;
     this.culled = 0;
     this.shadowCasters = 0;
+    this.shadowCascades = 0;
     this.lights = 0;
   }
 }

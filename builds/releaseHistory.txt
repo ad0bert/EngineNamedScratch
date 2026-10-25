@@ -1,3 +1,10 @@
+Version 0.4.0
+Visual quality. Contains:
+- Tangent-space normal maps (Material.normalMap, MTL map_Bump/bump/norm with -bm, NormalMaps.fromHeights)
+- Cascaded shadow maps (1-4 cascades, stable bounding-sphere fitting with texel snapping, cascade blending, fade-out,
+  normal-offset bias); Light.shadowDistance/shadowCascades/cascadeLambda; -Dengine.debugCascades
+- Demo: procedural brick wall and bumpy ground, HUD shows cascade count
+
 Version 0.3.0
 Scaling work. Contains:
 - Physics: grid broadphase, sleeping, parented bodies, raycast / overlapSphere queries, Camera.viewRay

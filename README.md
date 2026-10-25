@@ -18,13 +18,15 @@ java -cp "target/classes:$(cat cp.txt)" game.Main     # use ';' instead of ':' o
 Demo controls: mouse look, `WASD`/arrows move, `Space`/`Shift` up/down, `F` throws a crate, `E` pushes the crate
 under the crosshair, `Esc` frees the mouse (click to recapture), `F3` toggles the on-screen debug text.
 
-System properties: `-Dengine.debugGL=true` (throw on GL errors), `-Dengine.exitAfterFrames=N`,
+System properties: `-Dengine.debugGL=true` (throw on GL errors), `-Dengine.debugCascades=true` (tint the shadow
+cascades), `-Dengine.exitAfterFrames=N`,
 `-Dengine.captureMouse=false`.
 
 ## Features
 
 - **Rendering:** GL3 core, GPU-instanced draw calls batched by (mesh, material), frustum culling, up to 8 lights
-  (directional + point), a 2048² shadow map with soft edges for the first shadow-casting directional light,
+  (directional + point), up to 4 cascaded 2048² shadow maps with soft edges and cascade blending for the first
+  shadow-casting directional light, tangent-space normal maps (`Material.normalMap`, or `map_Bump` in an MTL),
   alpha-blended transparent objects sorted back to front, points.
 - **Models:** OBJ with MTL (diffuse colour/texture, specular, shininess, alpha); one part per `usemtl`.
 - **UI:** immediate-mode text and rectangles (`Overlay`, `UiCanvas`) from a Java2D-generated font atlas; the debug HUD
@@ -66,7 +68,7 @@ How it works:
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation), `Scene` (deferred add/remove, cached queries), `ISystem` |
 | `engine.render` | Backend-agnostic: `RenderBackend`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer`, `Camera`, `Light`, `Overlay`/`UiCanvas`, `FontAtlas`, `ShadowMath` |
 | `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, shadows, UI batching) |
-| `engine.resources` | `ResourceManager` (cached meshes/textures/models), `ObjLoader`, `MtlLoader`, `ImageLoader` (ImageIO), `Model` |
+| `engine.resources` | `ResourceManager` (cached meshes/textures/models, generated textures), `ObjLoader`, `MtlLoader`, `ImageLoader` (ImageIO), `NormalMaps` (height field to normal map), `Model` |
 | `engine.spatial` | `SpatialGrid` (used by physics and static-geometry culling) |
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key bindings), `FirstPersonController` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
@@ -94,8 +96,11 @@ forget).
 - Physics is linear only (bodies never rotate). Contacts are single normal/depth pairs, so tall stacks are only
   moderately stable. Sleeping bodies are not carried by moving *static* colliders; make movers kinematic rigidbodies.
 - Raycasts and overlap queries loop over all colliders (with a bounding-sphere early-out); they do not use the grid.
-- Only one shadow map (first directional light, no cascades); point lights do not cast shadows.
+- Shadows come from the first directional light only (up to 4 cascades, fixed 2048² each); point lights do not cast
+  shadows, and casters further than 4 cascade radii towards the light are dropped from a cascade.
+- Normal maps use screen-space derivatives for the tangent frame (no tangent attribute), so meshes need texture
+  coordinates; a mirrored UV layout may light incorrectly. There are no specular, roughness or height maps.
 - Static geometry is a promise: moving it without `invalidate()` leaves stale culling and drawing data.
 - Culling uses bounding spheres, there is no occlusion culling, and the transparent pass is not batched.
 - UI is a single bitmap font (monospaced, ASCII only), no layout system or input handling for widgets.
-- MTL support covers Kd/Ks/Ns/d/map_Kd; no normal/specular maps.
+- MTL support covers Kd/Ks/Ns/d/map_Kd and normal maps (map_Bump, bump, norm with `-bm`).

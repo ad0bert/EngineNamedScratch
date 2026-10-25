@@ -202,4 +202,52 @@ class ResourceTest {
     res.dispose();
     assertEquals(2, backend.disposed);
   }
+
+  @Test
+  void normalMapStatementsAreRecognisedInAllCommonSpellings() throws IOException {
+    final var mats = MtlLoader.parse(new ByteArrayInputStream("""
+        newmtl a
+        map_Bump -bm 0.5 normal a.png
+        newmtl b
+        bump -s 2 2 n/b.png
+        newmtl c
+        norm c.png
+        newmtl d
+        map_bump -clamp on -bm 2 d.png
+        newmtl e
+        Kd 1 1 1
+        """.getBytes(StandardCharsets.UTF_8)));
+    assertEquals("normal a.png", mats.get("a").normalMap()); // file names may contain spaces
+    assertEquals(0.5f, mats.get("a").normalScale(), 0f);
+    assertEquals("n/b.png", mats.get("b").normalMap());
+    assertEquals(1f, mats.get("b").normalScale(), 0f);
+    assertEquals("c.png", mats.get("c").normalMap());
+    assertEquals("d.png", mats.get("d").normalMap());
+    assertEquals(2f, mats.get("d").normalScale(), 0f);
+    assertEquals(null, mats.get("e").normalMap());
+  }
+
+  @Test
+  void modelsPickUpNormalMapAndScaleFromTheirMtl() {
+    final var backend = new FakeBackend();
+    final var res = new ResourceManager(backend);
+    final Model m = res.model("objects/bumpy/bumpy.obj");
+    final var material = m.parts().get(0).material();
+    assertNotNull(material.texture);
+    assertNotNull(material.normalMap);
+    assertNotSame(material.texture, material.normalMap);
+    assertEquals(0.5f, material.normalScale, 0f);
+    assertEquals(2, backend.images.size());
+  }
+
+  @Test
+  void generatedTexturesAreCachedByKey() {
+    final var backend = new FakeBackend();
+    final var res = new ResourceManager(backend);
+    final var img = ImageData.solid(1, 2, 3, 4);
+    assertSame(res.texture("gen:x", img), res.texture("gen:x", ImageData.solid(9, 9, 9, 9)));
+    assertEquals(1, backend.images.size());
+    res.dispose();
+    assertEquals(1, backend.disposed);
+  }
 }

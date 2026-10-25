@@ -9,6 +9,7 @@ import java.util.Map;
 
 import engine.render.GpuMesh;
 import engine.render.GpuTexture;
+import engine.render.ImageData;
 import engine.render.Material;
 import engine.render.MeshData;
 import engine.render.RenderBackend;
@@ -49,6 +50,14 @@ public class ResourceManager {
       t = white();
     }
     return t;
+  }
+
+  /**
+   * Uploads generated pixels (procedural textures, normal maps from {@link NormalMaps}) under a unique key; asking
+   * again with the same key returns the cached texture. The manager disposes it on shutdown.
+   */
+  public GpuTexture texture(String key, ImageData image) {
+    return this.textures.computeIfAbsent(key, k -> this.backend.createTexture(image));
   }
 
   /** A single mesh from an OBJ file; materials are ignored. */
@@ -110,6 +119,10 @@ public class ResourceManager {
     out.shininess = m.shininess();
     if (m.diffuseMap() != null) {
       out.texture = texture(dir + m.diffuseMap());
+    }
+    if (m.normalMap() != null) {
+      out.normalMap = texture(dir + m.normalMap());
+      out.normalScale = m.normalScale();
     }
     return out;
   }

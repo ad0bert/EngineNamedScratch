@@ -8,10 +8,11 @@ import engine.ecs.Component;
 /**
  * A light. {@link Type#DIRECTIONAL} lights shine along the entity's forward (-Z) axis; {@link Type#POINT} lights
  * radiate from the entity position and fade out at {@link #range}. At most {@link #MAX_LIGHTS} lights are used per
- * frame; the first shadow-casting directional light gets a shadow map.
+ * frame; the first shadow-casting directional light gets cascaded shadow maps.
  */
 public class Light extends Component {
   public static final int MAX_LIGHTS = 8;
+  public static final int MAX_CASCADES = 4;
 
   public enum Type {
     DIRECTIONAL, POINT
@@ -26,8 +27,15 @@ public class Light extends Component {
   public final Vector3f ambient = new Vector3f(0.25f, 0.25f, 0.28f);
   /** Directional lights only: render a shadow map. */
   public boolean castShadows = true;
-  /** Half-size of the area around the camera covered by the shadow map, in world units. */
-  public float shadowDistance = 25f;
+  /**
+   * Directional lights only: how far from the camera (along its view direction, in world units) shadows are drawn.
+   * Beyond this distance surfaces are lit without shadows (with a short fade).
+   */
+  public float shadowDistance = 80f;
+  /** Directional lights only: number of cascaded shadow maps, 1 to {@link #MAX_CASCADES}. */
+  public int shadowCascades = 3;
+  /** Blend between uniform (0) and logarithmic (1) cascade splits; higher gives the nearest cascade more detail. */
+  public float cascadeLambda = 0.7f;
 
   public static Light point(float r, float g, float b, float intensity, float range) {
     final Light l = new Light();

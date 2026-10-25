@@ -11,6 +11,12 @@ public class Material {
   /** Unique per material; used to group draws that share a material. */
   public final int sortKey = NEXT_KEY.incrementAndGet();
   public GpuTexture texture;
+  /** Tangent-space normal map (OpenGL convention, +Y up); needs the mesh to have texture coordinates. */
+  public GpuTexture normalMap;
+  /** Strength of the normal map: 0 flattens it, 1 is as authored, above 1 exaggerates. */
+  public float normalScale = 1f;
+  /** Set for normal maps authored with the DirectX convention (green channel pointing down). */
+  public boolean normalMapFlipY;
   public final Vector4f color = new Vector4f(1f, 1f, 1f, 1f);
   public float specular = 0.3f;
   public float shininess = 32f;

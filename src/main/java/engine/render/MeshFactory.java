@@ -48,13 +48,18 @@ public final class MeshFactory {
 
   /** Quad in the XY plane facing +Z, centred on the origin. */
   public static MeshData quad(float width, float height) {
+    return quad(width, height, 1f, 1f);
+  }
+
+  /** Like {@link #quad(float, float)} with the texture repeated {@code uRepeat} x {@code vRepeat} times. */
+  public static MeshData quad(float width, float height, float uRepeat, float vRepeat) {
     final float w = width / 2;
     final float h = height / 2;
     final float[] v = {
         -w, -h, 0, 0, 0, 1, 0, 0,
-        w, -h, 0, 0, 0, 1, 1, 0,
-        w, h, 0, 0, 0, 1, 1, 1,
-        -w, h, 0, 0, 0, 1, 0, 1 };
+        w, -h, 0, 0, 0, 1, uRepeat, 0,
+        w, h, 0, 0, 0, 1, uRepeat, vRepeat,
+        -w, h, 0, 0, 0, 1, 0, vRepeat };
     return MeshData.triangles(v, new int[] { 0, 1, 2, 0, 2, 3 });
   }
 

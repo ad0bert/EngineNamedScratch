@@ -1,0 +1,4 @@
+newmtl wall
+Kd 1 1 1
+map_Kd diffuse.png
+map_Bump -bm 0.5 normal.png

@@ -43,10 +43,10 @@ public class DebugOverlay implements ISystem, Overlay {
     }).orElse("-");
     final PhysicsStats p = this.engine.physics().stats();
     this.text = String.format(Locale.ROOT, "%s %s\n%.0f fps\nentities %d\n"
-        + "draw calls %d  instances %d\nculled %d  shadow casters %d  lights %d\n"
+        + "draw calls %d  instances %d\nculled %d  shadow casters %d (%d cascades)  lights %d\n"
         + "bodies %d (%d asleep)  pairs %d  contacts %d\ncamera %s",
         this.engine.config().title(), this.engine.config().version(), this.engine.fps(), scene.entities().size(),
-        s.drawCalls, s.instances, s.culled, s.shadowCasters, s.lights, p.bodies, p.sleepingBodies,
+        s.drawCalls, s.instances, s.culled, s.shadowCasters, s.shadowCascades, s.lights, p.bodies, p.sleepingBodies,
         p.candidatePairs, p.contacts, cam);
   }
 
