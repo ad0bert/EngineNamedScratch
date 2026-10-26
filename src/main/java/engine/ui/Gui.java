@@ -106,7 +106,9 @@ public class Gui {
     this.released = interactive && releases != this.seenReleases;
     this.seenPresses = presses;
     this.seenReleases = releases;
-    this.typed = this.focused != null && interactive ? this.input.consumeTypedText() : "";
+    // always drained, so text typed while no field had the focus does not appear in the next one that gets it
+    final var text = interactive ? this.input.consumeTypedText() : "";
+    this.typed = this.focused != null ? text : "";
     this.hot = null;
     this.overPanel = false;
     this.focusClaimed = false;

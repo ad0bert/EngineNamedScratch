@@ -117,10 +117,16 @@ public final class ShadowMath {
    * the radius (scaled by the largest axis scale).
    */
   public static float worldSphere(MeshData data, Matrix4f model, Vector3f outCenter) {
-    final var localCenter = data.center();
-    final float localRadius = data.halfExtents().length();
-    model.transformPosition(localCenter, outCenter);
-    final var s = model.getScale(new Vector3f());
-    return localRadius * Math.max(s.x, Math.max(s.y, s.z));
+    // runs for every moving renderer every frame: no temporary objects
+    final var min = data.min();
+    final var max = data.max();
+    final float hx = 0.5f * (max.x - min.x);
+    final float hy = 0.5f * (max.y - min.y);
+    final float hz = 0.5f * (max.z - min.z);
+    model.transformPosition(outCenter.set(min).add(max).mul(0.5f));
+    final float sx = model.m00() * model.m00() + model.m01() * model.m01() + model.m02() * model.m02();
+    final float sy = model.m10() * model.m10() + model.m11() * model.m11() + model.m12() * model.m12();
+    final float sz = model.m20() * model.m20() + model.m21() * model.m21() + model.m22() * model.m22();
+    return (float) Math.sqrt((hx * hx + hy * hy + hz * hz) * Math.max(sx, Math.max(sy, sz)));
   }
 }

@@ -518,6 +518,8 @@ final class GlSceneRenderer {
     this.box.set(gl, "uViewProj", this.viewProj);
     gl.glColorMask(false, false, false, false);
     gl.glDepthMask(false);
+    // a box that reaches through the near plane must not be clipped there: it would look hidden while it is not
+    gl.glEnable(GL3.GL_DEPTH_CLAMP);
     gl.glBindVertexArray(this.boxVao);
     final float margin = this.cameraNear * 2f + 0.01f;
     final var cam = this.cameraPos;
@@ -537,6 +539,7 @@ final class GlSceneRenderer {
       addPending(c.key(), query);
     }
     gl.glBindVertexArray(0);
+    gl.glDisable(GL3.GL_DEPTH_CLAMP);
     gl.glDepthMask(true);
     gl.glColorMask(true, true, true, true);
     this.stats.occlusionQueries = this.pendingCount;

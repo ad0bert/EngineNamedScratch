@@ -31,6 +31,8 @@ public class MeshRenderer extends Component {
   float radius;
   /** Half size of the world-space bounding box (centred on {@link #center}). */
   final Vector3f boxHalf = new Vector3f();
+  /** True if the box is worth testing after the sphere (long or flat shapes). */
+  boolean elongated;
   float distSq;
   boolean stateValid;
   long cacheVersion;

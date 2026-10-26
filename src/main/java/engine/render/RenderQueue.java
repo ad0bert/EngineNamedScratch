@@ -88,6 +88,8 @@ public final class RenderQueue {
   private final FrustumIntersection frustum = new FrustumIntersection();
   private final Vector3f boundsMin = new Vector3f();
   private final Vector3f boundsMax = new Vector3f();
+  private final Matrix4f inverse = new Matrix4f();
+  private final Vector3f corner = new Vector3f();
   private final List<OcclusionCell> cells = new ArrayList<>();
   private int cellCount;
   private final List<SpatialGrid.IntList> hiddenCells = new ArrayList<>();
@@ -262,6 +264,8 @@ public final class RenderQueue {
     r.boxHalf.set(Math.abs(m.m00()) * hx + Math.abs(m.m10()) * hy + Math.abs(m.m20()) * hz,
         Math.abs(m.m01()) * hx + Math.abs(m.m11()) * hy + Math.abs(m.m21()) * hz,
         Math.abs(m.m02()) * hx + Math.abs(m.m12()) * hy + Math.abs(m.m22()) * hz);
+    // a cube's sphere is 1.73 times its half size; only clearly longer or flatter shapes gain from a second test
+    r.elongated = r.radius > 2f * Math.min(r.boxHalf.x, Math.min(r.boxHalf.y, r.boxHalf.z));
   }
 
   /**
@@ -295,7 +299,7 @@ public final class RenderQueue {
    */
   public void cull(Matrix4f viewProj, Pass pass, List<MeshRenderer> out, boolean occlusion) {
     this.frustum.set(viewProj);
-    frustumBounds(viewProj, this.boundsMin, this.boundsMax);
+    frustumBounds(viewProj, this.boundsMin, this.boundsMax, this.inverse, this.corner);
     cull(this.frustum, this.boundsMin, this.boundsMax, pass, out, occlusion && pass == Pass.MAIN);
   }
 
@@ -378,10 +382,14 @@ public final class RenderQueue {
 
   /** Axis-aligned bounds of the volume described by a view-projection matrix (perspective or orthographic). */
   static void frustumBounds(Matrix4f viewProj, Vector3f outMin, Vector3f outMax) {
-    final var inverse = new Matrix4f(viewProj).invert();
+    frustumBounds(viewProj, outMin, outMax, new Matrix4f(), new Vector3f());
+  }
+
+  private static void frustumBounds(Matrix4f viewProj, Vector3f outMin, Vector3f outMax, Matrix4f inverse,
+      Vector3f corner) {
+    viewProj.invert(inverse);
     outMin.set(Float.MAX_VALUE);
     outMax.set(-Float.MAX_VALUE);
-    final var corner = new Vector3f();
     for (int i = 0; i < 8; i++) {
       inverse.transformProject((i & 1) == 0 ? -1f : 1f, (i & 2) == 0 ? -1f : 1f, (i & 4) == 0 ? -1f : 1f, corner);
       outMin.min(corner);
@@ -397,11 +405,12 @@ public final class RenderQueue {
     if (!frustum.testSphere(r.center.x, r.center.y, r.center.z, r.radius)) {
       return;
     }
-    // the sphere of a long or flat object is much bigger than the object: check its box too
-    final var c = r.center; // the sphere is centred on the box
-    final var h = r.boxHalf;
-    if (!frustum.testAab(c.x - h.x, c.y - h.y, c.z - h.z, c.x + h.x, c.y + h.y, c.z + h.z)) {
-      return;
+    if (r.elongated) { // the sphere of a long or flat object reaches much further than the object: check its box
+      final var c = r.center; // the sphere is centred on the box
+      final var h = r.boxHalf;
+      if (!frustum.testAab(c.x - h.x, c.y - h.y, c.z - h.z, c.x + h.x, c.y + h.y, c.z + h.z)) {
+        return;
+      }
     }
     r.distSq = r.center.distanceSquared(this.cameraPos);
     out.add(r);

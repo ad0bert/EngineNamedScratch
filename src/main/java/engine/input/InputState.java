@@ -36,6 +36,9 @@ public class InputState {
   private final AtomicIntegerArray buttonReleases = new AtomicIntegerArray(MAX_BUTTONS + 1);
   private final AtomicInteger wheelSteps = new AtomicInteger(); // in 1/100 of a notch
   private final ConcurrentLinkedQueue<Character> typed = new ConcurrentLinkedQueue<>();
+  private final AtomicInteger typedCount = new AtomicInteger();
+  /** Typed text nobody reads is dropped beyond this many characters (oldest first). */
+  private static final int MAX_TYPED = 256;
 
   public void keyDown(short key) {
     if (this.keysDown.add(key)) {
@@ -78,6 +81,9 @@ public class InputState {
   /** A character typed by the user; {@code '\b'} stands for backspace and {@code '\n'} for enter. */
   public void typed(char c) {
     this.typed.add(c);
+    if (this.typedCount.incrementAndGet() > MAX_TYPED && this.typed.poll() != null) {
+      this.typedCount.decrementAndGet();
+    }
   }
 
   public int mouseX() {
@@ -114,6 +120,7 @@ public class InputState {
     }
     final var sb = new StringBuilder();
     for (Character c = this.typed.poll(); c != null; c = this.typed.poll()) {
+      this.typedCount.decrementAndGet();
       sb.append(c.charValue());
     }
     return sb.toString();

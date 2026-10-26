@@ -1,6 +1,6 @@
 package engine.render;
 
-import org.joml.Matrix4f;
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import engine.ecs.Component;
@@ -42,6 +42,7 @@ public class Light extends Component {
   public int shadowCascades = 3;
   /** Blend between uniform (0) and logarithmic (1) cascade splits; higher gives the nearest cascade more detail. */
   public float cascadeLambda = 0.7f;
+  private final Quaternionf rotation = new Quaternionf();
 
   public static Light point(float r, float g, float b, float intensity, float range) {
     final var l = new Light();
@@ -55,6 +56,6 @@ public class Light extends Component {
 
   /** Direction the light travels, in world space. */
   public Vector3f direction(Vector3f dest) {
-    return entity().transform().worldMatrix(new Matrix4f()).transformDirection(dest.set(0f, 0f, -1f)).normalize();
+    return entity().transform().worldRotation(this.rotation).transform(dest.set(0f, 0f, -1f));
   }
 }

@@ -6,7 +6,6 @@ import java.util.Optional;
 import java.util.function.Predicate;
 
 import org.joml.Matrix3f;
-import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
@@ -90,7 +89,6 @@ public class PhysicsSystem implements ISystem {
   private final Vector3f impulse = new Vector3f();
   private final Quaternionf deltaRotation = new Quaternionf();
   private final Quaternionf tmpRotation = new Quaternionf();
-  private final Matrix4f tmpMatrix = new Matrix4f();
   private final Narrowphase.Contact contact = new Narrowphase.Contact();
   private final ContactCache contactCache = new ContactCache();
   private final Vector3f[] warmFriction = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
@@ -400,7 +398,7 @@ public class PhysicsSystem implements ISystem {
       }
       if (b.kinematic) {
         // velocity and spin of a moved-by-code body are estimated from how it moved and turned since the last step
-        t.worldMatrix(this.tmpMatrix).getNormalizedRotation(this.tmpRotation);
+        t.worldRotation(this.tmpRotation);
         if (b.hasLastPosition && dt > 0f) {
           b.velocity.set(this.tmpPos).sub(b.lastPosition).div(dt);
           spin(b.lastRotation, this.tmpRotation, dt, b.angularVelocity);

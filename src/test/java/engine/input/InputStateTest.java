@@ -97,5 +97,11 @@ class InputStateTest {
     s.typed('ï');
     assertEquals("hï", s.consumeTypedText());
     assertEquals("", s.consumeTypedText());
+    for (int i = 0; i < 1000; i++) { // nobody reads it: only the most recent text is kept
+      s.typed((char) ('a' + i % 26));
+    }
+    final var kept = s.consumeTypedText();
+    assertEquals(256, kept.length());
+    assertEquals((char) ('a' + 999 % 26), kept.charAt(255));
   }
 }

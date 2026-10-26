@@ -44,6 +44,7 @@ public class DemoGame implements Game {
   private float turntableSpeed = 0.6f;
   private String aim = "";
   private Gui gui;
+  private FirstPersonController controller;
   private String playerName = "Player";
 
   @Override
@@ -63,6 +64,7 @@ public class DemoGame implements Game {
     this.player.transform().position().set(0f, 1.5f, 8f);
     this.player.add(new Camera());
     final var controller = this.player.add(new FirstPersonController(engine.input()));
+    this.controller = controller;
     // -Ddemo.camera=x,y,z,yaw,pitch starts somewhere else (handy for screenshots)
     final var start = System.getProperty("demo.camera");
     if (start != null) {
@@ -316,6 +318,7 @@ public class DemoGame implements Game {
   @Override
   public void update(Engine engine, double dt) {
     this.turntable.transform().rotation().rotateY((float) dt * this.turntableSpeed);
+    this.controller.setEnabled(!this.gui.wantsKeyboard()); // typing a name must not walk around
     final var t = this.player.transform();
     final var forward = t.forward(new Vector3f());
     if (engine.input().wasActionPressed("spawn")) {

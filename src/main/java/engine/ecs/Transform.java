@@ -177,6 +177,12 @@ public class Transform {
     return dest;
   }
 
+  /** Rotation part of the world matrix (scale removed). */
+  public Quaternionf worldRotation(Quaternionf dest) {
+    final var s = SCRATCH.get();
+    return world(s.tmp, s, 0).getNormalizedRotation(dest);
+  }
+
   public Vector3f worldPosition(Vector3f dest) {
     final var s = SCRATCH.get();
     return world(s.tmp, s, 0).getTranslation(dest);

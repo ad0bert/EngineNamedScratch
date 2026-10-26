@@ -1,3 +1,19 @@
+Version 0.5.0
+Known limitations addressed. Contains:
+- Physics: warm-started contact impulses and speculative contacts (12-crate stacks stand without sleeping, 20 with),
+  friction solved before the normal rows, compound bodies (mass split by volume, parallel-axis inertia), kinematic
+  bodies and static colliders moved by code carry and drag what rests on them, grid-accelerated raycasts and
+  overlapSphere (3D DDA)
+- Rendering: point light cube shadows, RenderSettings (shadow sizes, point shadow count, occlusion culling), casters far
+  towards the sun are kept, mesh tangents with handedness, specular/emissive/height (parallax occlusion) maps, alpha
+  cut-outs with matching shadows, moved static geometry detected automatically, box culling for long or flat objects,
+  occlusion culling of static grid cells, instanced transparent draws
+- MTL: Ke, illum, map_Ks, map_Ke, map_d, disp/map_disp; grey bump maps become normal maps
+- UI: proportional fonts and any Unicode glyph (on-demand atlas), several fonts per frame, mouse/wheel/text input,
+  immediate-mode widgets (engine.ui.Gui: panels, buttons, checkboxes, sliders, text fields, rows)
+- Engine: screenshots (-Dengine.screenshot), CI smoke run of the demo on Linux (Xvfb + Mesa), fewer per-frame allocations
+- Demo: settings panel (Esc), turntable, compound dumbbell, cut-out grate, shadow-casting point light, parallax bricks
+
 Version 0.4.0
 Visual quality. Contains:
 - Tangent-space normal maps (Material.normalMap, MTL map_Bump/bump/norm with -bm, NormalMaps.fromHeights)
