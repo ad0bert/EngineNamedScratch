@@ -43,6 +43,15 @@ public class Material {
   public float roughness = 0.6f;
   /** Scales {@link #roughness} by its green and {@link #metallic} by its blue channel (the glTF layout). */
   public GpuTexture metalRoughMap;
+  /** How much a non-metal reflects head-on (Fresnel F0); 0.04 suits most materials, water 0.02, gems more. */
+  public float reflectance = 0.04f;
+  /** Multiplies the scene's ambient light on this surface (sRGB). */
+  public final Vector3f ambient = new Vector3f(1f);
+  /** Texture coordinates are multiplied by this and then shifted by {@link #uvOffset} (all maps). */
+  public final org.joml.Vector2f uvScale = new org.joml.Vector2f(1f);
+  public final org.joml.Vector2f uvOffset = new org.joml.Vector2f();
+  /** Clamp texture coordinates to 0..1 instead of repeating the textures. */
+  public boolean clampUv;
   /** Light the surface gives off by itself, independent of the lights; black for none. */
   public final Vector3f emissive = new Vector3f();
   /** Multiplies {@link #emissive} per texel. */

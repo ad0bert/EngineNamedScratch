@@ -609,6 +609,11 @@ final class GlSceneRenderer {
     this.basic.set(gl, "uMetallic", m.metallic);
     this.basic.set(gl, "uRoughness", m.roughness);
     this.basic.set(gl, "uHasMetalRoughMap", m.metalRoughMap != null ? 1 : 0);
+    this.basic.set(gl, "uReflectance", m.reflectance);
+    this.basic.set(gl, "uMaterialAmbient", srgbToLinear(m.ambient, this.linear));
+    this.linearColor.set(m.uvScale.x, m.uvScale.y, m.uvOffset.x, m.uvOffset.y);
+    this.basic.set(gl, "uUvTransform", this.linearColor);
+    this.basic.set(gl, "uClampUv", m.clampUv ? 1 : 0);
     this.basic.set(gl, "uUnlit", m.unlit ? 1 : 0);
     this.basic.set(gl, "uAlphaCutoff", m.transparent ? 0f : m.alphaCutoff);
     this.basic.set(gl, "uPointSize", m.pointSize);

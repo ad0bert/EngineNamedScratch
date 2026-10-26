@@ -37,6 +37,10 @@ uniform int uPbr;                              // 1: metallic-roughness BRDF, 0:
 uniform float uMetallic;
 uniform float uRoughness;
 uniform int uHasMetalRoughMap;                 // glTF layout: roughness in green, metallic in blue
+uniform float uReflectance;                    // F0 of non-metals
+uniform vec3 uMaterialAmbient;                 // linear
+uniform vec4 uUvTransform;                     // xy scale, zw offset
+uniform int uClampUv;
 uniform int uOit;                              // 1: write weighted blended transparency targets
 
 uniform int uLightCount;
@@ -236,7 +240,7 @@ vec3 brdf(vec3 n, vec3 v, vec3 l, vec3 albedo, float metallic, float roughness) 
   float distribution = a2 / (PI * d * d);
   float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
   float geometry = ndotv / (ndotv * (1.0 - k) + k) * ndotl / (ndotl * (1.0 - k) + k);
-  vec3 f0 = mix(vec3(0.04), albedo, metallic);
+  vec3 f0 = mix(vec3(uReflectance), albedo, metallic);
   vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(h, v), 0.0), 5.0);
   vec3 specular = distribution * geometry * fresnel / (4.0 * ndotv * max(ndotl, 1e-4));
   vec3 diffuse = (1.0 - fresnel) * (1.0 - metallic) * albedo;
@@ -250,7 +254,10 @@ void main() {
     geometric = -geometric;
   }
   vec3 v = normalize(uCameraPos - vWorldPos);
-  vec2 uv = vUv;
+  vec2 uv = vUv * uUvTransform.xy + uUvTransform.zw;
+  if (uClampUv == 1) {
+    uv = clamp(uv, 0.0, 1.0);
+  }
   mat3 tbn;
   bool hasFrame = (uHasNormalMap == 1 || uHasHeightMap == 1) && tangentFrame(geometric, tbn);
   if (hasFrame && uHasHeightMap == 1) {
@@ -334,10 +341,11 @@ void main() {
   }
   vec3 lit;
   if (uPbr == 1) {
-    vec3 f0 = mix(vec3(0.04), albedo.rgb, metallic);
-    lit = uAmbient * (albedo.rgb * (1.0 - metallic) + f0 * (1.0 - roughness) * 0.5) + specular + emissive;
+    vec3 f0 = mix(vec3(uReflectance), albedo.rgb, metallic);
+    vec3 ambient = uAmbient * uMaterialAmbient;
+    lit = ambient * (albedo.rgb * (1.0 - metallic) + f0 * (1.0 - roughness) * 0.5) + specular + emissive;
   } else {
-    lit = albedo.rgb * (uAmbient + diffuse) + specular + emissive;
+    lit = albedo.rgb * (uAmbient * uMaterialAmbient + diffuse) + specular + emissive;
   }
   if (uDebugCascades == 1 && uCascadeCount > 0) {
     vec3 tint[4] = vec3[4](vec3(1.0, 0.4, 0.4), vec3(0.4, 1.0, 0.4), vec3(0.4, 0.5, 1.0), vec3(1.0, 1.0, 0.4));

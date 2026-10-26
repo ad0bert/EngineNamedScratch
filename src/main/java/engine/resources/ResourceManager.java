@@ -160,7 +160,64 @@ public class ResourceManager {
     if (m.heightMap() != null) {
       out.heightMap = dataTexture(dir + m.heightMap());
     }
+    if (m.ka() != null) {
+      out.ambient.set(m.ka()[0], m.ka()[1], m.ka()[2]);
+    }
+    out.uvScale.set(m.uvScale()[0], m.uvScale()[1]);
+    out.uvOffset.set(m.uvOffset()[0], m.uvOffset()[1]);
+    out.clampUv = m.clamp();
+    if (!Float.isNaN(m.ior()) && m.ior() > 1f) {
+      final float r = (m.ior() - 1f) / (m.ior() + 1f);
+      out.reflectance = r * r; // Fresnel at normal incidence: 1.5 (glass) gives 0.04
+    }
+    if (m.pbr()) {
+      out.pbr = true;
+      out.roughness = Float.isNaN(m.roughness()) ? 1f : m.roughness();
+      out.metallic = Float.isNaN(m.metallic()) ? 0f : m.metallic();
+      if (m.roughnessMap() != null || m.metallicMap() != null) {
+        out.metalRoughMap = metalRough(m.roughnessMap() != null ? dir + m.roughnessMap() : null,
+            m.metallicMap() != null ? dir + m.metallicMap() : null);
+        // the map scales the values: a map alone means the full range
+        out.roughness = m.roughnessMap() != null && Float.isNaN(m.roughness()) ? 1f : out.roughness;
+        out.metallic = m.metallicMap() != null && Float.isNaN(m.metallic()) ? 1f : out.metallic;
+      }
+    }
     return out;
+  }
+
+  /** Separate roughness and metallic images (map_Pr, map_Pm) combined into the glTF layout (green, blue). */
+  private GpuTexture metalRough(String roughnessPath, String metallicPath) {
+    final var key = roughnessPath + "|metalRough=" + metallicPath;
+    final var cached = this.textures.get(key);
+    if (cached != null) {
+      return cached;
+    }
+    final var rough = roughnessPath != null ? image(roughnessPath) : null;
+    final var metal = metallicPath != null ? image(metallicPath) : null;
+    final var size = rough != null ? rough : metal;
+    if (size == null) {
+      return white();
+    }
+    final int w = size.width();
+    final int h = size.height();
+    final byte[] rgba = new byte[w * h * 4];
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        final int o = (y * w + x) * 4;
+        rgba[o] = (byte) 255;
+        rgba[o + 1] = rough != null ? brightness(rough, x, y, w, h) : (byte) 255;
+        rgba[o + 2] = metal != null ? brightness(metal, x, y, w, h) : (byte) 255;
+        rgba[o + 3] = (byte) 255;
+      }
+    }
+    return dataTexture(key, new ImageData(w, h, rgba));
+  }
+
+  /** Brightness of the pixel at x, y of a {@code w x h} grid, sampled from an image of any size. */
+  private static byte brightness(ImageData img, int x, int y, int w, int h) {
+    final int o = ((y * img.height() / h) * img.width() + x * img.width() / w) * 4;
+    final byte[] p = img.rgba();
+    return (byte) (((p[o] & 0xFF) + (p[o + 1] & 0xFF) + (p[o + 2] & 0xFF)) / 3);
   }
 
   /**

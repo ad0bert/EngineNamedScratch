@@ -327,4 +327,54 @@ class ResourceTest {
     assertTrue(NormalMaps.looksLikeHeightMap(grey));
     assertFalse(NormalMaps.looksLikeHeightMap(bluish));
   }
+
+  @Test
+  void mtlReadsAmbientTransparencyRefractionAndTextureOptions() throws IOException {
+    final var mats = MtlLoader.parse(new ByteArrayInputStream("""
+        newmtl a
+        Ka 0 0 0
+        Tr 0.25
+        Ni 1.33
+        map_Kd -o 0.5 0.25 -s 4 -clamp on wood.png
+        newmtl b
+        d 0.5
+        Tr 0.9
+        Ka 0.2 0.3 0.4
+        """.getBytes(StandardCharsets.UTF_8)));
+    final var a = mats.get("a");
+    assertEquals(null, a.ka(), "black ambient would hide the ambient light: ignored");
+    assertEquals(0.75f, a.alpha(), 1e-6f, "Tr without d");
+    assertEquals(1.33f, a.ior(), 0f);
+    assertEquals(4f, a.uvScale()[0], 0f);
+    assertEquals(4f, a.uvScale()[1], 0f, "one -s number scales both");
+    assertEquals(0.5f, a.uvOffset()[0], 0f);
+    assertEquals(0.25f, a.uvOffset()[1], 0f);
+    assertTrue(a.clamp());
+    assertEquals("wood.png", a.diffuseMap());
+    assertFalse(a.pbr());
+    final var b = mats.get("b");
+    assertEquals(0.5f, b.alpha(), 0f, "d wins over Tr");
+    assertEquals(0.3f, b.ka()[1], 0f);
+    assertFalse(b.clamp());
+  }
+
+  @Test
+  void pbrStatementsMakeAPhysicallyBasedMaterial() {
+    final var backend = new FakeBackend();
+    final var res = new ResourceManager(backend);
+    final var m = res.model("objects/pbr/pbr.obj").parts().get(0).material();
+    assertTrue(m.pbr);
+    assertEquals(0.5f, m.roughness, 0f);
+    assertEquals(1f, m.metallic, 0f, "a metallic map alone means the full range");
+    assertNotNull(m.metalRoughMap);
+    assertEquals(0.04f, m.reflectance, 1e-4f, "Ni 1.5 is glass-like: 4 % head-on");
+    assertEquals(0.5f, m.ambient.x, 0f);
+    assertEquals(2f, m.uvScale.x, 0f);
+    assertEquals(0.5f, m.uvOffset.y, 0f);
+    assertTrue(m.clampUv);
+    // roughness (grey 64) in green, metallic (white) in blue, in the size of the roughness map
+    final var combined = backend.dataImages.stream().filter(img -> img.width() == 2).findFirst().orElseThrow();
+    assertEquals(64, combined.rgba()[1] & 0xFF);
+    assertEquals(255, combined.rgba()[2] & 0xFF);
+  }
 }
