@@ -46,6 +46,9 @@ public class DemoGame implements Game {
   private Gui gui;
   private FirstPersonController controller;
   private String playerName = "Player";
+  private String notes = "";
+  /** Recent collision events of the player, newest last (shown in a scrolling list). */
+  private final java.util.ArrayDeque<String> events = new java.util.ArrayDeque<>();
 
   @Override
   public void init(Engine engine) {
@@ -298,6 +301,11 @@ public class DemoGame implements Game {
         if (m.getPayload() instanceof CollisionEvent c && (c.a() == DemoGame.this.player
             || c.b() == DemoGame.this.player)) {
           log.debug("player collision {}: {} <-> {}", c.started() ? "start" : "end", c.a(), c.b());
+          final var other = c.a() == DemoGame.this.player ? c.b() : c.a();
+          DemoGame.this.events.addLast((c.started() ? "touched " : "left ") + other.name());
+          if (DemoGame.this.events.size() > 50) {
+            DemoGame.this.events.removeFirst();
+          }
         }
       }
     }, MessageQueue.COLLISION);
@@ -339,6 +347,16 @@ public class DemoGame implements Game {
       engine.physics().gravity.y = -g.slider("Gravity", -engine.physics().gravity.y, 0f, 20f);
       this.turntableSpeed = g.slider("Turntable speed", this.turntableSpeed, -3f, 3f);
       this.playerName = g.textField("Name", this.playerName);
+      this.notes = g.textArea("Notes (Enter for a new line)##notes", this.notes, 2);
+      g.label("Player collisions:");
+      g.beginScroll("log", 70f);
+      if (this.events.isEmpty()) {
+        g.label("(walk into something)");
+      }
+      for (var line : this.events) {
+        g.label(line);
+      }
+      g.endScroll();
       g.endPanel();
     }
     this.gui.end();
@@ -387,11 +405,11 @@ public class DemoGame implements Game {
     final float cy = height / 2f;
     ui.drawRect(cx - 8, cy - 1, 16, 2, 1f, 1f, 1f, 0.8f);
     ui.drawRect(cx - 1, cy - 8, 2, 16, 1f, 1f, 1f, 0.8f);
-    if (!this.aim.isEmpty()) {
-      ui.drawText(this.aim, cx + 15f, cy + 9f, 1f, 0f, 0f, 0f, 0.8f);
-      ui.drawText(this.aim, cx + 14f, cy + 8f, 1f, 1f, 1f, 1f, 1f);
+    if (!this.aim.isEmpty()) { // a little larger than the rest: scaled text is rasterized at its size, so it stays sharp
+      ui.drawText(this.aim, cx + 15f, cy + 9f, 1.25f, 0f, 0f, 0f, 0.8f);
+      ui.drawText(this.aim, cx + 14f, cy + 8f, 1.25f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings";
+    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings (Tab to navigate)";
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);
   }

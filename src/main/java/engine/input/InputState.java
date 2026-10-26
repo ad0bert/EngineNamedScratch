@@ -24,6 +24,20 @@ public class InputState {
   public static final int BUTTON_MIDDLE = 2;
   public static final int BUTTON_RIGHT = 3;
 
+  // Editing and navigation keys arrive in the typed text as these characters (private use area), so text input keeps
+  // the order of keys and characters. Enter is '\n', Backspace '\b', Tab '\t'.
+  public static final char KEY_LEFT = '\uE000';
+  public static final char KEY_RIGHT = '\uE001';
+  public static final char KEY_UP = '\uE002';
+  public static final char KEY_DOWN = '\uE003';
+  public static final char KEY_HOME = '\uE004';
+  public static final char KEY_END = '\uE005';
+  public static final char KEY_DELETE = '\uE006';
+  public static final char KEY_BACKTAB = '\uE007';
+  public static final char KEY_SELECT_ALL = '\uE008';
+  /** Added to an arrow, Home or End key when Shift is held (extends the selection). */
+  public static final char SHIFT = '\u0010';
+
   private final Set<Short> keysDown = ConcurrentHashMap.newKeySet();
   private final Set<Short> keysPressedThisFrame = ConcurrentHashMap.newKeySet();
   private final AtomicInteger mouseDx = new AtomicInteger();

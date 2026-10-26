@@ -3,9 +3,17 @@ package engine.render;
 /**
  * Immediate-mode 2D drawing in window pixels; the origin is the top-left corner. Text is drawn with
  * {@link UiFont#DEFAULT} unless a font is given; any number of fonts may be used in one frame, and everything is drawn
- * in call order.
+ * in call order. Text drawn at a scale is rasterized at that size, so it stays sharp. Clip rectangles nest: drawing
+ * is limited to the intersection of all pushed ones.
  */
 public interface UiCanvas {
+  /** Limits drawing to a rectangle (within the current clip) until the matching {@link #popClip()}. */
+  default void pushClip(float x, float y, float w, float h) {
+  }
+
+  default void popClip() {
+  }
+
   void drawRect(float x, float y, float w, float h, float r, float g, float b, float a);
 
   /** Draws (possibly multi-line) text with its top-left corner at x, y. */
