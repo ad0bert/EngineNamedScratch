@@ -56,7 +56,7 @@ public final class SpatialGrid {
       }
     }
 
-    void clear() {
+    public void clear() {
       this.size = 0;
       this.tag = 0;
     }

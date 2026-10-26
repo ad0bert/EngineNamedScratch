@@ -23,11 +23,11 @@ public final class Narrowphase {
   public static final class Contact {
     public static final int MAX_POINTS = 4;
 
-    private final Vector3f normal = new Vector3f();
-    private float depth;
-    private int count;
-    private final Vector3f[] points = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
-    private final float[] depths = new float[MAX_POINTS];
+    final Vector3f normal = new Vector3f();
+    float depth;
+    int count;
+    final Vector3f[] points = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
+    final float[] depths = new float[MAX_POINTS];
     boolean wantPoints;
 
     public Contact() {
@@ -58,7 +58,7 @@ public final class Narrowphase {
       return this.depths[i];
     }
 
-    private void single(float x, float y, float z, float d) {
+    void single(float x, float y, float z, float d) {
       this.count = 1;
       this.points[0].set(x, y, z);
       this.depths[0] = d;
@@ -66,7 +66,7 @@ public final class Narrowphase {
   }
 
   /** Per-thread scratch vectors so the tests below do not allocate. */
-  private static final class Scratch {
+  static final class Scratch {
     static final int CAP = 16; // clipping a quad against four planes yields at most eight vertices
 
     final Vector3f t = new Vector3f();
@@ -82,7 +82,7 @@ public final class Narrowphase {
     final boolean[] taken = new boolean[CAP];
   }
 
-  private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
+  static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
 
   record Box(Vector3f c, Vector3f[] axes, float[] half) {
   }
@@ -116,6 +116,53 @@ public final class Narrowphase {
    * (speculative contacts, with a negative depth).
    */
   static boolean test(Collider a, Collider b, Contact out, float margin) {
+    return test(a, b, -1, out, margin);
+  }
+
+  /**
+   * Like {@link #test(Collider, Collider, Contact, float)}; when one collider is a {@link MeshCollider},
+   * {@code triangle} says which of its triangles to test (pairs with meshes are split per triangle).
+   */
+  static boolean test(Collider a, Collider b, int triangle, Contact out, float margin) {
+    if (b instanceof MeshCollider mb) {
+      return meshTest(a, mb, triangle, out, margin);
+    }
+    if (a instanceof MeshCollider ma) {
+      if (!meshTest(b, ma, triangle, out, margin)) {
+        return false;
+      }
+      out.normal.negate();
+      return true;
+    }
+    if (a instanceof CapsuleCollider ca) {
+      if (b instanceof CapsuleCollider cb) {
+        return ShapeTests.capsuleCapsule(ca.cachedCapsule(), cb.cachedCapsule(), out, margin);
+      }
+      if (b instanceof BoxCollider bb) {
+        return ShapeTests.capsuleBox(ca.cachedCapsule(), bb.cachedBox(), out, margin);
+      }
+      if (b instanceof SphereCollider sb) {
+        if (!ShapeTests.sphereCapsule(sb.cachedSphere(), ca.cachedCapsule(), out, margin)) {
+          return false;
+        }
+        out.normal.negate();
+        return true;
+      }
+      return false;
+    }
+    if (b instanceof CapsuleCollider cb) {
+      if (a instanceof SphereCollider sa) {
+        return ShapeTests.sphereCapsule(sa.cachedSphere(), cb.cachedCapsule(), out, margin);
+      }
+      if (a instanceof BoxCollider ba) {
+        if (!ShapeTests.capsuleBox(cb.cachedCapsule(), ba.cachedBox(), out, margin)) {
+          return false;
+        }
+        out.normal.negate();
+        return true;
+      }
+      return false;
+    }
     if (a instanceof BoxCollider ba && b instanceof BoxCollider bb) {
       return boxBox(ba.cachedBox(), bb.cachedBox(), out, margin);
     }
@@ -135,6 +182,23 @@ public final class Narrowphase {
     return false;
   }
 
+  /** {@code other} against one triangle of a mesh; normal from {@code other} towards the triangle. */
+  private static boolean meshTest(Collider other, MeshCollider mesh, int triangle, Contact out, float margin) {
+    if (triangle < 0) {
+      return false;
+    }
+    if (other instanceof BoxCollider b) {
+      return ShapeTests.boxTriangle(b.cachedBox(), mesh, triangle, out, margin);
+    }
+    if (other instanceof SphereCollider s) {
+      return ShapeTests.sphereTriangle(s.cachedSphere(), mesh, triangle, out, margin);
+    }
+    if (other instanceof CapsuleCollider c) {
+      return ShapeTests.capsuleTriangle(c.cachedCapsule(), mesh, triangle, out, margin);
+    }
+    return false; // mesh against mesh: not supported
+  }
+
   /** Distance along a ray to a surface, and the surface normal there (facing the ray). */
   record RayResult(float distance, Vector3f normal) {
   }
@@ -146,6 +210,22 @@ public final class Narrowphase {
     }
     if (c instanceof SphereCollider s) {
       return raySphere(s.world(), origin, dir, maxDistance);
+    }
+    if (c instanceof CapsuleCollider cap) {
+      return ShapeTests.rayCapsule(cap.world(), origin, dir, maxDistance);
+    }
+    if (c instanceof MeshCollider m) {
+      m.refresh();
+      final float[] hit = m.ray(origin, dir, maxDistance);
+      if (hit == null) {
+        return null;
+      }
+      final var n = new Vector3f();
+      m.normal((int) hit[1], n);
+      if (n.dot(dir) > 0f) {
+        n.negate(); // face the ray (two-sided meshes are hit from behind too)
+      }
+      return new RayResult(hit[0], n);
     }
     return null;
   }
@@ -227,6 +307,20 @@ public final class Narrowphase {
     }
     if (c instanceof SphereCollider other) {
       return sphereSphere(s, other.world(), scratch);
+    }
+    if (c instanceof CapsuleCollider cap) {
+      return ShapeTests.sphereCapsule(s, cap.world(), scratch, 0f);
+    }
+    if (c instanceof MeshCollider m) {
+      m.refresh();
+      final var tris = new engine.spatial.SpatialGrid.IntList();
+      final var p = s.c();
+      m.candidates(p.x - s.r, p.y - s.r, p.z - s.r, p.x + s.r, p.y + s.r, p.z + s.r, tris);
+      for (int i = 0; i < tris.size(); i++) {
+        if (ShapeTests.sphereTriangle(s, m, tris.get(i), scratch, 0f)) {
+          return true;
+        }
+      }
     }
     return false;
   }
@@ -462,7 +556,7 @@ public final class Narrowphase {
   }
 
   /** Sutherland-Hodgman against the half space {@code sign * axis . (p - origin) <= limit}; returns the new count. */
-  private static int clip(float[] in, int n, float[] out, Vector3f axis, float sign, float limit, Vector3f origin) {
+  static int clip(float[] in, int n, float[] out, Vector3f axis, float sign, float limit, Vector3f origin) {
     int m = 0;
     final float ax = axis.x * sign;
     final float ay = axis.y * sign;
@@ -492,7 +586,7 @@ public final class Narrowphase {
   }
 
   /** Copies the candidates into the contact, keeping at most four that span the largest area. */
-  private static void reduce(Contact out, Scratch sc, int count) {
+  static void reduce(Contact out, Scratch sc, int count) {
     final float[] p = sc.candPos;
     final float[] d = sc.candDepth;
     if (count <= Contact.MAX_POINTS) {
@@ -612,7 +706,7 @@ public final class Narrowphase {
     out.single(mx, my, mz, out.depth);
   }
 
-  private static float radius(Box box, Vector3f axis) {
+  static float radius(Box box, Vector3f axis) {
     return box.half()[0] * Math.abs(box.axes()[0].dot(axis)) + box.half()[1] * Math.abs(box.axes()[1].dot(axis))
         + box.half()[2] * Math.abs(box.axes()[2].dot(axis));
   }

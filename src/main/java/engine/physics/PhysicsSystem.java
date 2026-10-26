@@ -107,6 +107,7 @@ public class PhysicsSystem implements ISystem {
   private Rigidbody[] bodyOf = new Rigidbody[64];
   private List<Collider> colliders;
   private final SpatialGrid.CellVisitor cellPairs = this::visitCell;
+  private final SpatialGrid.IntList triangles = new SpatialGrid.IntList();
 
   // query scratch: collider index -> stamp of the last query that tested it
   private int[] queryStamps = new int[64];
@@ -131,6 +132,8 @@ public class PhysicsSystem implements ISystem {
     private Rigidbody rb;
     private boolean hit;
     private long key;
+    /** Triangle of a {@link MeshCollider} side, or -1: pairs with a mesh are split into one pair per triangle. */
+    private int tri = -1;
 
     private final Narrowphase.Contact manifold = new Narrowphase.Contact();
     private int count;
@@ -210,7 +213,7 @@ public class PhysicsSystem implements ISystem {
     for (int i = 0; i < pairs.size(); i++) {
       final var p = pairs.get(i);
       final boolean solid = !p.a.trigger && !p.b.trigger;
-      p.hit = Narrowphase.test(p.a, p.b, this.contact, solid ? SPECULATIVE_MARGIN : 0f);
+      p.hit = Narrowphase.test(p.a, p.b, p.tri, this.contact, solid ? SPECULATIVE_MARGIN : 0f);
       if (!p.hit) {
         continue;
       }
@@ -251,7 +254,7 @@ public class PhysicsSystem implements ISystem {
     for (int it = 0; it < this.solverIterations; it++) {
       for (int i = 0; i < this.solvable.size(); i++) {
         final var p = this.solvable.get(i);
-        if (Narrowphase.test(p.a, p.b, this.contact)) {
+        if (Narrowphase.test(p.a, p.b, p.tri, this.contact, 0f)) {
           correctPosition(p, this.contact);
         }
       }
@@ -584,6 +587,7 @@ public class PhysicsSystem implements ISystem {
           tryPair(i, j);
         }
       }
+      expandMeshPairs();
       return this.pairs;
     }
 
@@ -607,7 +611,61 @@ public class PhysicsSystem implements ISystem {
         }
       }
     }
+    expandMeshPairs();
     return this.pairs;
+  }
+
+  /**
+   * Replaces every pair with a mesh by one pair per triangle near the other collider (through the mesh's bounding
+   * volume hierarchy); pairs whose box touches no triangle are dropped.
+   */
+  private void expandMeshPairs() {
+    final int n = this.pairs.size();
+    for (int i = 0; i < n; i++) {
+      final var p = this.pairs.get(i);
+      final MeshCollider mesh = p.b instanceof MeshCollider mb ? mb : p.a instanceof MeshCollider ma ? ma : null;
+      if (mesh == null || p.a instanceof MeshCollider && p.b instanceof MeshCollider) {
+        continue;
+      }
+      final var other = mesh == p.b ? p.a : p.b;
+      other.cachedCenter(this.tmpCenter);
+      final float r = other.cachedRadius() + PAIR_MARGIN;
+      this.triangles.clear();
+      mesh.candidates(this.tmpCenter.x - r, this.tmpCenter.y - r, this.tmpCenter.z - r, this.tmpCenter.x + r,
+          this.tmpCenter.y + r, this.tmpCenter.z + r, this.triangles);
+      p.tri = -2; // marks the original pair: removed below unless a triangle reuses it
+      for (int k = 0; k < this.triangles.size(); k++) {
+        final var q = k == 0 ? p
+            : this.sparePairs.isEmpty() ? new Pair() : this.sparePairs.remove(this.sparePairs.size() - 1);
+        q.a = p.a;
+        q.b = p.b;
+        q.ra = p.ra;
+        q.rb = p.rb;
+        q.hit = false;
+        q.tri = this.triangles.get(k);
+        q.key = ContactCache.key(p.a, p.b) ^ (q.tri + 1L) * 0x9E3779B97F4A7C15L;
+        if (k > 0) {
+          this.pairs.add(q);
+        }
+      }
+    }
+    // drop the mesh pairs that found no triangle (rare: the bounding spheres overlapped, the boxes did not)
+    int w = 0;
+    for (int i = 0; i < this.pairs.size(); i++) {
+      final var p = this.pairs.get(i);
+      if (p.tri == -2) {
+        p.a = null;
+        p.b = null;
+        p.ra = null;
+        p.rb = null;
+        this.sparePairs.add(p);
+      } else {
+        this.pairs.set(w++, p);
+      }
+    }
+    while (this.pairs.size() > w) {
+      this.pairs.remove(this.pairs.size() - 1);
+    }
   }
 
   private void ensureCapacity(int n) {
@@ -659,6 +717,7 @@ public class PhysicsSystem implements ISystem {
     p.ra = swap ? bj : bi;
     p.rb = swap ? bi : bj;
     p.key = ContactCache.key(p.a, p.b);
+    p.tri = -1;
     p.hit = false;
     this.pairs.add(p);
   }
@@ -768,7 +827,7 @@ public class PhysicsSystem implements ISystem {
       return;
     }
     final var c = p.manifold;
-    if (!Narrowphase.test(p.a, p.b, c, SPECULATIVE_MARGIN) || c.count() == 0) {
+    if (!Narrowphase.test(p.a, p.b, p.tri, c, SPECULATIVE_MARGIN) || c.count() == 0) {
       return;
     }
     p.invA = invA;
