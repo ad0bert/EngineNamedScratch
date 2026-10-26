@@ -78,4 +78,40 @@ class TextEditTest {
     single.apply("\n");
     assertEquals("x", single.text(), "Enter is not text in a single-line edit");
   }
+
+  @Test
+  void copyCutAndPasteGoThroughTheClipboard() {
+    final var clipboard = Clipboard.inMemory();
+    final var e = new TextEdit("hello world", false);
+    e.setClipboard(clipboard);
+    e.apply(String.valueOf(InputState.KEY_COPY));
+    assertEquals("", clipboard.getText(), "nothing selected: nothing copied");
+    e.apply(SHIFT_LEFT.repeat(5) + InputState.KEY_CUT);
+    assertEquals("hello ", e.text());
+    assertEquals("world", clipboard.getText());
+    e.apply(HOME + InputState.KEY_PASTE + " ");
+    assertEquals("world hello ", e.text());
+    assertEquals(6, e.cursor());
+    e.apply(String.valueOf(InputState.KEY_SELECT_ALL) + InputState.KEY_PASTE);
+    assertEquals("world", e.text(), "pasting replaces the selection");
+  }
+
+  @Test
+  void pastedTextIsCleanedForTheKindOfEdit() {
+    assertEquals("a b c", TextEdit.clean("a\r\nb\nc", false));
+    assertEquals("a\nb\nc", TextEdit.clean("a\r\nb\rc", true));
+    assertEquals("a b", TextEdit.clean("a\tb\u0007", true));
+    final var e = new TextEdit("x", true);
+    e.apply(String.valueOf(InputState.KEY_PASTE));
+    assertEquals("x", e.text(), "no clipboard: nothing happens");
+  }
+
+  @Test
+  void wrappingBreaksAtSpacesKeepsLineBreaksAndSplitsLongWords() {
+    final TextWrap.Measure eight = s -> s.codePointCount(0, s.length()) * 8f;
+    assertEquals(java.util.List.of("one two", "three"), TextWrap.wrap("one two three", 60f, eight));
+    assertEquals(java.util.List.of("a", "", "b c"), TextWrap.wrap("a\n\nb c", 60f, eight));
+    assertEquals(java.util.List.of("abcdefg", "hij k"), TextWrap.wrap("abcdefghij k", 60f, eight));
+    assertEquals(java.util.List.of(""), TextWrap.wrap("", 60f, eight));
+  }
 }

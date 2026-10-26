@@ -37,8 +37,9 @@ import engine.render.UiFont;
  * the pointer, and scroll bars can be dragged. Keyboard: Tab and Shift+Tab move the focus through the widgets, Enter
  * or Space presses the focused button or checkbox, the arrow keys (and Home/End) move a focused slider. Text fields
  * and areas edit like any text box: a cursor that the arrows, Home and End move (with Shift to select), mouse
- * placement and drag selection, Ctrl+A, Backspace and Delete; Enter ends editing a field and starts a new line in an
- * area. {@link #wantsMouse()} and {@link #wantsKeyboard()} tell the game what the interface is using.
+ * placement and drag selection, Ctrl+A, Backspace and Delete, Ctrl+C/X/V through a {@link Clipboard} (the
+ * system one unless the constructor is given another); Enter ends editing a field and starts a new line in an area.
+ * {@link #paragraph} shows text wrapped at word boundaries. {@link #wantsMouse()} and {@link #wantsKeyboard()} tell the game what the interface is using.
  */
 public class Gui {
   /** Colours and sizes; change them freely. Colours are RGBA. */
@@ -71,6 +72,7 @@ public class Gui {
 
   public final Style style = new Style();
   private final InputState input;
+  private final Clipboard clipboard;
 
   private UiCanvas ui;
   private boolean interactive;
@@ -124,7 +126,16 @@ public class Gui {
   private float wh;
 
   public Gui(InputState input) {
+    this(input, Clipboard.system());
+  }
+
+  public Gui(InputState input, Clipboard clipboard) {
     this.input = input;
+    this.clipboard = clipboard;
+  }
+
+  public Clipboard clipboard() {
+    return this.clipboard;
   }
 
   /**
@@ -328,10 +339,16 @@ public class Gui {
   }
 
   /** Reserves the rectangle of the next widget. */
+  /** Width the next widget gets: the panel's inner width, or a row cell's. */
+  private float nextWidth() {
+    final float inner = this.panelWidth - 2f * this.style.padding;
+    return this.rowColumns > 0 ? (inner - (this.rowColumns - 1) * this.style.spacing) / this.rowColumns : inner;
+  }
+
   private void place(float height) {
     final float inner = this.panelWidth - 2f * this.style.padding;
     if (this.rowColumns > 0) {
-      final float w = (inner - (this.rowColumns - 1) * this.style.spacing) / this.rowColumns;
+      final float w = nextWidth();
       this.wx = this.panelX + this.style.padding + this.rowIndex * (w + this.style.spacing);
       this.wy = this.cursorY;
       this.ww = w;
@@ -385,6 +402,20 @@ public class Gui {
   public void label(String text) {
     place(lineHeight());
     text(fit(display(text), this.ww), this.wx, this.wy, this.style.dimText);
+  }
+
+  /**
+   * Text wrapped at word boundaries to the width of the panel (or row cell), as many lines as it needs; explicit line
+   * breaks are kept, and a word longer than a line is broken inside.
+   */
+  public void paragraph(String text) {
+    final float width = Math.max(1f, nextWidth());
+    final var lines = TextWrap.wrap(display(text), width, s -> this.ui.textWidth(this.style.font, s, 1f));
+    place(Math.max(1, lines.size()) * lineHeight());
+    final float lh = lineHeight();
+    for (int i = 0; i < lines.size(); i++) {
+      text(lines.get(i), this.wx, this.wy + i * lh, this.style.dimText);
+    }
   }
 
   /** @return true in the frame the button was clicked (or pressed with Enter/Space while focused) */
@@ -492,6 +523,7 @@ public class Gui {
     if (editing) {
       if (!id.equals(this.editId)) {
         this.edit = new TextEdit(value, multiLine);
+        this.edit.setClipboard(this.clipboard);
         this.editId = id;
         if (this.focusFromKeyboard) {
           this.edit.selectAll();

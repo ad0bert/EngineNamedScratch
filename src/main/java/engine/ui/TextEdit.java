@@ -5,13 +5,15 @@ import engine.input.InputState;
 /**
  * Text being edited: the text, the cursor and the selection anchor (the selection runs between them), as indices into
  * the string. {@link #apply} feeds it keys as {@link InputState} delivers them (characters plus the {@code KEY_*}
- * editing keys); the cursor always moves by whole code points. Pure logic, no drawing.
+ * editing keys); the cursor always moves by whole code points. Copy, cut and paste go through a {@link Clipboard}
+ * ({@link #setClipboard}; without one they do nothing). Pure logic, no drawing.
  */
 public final class TextEdit {
   private String text;
   private int cursor;
   private int anchor;
   private final boolean multiLine;
+  private Clipboard clipboard;
 
   public TextEdit(String text, boolean multiLine) {
     this.text = text;
@@ -62,6 +64,64 @@ public final class TextEdit {
     this.cursor = this.text.length();
   }
 
+  public void setClipboard(Clipboard clipboard) {
+    this.clipboard = clipboard;
+  }
+
+  public String selectedText() {
+    return this.text.substring(selectionStart(), selectionEnd());
+  }
+
+  /** Puts the selection on the clipboard; false (and the clipboard untouched) if nothing is selected. */
+  public boolean copy() {
+    if (!hasSelection() || this.clipboard == null) {
+      return false;
+    }
+    this.clipboard.setText(selectedText());
+    return true;
+  }
+
+  public void cut() {
+    if (copy()) {
+      deleteSelection();
+    }
+  }
+
+  /**
+   * Replaces the selection with the clipboard's text. Line breaks become spaces in a single-line edit; tabs become
+   * spaces and other control characters are dropped.
+   */
+  public void paste() {
+    if (this.clipboard == null) {
+      return;
+    }
+    final var pasted = clean(this.clipboard.getText(), this.multiLine);
+    if (!pasted.isEmpty() || hasSelection()) {
+      insert(pasted);
+    }
+  }
+
+  static String clean(String s, boolean multiLine) {
+    final var sb = new StringBuilder(s.length());
+    for (int i = 0; i < s.length(); i++) {
+      char c = s.charAt(i);
+      if (c == '\r') {
+        if (i + 1 < s.length() && s.charAt(i + 1) == '\n') {
+          continue; // the \n follows
+        }
+        c = '\n';
+      }
+      if (c == '\n') {
+        sb.append(multiLine ? '\n' : ' ');
+      } else if (c == '\t') {
+        sb.append(' ');
+      } else if (!Character.isISOControl(c) && (c < '\uE000' || c > '\uF8FF')) {
+        sb.append(c);
+      }
+    }
+    return sb.toString();
+  }
+
   /**
    * Applies typed characters and editing keys. In a single-line edit Enter is not inserted; it (and Tab) is left to
    * the caller.
@@ -98,6 +158,9 @@ public final class TextEdit {
       case InputState.KEY_UP -> move(verticalTarget(-1), shift);
       case InputState.KEY_DOWN -> move(verticalTarget(1), shift);
       case InputState.KEY_SELECT_ALL -> selectAll();
+      case InputState.KEY_COPY -> copy();
+      case InputState.KEY_CUT -> cut();
+      case InputState.KEY_PASTE -> paste();
       case '\n' -> {
         if (this.multiLine) {
           insert("\n");
