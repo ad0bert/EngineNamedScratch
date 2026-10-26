@@ -47,10 +47,12 @@ public class DebugOverlay implements ISystem, Overlay {
     this.text = String.format(Locale.ROOT, "%s %s\n%.0f fps\nentities %d\n"
         + "draw calls %d  instances %d\nculled %d  occluded %d (%d queries)\n"
         + "shadow casters %d (%d cascades, %d local, %d maps reused)  lights %d\n"
-        + "bodies %d (%d asleep)  pairs %d  contacts %d\ncamera %s",
+        + "bodies %d (%d asleep)  pairs %d  contacts %d\nsounds %d (+%d virtual) on %s\ncamera %s",
         this.engine.config().title(), this.engine.config().version(), this.engine.fps(), scene.entities().size(),
         s.drawCalls, s.instances, s.culled, s.occluded, s.occlusionQueries, s.shadowCasters, s.shadowCascades,
-        s.pointShadows, s.cachedShadowMaps, s.lights, p.bodies, p.sleepingBodies, p.candidatePairs, p.contacts, cam);
+        s.pointShadows, s.cachedShadowMaps, s.lights, p.bodies, p.sleepingBodies, p.candidatePairs, p.contacts,
+        this.engine.audio().audibleCount(), this.engine.audio().virtualCount(), this.engine.audio().backend().name(),
+        cam);
     this.lines = (int) this.text.chars().filter(c -> c == '\n').count() + 1;
   }
 

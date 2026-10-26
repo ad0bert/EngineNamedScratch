@@ -7,6 +7,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import engine.audio.AudioBackend;
+import engine.audio.AudioClip;
+import engine.audio.AudioData;
+import engine.audio.NullAudioBackend;
 import engine.render.GpuMesh;
 import engine.render.GpuTexture;
 import engine.render.ImageData;
@@ -16,8 +20,8 @@ import engine.render.RenderBackend;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Loads and caches GPU resources from the classpath (so it also works from inside a JAR). Must be used on the
- * graphics thread. Paths are classpath-relative, e.g. {@code objects/box.obj}.
+ * Loads and caches GPU resources and sounds from the classpath (so it also works from inside a JAR). Must be used on
+ * the graphics thread. Paths are classpath-relative, e.g. {@code objects/box.obj}.
  */
 @Slf4j
 public class ResourceManager {
@@ -26,9 +30,17 @@ public class ResourceManager {
   private final Map<String, GpuMesh> meshes = new HashMap<>();
   private final Map<String, Model> models = new HashMap<>();
   private final List<GpuMesh> ownedMeshes = new ArrayList<>();
+  private final AudioBackend audio;
+  private final Map<String, AudioClip> sounds = new HashMap<>();
 
+  /** Without sound: clips are created on a silent backend. */
   public ResourceManager(RenderBackend backend) {
+    this(backend, new NullAudioBackend());
+  }
+
+  public ResourceManager(RenderBackend backend, AudioBackend audio) {
     this.backend = backend;
+    this.audio = audio;
   }
 
   public GpuTexture white() {
@@ -270,6 +282,63 @@ public class ResourceManager {
     return texture(key, new ImageData(w, h, rgba));
   }
 
+  /**
+   * A sound (WAV, AIFF, AU or Ogg Vorbis), decoded completely; for short effects. Returns the cached clip, or null
+   * (with a logged error) if loading fails; playing null does nothing.
+   */
+  public AudioClip sound(String path) {
+    final var cached = this.sounds.get(path);
+    if (cached != null) {
+      return cached;
+    }
+    try (InputStream in = open(path)) {
+      final var clip = this.audio.createClip(path, AudioLoader.load(in, path));
+      this.sounds.put(path, clip);
+      return clip;
+    } catch (IOException | RuntimeException e) {
+      log.error("Could not load sound {}", path, e);
+      return null;
+    }
+  }
+
+  /** Uploads generated sound under a unique key; asking again with the same key returns the cached clip. */
+  public AudioClip sound(String key, AudioData data) {
+    return this.sounds.computeIfAbsent(key, k -> this.audio.createClip(k, data));
+  }
+
+  /**
+   * A long sound (music, ambience) that is decoded while it plays: an Ogg Vorbis file stays compressed in memory and
+   * every voice playing it decodes its own stream. Other formats are decoded completely, as by {@link #sound}.
+   */
+  public AudioClip music(String path) {
+    final var key = path + "|stream";
+    final var cached = this.sounds.get(key);
+    if (cached != null) {
+      return cached;
+    }
+    try (InputStream in = open(path)) {
+      final byte[] bytes = in.readAllBytes();
+      final AudioClip clip;
+      if (AudioLoader.isOgg(bytes)) {
+        final int channels;
+        final float duration;
+        try (var probe = new VorbisDecoder(bytes)) {
+          channels = probe.channels();
+          final float d = VorbisDecoder.duration(bytes, probe.sampleRate());
+          duration = Float.isNaN(d) ? Float.POSITIVE_INFINITY : d;
+        }
+        clip = this.audio.createStreamingClip(path, channels, duration, () -> new VorbisDecoder(bytes));
+      } else {
+        clip = this.audio.createClip(path, AudioLoader.decode(bytes, path));
+      }
+      this.sounds.put(key, clip);
+      return clip;
+    } catch (IOException | RuntimeException e) {
+      log.error("Could not load music {}", path, e);
+      return null;
+    }
+  }
+
   /** Decoded pixels of a classpath image, or null (with a logged error). */
   private static ImageData image(String path) {
     try (InputStream in = open(path)) {
@@ -292,6 +361,8 @@ public class ResourceManager {
     this.textures.values().forEach(GpuTexture::dispose);
     this.meshes.values().forEach(GpuMesh::dispose);
     this.ownedMeshes.forEach(GpuMesh::dispose);
+    this.sounds.values().forEach(AudioClip::dispose);
+    this.sounds.clear();
     this.textures.clear();
     this.meshes.clear();
     this.ownedMeshes.clear();

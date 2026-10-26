@@ -8,6 +8,11 @@ import org.joml.Vector3f;
 
 import com.jogamp.newt.event.KeyEvent;
 
+import engine.audio.AudioBus;
+import engine.audio.AudioClip;
+import engine.audio.AudioListener;
+import engine.audio.AudioSource;
+import engine.audio.ImpactSound;
 import engine.core.Engine;
 import engine.core.Game;
 import engine.ecs.Entity;
@@ -37,13 +42,16 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Sample scene exercising the engine: cascaded and point-light shadows, normal, height and specular maps, a cut-out
  * grate, instanced crates under physics, a turntable carrying crates, a compound body, an MTL-textured model,
- * transparency, points, a sprite, a jointed chain, a motorised hinge, a mesh-collider dome and a HUD. Press F to
- * throw a crate.
+ * transparency, points, a sprite, a jointed chain, a motorised hinge, a mesh-collider dome, synthesized sounds
+ * (impacts, throws, a humming light, wind) and a HUD. Press F to throw a crate.
  */
 @Slf4j
 public class DemoGame implements Game {
   private GpuMesh crateMesh;
   private Material crateMaterial;
+  private AudioClip thud;
+  private AudioClip whoosh;
+  private AudioClip click;
   private Entity player;
   private Entity turntable;
   private float turntableSpeed = 0.6f;
@@ -61,6 +69,9 @@ public class DemoGame implements Game {
     final var scene = engine.scene();
     engine.input().bind("spawn", KeyEvent.VK_F);
     engine.input().bind("poke", KeyEvent.VK_E);
+    this.thud = res.sound("gen:thud", ProceduralSounds.thud());
+    this.whoosh = res.sound("gen:whoosh", ProceduralSounds.whoosh());
+    this.click = res.sound("gen:click", ProceduralSounds.click());
 
     final var sun = new Entity("sun");
     sun.transform().setEulerDegrees(-50f, -30f, 0f);
@@ -71,6 +82,7 @@ public class DemoGame implements Game {
     this.player = new Entity("player");
     this.player.transform().position().set(0f, 1.5f, 8f);
     this.player.add(new Camera());
+    this.player.add(new AudioListener());
     final var controller = this.player.add(new FirstPersonController(engine.input()));
     this.controller = controller;
     // -Ddemo.camera=x,y,z,yaw,pitch starts somewhere else (handy for screenshots)
@@ -159,7 +171,25 @@ public class DemoGame implements Game {
     moonRenderer.castShadows = false; // the light sits inside it
     final var moonLight = moon.add(Light.point(1f, 0.6f, 0.2f, 1.6f, 9f));
     moonLight.castShadows = true; // the spinning cube throws a moving shadow
+    // and it hums: a looping spatial sound that circles the listener (panning, Doppler)
+    final var hum = moon.add(new AudioSource(res.sound("gen:hum", ProceduralSounds.hum())));
+    hum.loop = true;
+    hum.playOnStart = true;
+    hum.volume = 0.35f;
+    hum.minDistance = 1.5f;
+    hum.maxDistance = 30f;
     scene.add(moon);
+
+    // a quiet wind bed on the music bus, not positioned
+    final var ambience = new Entity("ambience");
+    final var wind = ambience.add(new AudioSource(res.sound("gen:wind", ProceduralSounds.wind())));
+    wind.spatial = false;
+    wind.loop = true;
+    wind.bus = AudioBus.MUSIC;
+    wind.volume = 0.4f;
+    wind.priority = 10; // keeps its voice however many crates clatter
+    wind.playOnStart = true;
+    scene.add(ambience);
 
     // a cut-out grate: its holes are discarded in the scene and in the shadow maps
     final var grateMaterial = new Material(res.texture("gen:grate", ProceduralTextures.grate(128, 6)));
@@ -379,9 +409,11 @@ public class DemoGame implements Game {
         final var t = this.player.transform();
         final var forward = t.forward(new Vector3f());
         spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), forward.mul(10f));
+        engine.audio().play2D(this.click, 0.6f, AudioBus.UI);
       }
       if (g.button("Wake all")) {
         engine.scene().components(Rigidbody.class).forEach(Rigidbody::wakeUp);
+        engine.audio().play2D(this.click, 0.6f, AudioBus.UI);
       }
       settings.occlusionCulling = g.checkbox("Occlusion culling", settings.occlusionCulling);
       settings.maxPointShadows = g.checkbox("Point light shadows", settings.maxPointShadows > 0) ? 4 : 0;
@@ -392,8 +424,16 @@ public class DemoGame implements Game {
       settings.exposure = g.slider("Exposure", settings.exposure, 0.2f, 3f);
       settings.bloomStrength = g.slider("Bloom", settings.bloomStrength, 0f, 0.5f);
       g.space(4f);
+      final var mixer = engine.audio().mixer();
+      g.row(2);
+      mixer.setVolume(AudioBus.MASTER, g.slider("Volume", mixer.volume(AudioBus.MASTER), 0f, 1f));
+      mixer.setVolume(AudioBus.MUSIC, g.slider("Wind", mixer.volume(AudioBus.MUSIC), 0f, 1f));
+      g.row(2);
+      mixer.setVolume(AudioBus.EFFECTS, g.slider("Effects", mixer.volume(AudioBus.EFFECTS), 0f, 1f));
+      mixer.setVolume(AudioBus.UI, g.slider("UI", mixer.volume(AudioBus.UI), 0f, 1f));
+      g.row(2);
       engine.physics().gravity.y = -g.slider("Gravity", -engine.physics().gravity.y, 0f, 20f);
-      this.turntableSpeed = g.slider("Turntable speed", this.turntableSpeed, -3f, 3f);
+      this.turntableSpeed = g.slider("Turntable", this.turntableSpeed, -3f, 3f);
       this.playerName = g.textField("Name", this.playerName);
       this.notes = g.textArea("Notes (Enter for a new line)##notes", this.notes, 2);
       g.label("Player collisions:");
@@ -417,6 +457,7 @@ public class DemoGame implements Game {
     crate.add(new MeshRenderer(this.crateMesh, this.crateMaterial));
     crate.add(new BoxCollider(0.5f, 0.5f, 0.5f));
     final var body = crate.add(new Rigidbody());
+    crate.add(new ImpactSound(this.thud)).volume = 0.8f; // louder for harder hits
     body.velocity.set(velocity);
     body.continuous = velocity.lengthSquared() > 0f; // thrown crates do not tunnel through thin walls
     engine.scene().add(crate);
@@ -430,6 +471,7 @@ public class DemoGame implements Game {
     final var forward = t.forward(new Vector3f());
     if (engine.input().wasActionPressed("spawn")) {
       spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(18f));
+      engine.audio().play(this.whoosh, t.position().fma(0.8f, forward, new Vector3f()), 0.7f, 1f, AudioBus.EFFECTS, 1);
     }
 
     // what is the crosshair pointing at? E pushes it (wakes sleeping bodies)

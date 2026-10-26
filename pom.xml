@@ -15,6 +15,7 @@
 
     <jogamp.version>2.6.0</jogamp.version>
     <joml.version>1.10.8</joml.version>
+    <jorbis.version>0.0.17</jorbis.version>
     <lombok.version>1.18.48</lombok.version>
     <junit.version>6.1.3</junit.version>
     <slf4j.version>2.0.17</slf4j.version>
@@ -31,6 +32,16 @@
       <groupId>org.jogamp.gluegen</groupId>
       <artifactId>gluegen-rt-main</artifactId>
       <version>${jogamp.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.jogamp.joal</groupId>
+      <artifactId>joal-main</artifactId>
+      <version>${jogamp.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.jcraft</groupId>
+      <artifactId>jorbis</artifactId>
+      <version>${jorbis.version}</version>
     </dependency>
     <dependency>
       <groupId>org.joml</groupId>
