@@ -1,6 +1,7 @@
 package engine.resources;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -78,6 +79,16 @@ class ResourceTest {
 
     @Override
     public void render(Scene scene, float alpha, int width, int height, List<Overlay> overlays) {
+    }
+
+    @Override
+    public ImageData readPixels(int width, int height) {
+      return new ImageData(width, height, new byte[width * height * 4]);
+    }
+
+    @Override
+    public engine.render.RenderSettings settings() {
+      return new engine.render.RenderSettings();
     }
 
     @Override
@@ -249,5 +260,68 @@ class ResourceTest {
     assertEquals(1, backend.images.size());
     res.dispose();
     assertEquals(1, backend.disposed);
+  }
+
+  @Test
+  void mtlParsingReadsEmissionExtraMapsAndIllum() throws IOException {
+    final var mats = MtlLoader.parse(new ByteArrayInputStream("""
+        newmtl lamp
+        Ks 1 1 1
+        Ke 2 1.5 0.5
+        map_Ke glow.png
+        map_Ks -clamp on gloss.png
+        map_d mask.png
+        disp -mm 0 1 rock_height.png
+        newmtl matte
+        Ks 1 1 1
+        illum 1
+        Ke 0.5
+        """.getBytes(StandardCharsets.UTF_8)));
+    final var lamp = mats.get("lamp");
+    assertEquals(1.5f, lamp.ke()[1], 0f);
+    assertEquals("glow.png", lamp.emissiveMap());
+    assertEquals("gloss.png", lamp.specularMap());
+    assertEquals("mask.png", lamp.alphaMap());
+    assertEquals("rock_height.png", lamp.heightMap());
+    assertEquals(1f, lamp.specular(), 0f);
+    final var matte = mats.get("matte");
+    assertEquals(0f, matte.specular(), 0f, "illum 1 means no highlights");
+    assertEquals(0.5f, matte.ke()[2], 0f, "a single value is grey");
+  }
+
+  @Test
+  void modelsTurnMtlMapsIntoAFullMaterial() {
+    final var backend = new FakeBackend();
+    final var res = new ResourceManager(backend);
+    final var m = res.model("objects/fancy/fancy.obj").parts().get(0).material();
+    assertEquals(0.5f, m.alphaCutoff, 0f, "a mask on an opaque material is a cut-out");
+    assertFalse(m.transparent);
+    assertNotNull(m.specularMap);
+    assertNotNull(m.emissiveMap);
+    assertEquals(1f, m.emissive.x, 0f, "map_Ke with Ke 0 still glows");
+    assertNotNull(m.heightMap);
+    assertEquals(2f, m.normalScale, 0f);
+
+    // the diffuse texture got the mask as its alpha: white mask pixels opaque, black ones see-through
+    final var withAlpha = backend.images.stream().filter(img -> img.width() == 2 && img.rgba()[0] == (byte) 200)
+        .filter(img -> img.rgba()[3] != (byte) 255 || img.rgba()[7] != (byte) 255).findFirst().orElseThrow();
+    int opaque = 0;
+    for (int i = 3; i < withAlpha.rgba().length; i += 4) {
+      opaque += withAlpha.rgba()[i] == (byte) 255 ? 1 : 0;
+    }
+    assertEquals(2, opaque);
+
+    // the grey bump map became a tangent-space normal map (the height map itself is uploaded too, for parallax)
+    final var fourByFour = backend.images.stream().filter(img -> img.width() == 4).toList();
+    assertEquals(2, fourByFour.size());
+    assertEquals(1, fourByFour.stream().filter(NormalMaps::looksLikeHeightMap).count());
+  }
+
+  @Test
+  void heightMapsAndNormalMapsAreToldApart() {
+    final var grey = new ImageData(2, 1, new byte[] { 10, 10, 10, -1, (byte) 200, (byte) 200, (byte) 200, -1 });
+    final var bluish = new ImageData(2, 1, new byte[] { (byte) 128, (byte) 128, -1, -1, (byte) 140, 120, -6, -1 });
+    assertTrue(NormalMaps.looksLikeHeightMap(grey));
+    assertFalse(NormalMaps.looksLikeHeightMap(bluish));
   }
 }

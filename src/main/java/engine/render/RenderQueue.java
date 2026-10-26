@@ -14,7 +14,6 @@ import engine.ecs.Scene;
 import engine.ecs.Transform;
 import engine.spatial.SpatialGrid;
 import lombok.Getter;
-import lombok.extern.slf4j.Slf4j;
 
 /**
  * Backend-independent part of drawing a scene: works out where every {@link MeshRenderer} is this frame, culls against
@@ -23,10 +22,15 @@ import lombok.extern.slf4j.Slf4j;
  * <ul>
  * <li>renderers whose transform did not change since the last fixed step reuse their cached matrices;</li>
  * <li>renderers marked {@link MeshRenderer#setStaticGeometry static} live in a persistent {@link SpatialGrid}, so
- * culling touches whole cells instead of individual objects, and they cost nothing per frame while off-screen.</li>
+ * culling touches whole cells instead of individual objects, and they cost nothing per frame while off-screen. If a
+ * static renderer is moved anyway, the change is noticed at the next fixed step (its transform is tracked) and its
+ * cell registration is rebuilt;</li>
+ * <li>objects are tested against their bounding sphere first and, if that passes, their world-space bounding box;</li>
+ * <li>optionally, grid cells hidden behind other geometry in the last frame are skipped (occlusion culling): the
+ * backend tests the {@link #occlusionCandidates() visible cells} against the depth buffer and reports back through
+ * {@link OcclusionCell#setOccluded}.</li>
  * </ul>
  */
-@Slf4j
 public final class RenderQueue {
   /** 16 floats model matrix + 9 floats normal matrix. */
   public static final int FLOATS_PER_INSTANCE = 25;
@@ -39,7 +43,41 @@ public final class RenderQueue {
   private static final Comparator<MeshRenderer> BY_MESH_MATERIAL = BY_MESH
       .thenComparingInt((MeshRenderer r) -> r.material.sortKey);
   private static final Comparator<MeshRenderer> FAR_TO_NEAR = (a, b) -> Float.compare(b.distSq, a.distSq);
+  /** Static renderers are re-checked against their transforms this often, to catch moves without a fixed step. */
   private static final int VALIDATE_EVERY_FRAMES = 300;
+  private static final int OCCLUDED = 1;
+
+  /**
+   * A grid cell of static geometry that was inside the view frustum in the last main-pass cull. The backend renders
+   * its box with an occlusion query and reports whether any of it was visible. Instances are reused every frame.
+   */
+  public static final class OcclusionCell {
+    private SpatialGrid.IntList cell;
+    @Getter private float minX;
+    @Getter private float minY;
+    @Getter private float minZ;
+    @Getter private float maxX;
+    @Getter private float maxY;
+    @Getter private float maxZ;
+
+    /** Opaque identity of the cell, stable across frames while the cell stays occupied. */
+    public Object key() {
+      return this.cell;
+    }
+
+    /** Records the query result; the cell's objects are skipped by the next main pass while it is occluded. */
+    public void setOccluded(boolean occluded) {
+      setOccluded(this.cell, occluded);
+    }
+
+    /**
+     * Records a result for a cell remembered by {@link #key()} from an earlier frame. If that cell was emptied and
+     * recycled in the meantime, the result lands on another cell and is corrected by its next query, one frame later.
+     */
+    public static void setOccluded(Object key, boolean occluded) {
+      ((SpatialGrid.IntList) key).setTag(occluded ? OCCLUDED : 0);
+    }
+  }
 
   private final SpatialGrid grid;
   private final List<MeshRenderer> gridItems = new ArrayList<>(); // grid id -> static renderer (null = free slot)
@@ -50,13 +88,19 @@ public final class RenderQueue {
   private final FrustumIntersection frustum = new FrustumIntersection();
   private final Vector3f boundsMin = new Vector3f();
   private final Vector3f boundsMax = new Vector3f();
+  private final List<OcclusionCell> cells = new ArrayList<>();
+  private int cellCount;
+  private final List<SpatialGrid.IntList> hiddenCells = new ArrayList<>();
 
   private List<MeshRenderer> lastAll;
   private int seenInvalidations;
+  private long seenTrackedChanges;
   private int reconcileStamp;
   private int queryStamp;
   /** Number of enabled renderers seen in the last {@link #collect}. */
   @Getter private int candidates;
+  /** Renderers skipped by the last main-pass cull because their cells were occluded. */
+  @Getter private int occluded;
   private int framesSinceValidation;
 
   public RenderQueue() {
@@ -99,6 +143,10 @@ public final class RenderQueue {
       this.seenInvalidations = MeshRenderer.invalidations();
       reinsertInvalidated();
     }
+    if (Transform.trackedChangeCount() != this.seenTrackedChanges) {
+      this.seenTrackedChanges = Transform.trackedChangeCount();
+      reinsertMoved();
+    }
     for (int i = 0; i < this.dynamic.size(); i++) {
       updateDynamic(this.dynamic.get(i), alpha);
     }
@@ -134,7 +182,10 @@ public final class RenderQueue {
   }
 
   private void insertStatic(MeshRenderer r) {
-    r.entity().transform().worldMatrix(r.model);
+    final var t = r.entity().transform();
+    t.trackChanges();
+    t.worldMatrix(r.model);
+    r.cacheVersion = t.chainVersion();
     finishState(r);
     r.stateValid = true;
     int id = r.gridId;
@@ -170,6 +221,16 @@ public final class RenderQueue {
     }
   }
 
+  /** A tracked transform changed somewhere: re-register the static renderers whose chain did. */
+  private void reinsertMoved() {
+    for (int id = 0; id < this.gridItems.size(); id++) {
+      final var r = this.gridItems.get(id);
+      if (r != null && r.entity().transform().chainVersion() != r.cacheVersion) {
+        insertStatic(r);
+      }
+    }
+  }
+
   private void updateDynamic(MeshRenderer r, float alpha) {
     final var t = r.entity().transform();
     if (t.isChainStatic()) {
@@ -192,17 +253,28 @@ public final class RenderQueue {
   private static void finishState(MeshRenderer r) {
     r.model.normal(r.normal);
     r.radius = ShadowMath.worldSphere(r.mesh.data(), r.model, r.center);
+    // world-space half size of the mesh's box under the model matrix: |M| * localHalf
+    final var data = r.mesh.data();
+    final float hx = 0.5f * (data.max().x - data.min().x);
+    final float hy = 0.5f * (data.max().y - data.min().y);
+    final float hz = 0.5f * (data.max().z - data.min().z);
+    final var m = r.model;
+    r.boxHalf.set(Math.abs(m.m00()) * hx + Math.abs(m.m10()) * hy + Math.abs(m.m20()) * hz,
+        Math.abs(m.m01()) * hx + Math.abs(m.m11()) * hy + Math.abs(m.m21()) * hz,
+        Math.abs(m.m02()) * hx + Math.abs(m.m12()) * hy + Math.abs(m.m22()) * hz);
   }
 
-  /** Debug check: static renderers that moved without {@link MeshRenderer#invalidate()} are reported once. */
+  /**
+   * Safety net for static renderers moved without a fixed step in between (so no snapshot noticed it): compares
+   * every cached matrix with the transform from time to time and re-registers those that moved.
+   */
   private void validateStatics() {
-    for (MeshRenderer r : this.gridItems) {
-      if (r != null && !r.warned) {
+    for (int id = 0; id < this.gridItems.size(); id++) {
+      final var r = this.gridItems.get(id);
+      if (r != null) {
         r.entity().transform().worldMatrix(this.scratch);
         if (!this.scratch.equals(r.model, 1e-4f)) {
-          r.warned = true;
-          log.warn("Static renderer of {} has moved; call MeshRenderer.invalidate() after moving static geometry",
-              r.entity());
+          insertStatic(r);
         }
       }
     }
@@ -214,26 +286,51 @@ public final class RenderQueue {
    * off-screen.
    */
   public void cull(Matrix4f viewProj, Pass pass, List<MeshRenderer> out) {
+    cull(viewProj, pass, out, false);
+  }
+
+  /**
+   * Like {@link #cull(Matrix4f, Pass, List)}; with {@code occlusion} (main pass only) static objects whose cells were
+   * all reported occluded are skipped, and the visible cells are collected in {@link #occlusionCandidates()}.
+   */
+  public void cull(Matrix4f viewProj, Pass pass, List<MeshRenderer> out, boolean occlusion) {
     this.frustum.set(viewProj);
     frustumBounds(viewProj, this.boundsMin, this.boundsMax);
-    cull(this.frustum, this.boundsMin, this.boundsMax, pass, out);
+    cull(this.frustum, this.boundsMin, this.boundsMax, pass, out, occlusion && pass == Pass.MAIN);
   }
 
   /** Like {@link #cull(Matrix4f, Pass, List)} for a bare frustum; visits every occupied grid cell. */
   public void cull(FrustumIntersection frustum, Pass pass, List<MeshRenderer> out) {
-    cull(frustum, null, null, pass, out);
+    cull(frustum, null, null, pass, out, false);
+  }
+
+  /** The cells of static geometry inside the frustum of the last occlusion-culled main pass. */
+  public List<OcclusionCell> occlusionCandidates() {
+    return this.cells.subList(0, this.cellCount);
   }
 
   private void cull(FrustumIntersection frustum, Vector3f boxMin, Vector3f boxMax, Pass pass,
-      List<MeshRenderer> out) {
+      List<MeshRenderer> out, boolean occlusion) {
     out.clear();
     final int stamp = ++this.queryStamp;
+    if (occlusion) {
+      this.cellCount = 0;
+      this.occluded = 0;
+      this.hiddenCells.clear();
+    }
     for (int i = 0; i < this.dynamic.size(); i++) {
       consider(this.dynamic.get(i), frustum, pass, out);
     }
     final SpatialGrid.CellVisitor visitor = (ids, x0, y0, z0, x1, y1, z1) -> {
       if (!frustum.testAab(x0, y0, z0, x1, y1, z1)) {
         return;
+      }
+      if (occlusion) {
+        addCell(ids, x0, y0, z0, x1, y1, z1);
+        if (ids.tag() == OCCLUDED) {
+          this.hiddenCells.add(ids);
+          return; // its objects are drawn only if another, visible cell holds them
+        }
       }
       for (int k = 0; k < ids.size(); k++) {
         final var r = this.gridItems.get(ids.get(k));
@@ -252,6 +349,31 @@ public final class RenderQueue {
     for (int k = 0; k < large.size(); k++) {
       consider(this.gridItems.get(large.get(k)), frustum, pass, out);
     }
+    // count the objects of hidden cells that no visible cell brought in (each once)
+    for (int i = 0; i < this.hiddenCells.size(); i++) {
+      final var ids = this.hiddenCells.get(i);
+      for (int k = 0; k < ids.size(); k++) {
+        final var r = this.gridItems.get(ids.get(k));
+        if (r.queryStamp != stamp) {
+          r.queryStamp = stamp;
+          this.occluded++;
+        }
+      }
+    }
+  }
+
+  private void addCell(SpatialGrid.IntList ids, float x0, float y0, float z0, float x1, float y1, float z1) {
+    if (this.cellCount == this.cells.size()) {
+      this.cells.add(new OcclusionCell());
+    }
+    final var c = this.cells.get(this.cellCount++);
+    c.cell = ids;
+    c.minX = x0;
+    c.minY = y0;
+    c.minZ = z0;
+    c.maxX = x1;
+    c.maxY = y1;
+    c.maxZ = z1;
   }
 
   /** Axis-aligned bounds of the volume described by a view-projection matrix (perspective or orthographic). */
@@ -272,10 +394,17 @@ public final class RenderQueue {
         && r.mesh.data().drawMode() == MeshData.DrawMode.TRIANGLES)) {
       return;
     }
-    if (frustum.testSphere(r.center.x, r.center.y, r.center.z, r.radius)) {
-      r.distSq = r.center.distanceSquared(this.cameraPos);
-      out.add(r);
+    if (!frustum.testSphere(r.center.x, r.center.y, r.center.z, r.radius)) {
+      return;
     }
+    // the sphere of a long or flat object is much bigger than the object: check its box too
+    final var c = r.center; // the sphere is centred on the box
+    final var h = r.boxHalf;
+    if (!frustum.testAab(c.x - h.x, c.y - h.y, c.z - h.z, c.x + h.x, c.y + h.y, c.z + h.z)) {
+      return;
+    }
+    r.distSq = r.center.distanceSquared(this.cameraPos);
+    out.add(r);
   }
 
   /** Orders renderers so that draws of the same mesh (and material) are adjacent. */

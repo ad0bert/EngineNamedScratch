@@ -8,7 +8,8 @@ import engine.ecs.Component;
 /**
  * A light. {@link Type#DIRECTIONAL} lights shine along the entity's forward (-Z) axis; {@link Type#POINT} lights
  * radiate from the entity position and fade out at {@link #range}. At most {@link #MAX_LIGHTS} lights are used per
- * frame; the first shadow-casting directional light gets cascaded shadow maps.
+ * frame; the first shadow-casting directional light gets cascaded shadow maps, and shadow-casting point lights (up to
+ * {@link RenderSettings#maxPointShadows}) get cube shadow maps reaching to their range.
  */
 public class Light extends Component {
   public static final int MAX_LIGHTS = 8;
@@ -25,8 +26,13 @@ public class Light extends Component {
   public float range = 15f;
   /** Ambient term (applied once, taken from the first light). */
   public final Vector3f ambient = new Vector3f(0.25f, 0.25f, 0.28f);
-  /** Directional lights only: render a shadow map. */
+  /**
+   * Render a shadow map: cascades for the first directional light, a cube map for point lights (off by default for
+   * those: each costs six extra passes over the casters in range).
+   */
   public boolean castShadows = true;
+  /** Point lights only: near plane of the shadow cube; geometry closer to the light than this casts no shadow. */
+  public float shadowNear = 0.05f;
   /**
    * Directional lights only: how far from the camera (along its view direction, in world units) shadows are drawn.
    * Beyond this distance surfaces are lit without shadows (with a short fade).

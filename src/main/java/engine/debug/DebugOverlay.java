@@ -19,6 +19,7 @@ public class DebugOverlay implements ISystem, Overlay {
   private final Engine engine;
   private boolean visible = true;
   private String text = "";
+  private int lines = 1;
   private double sinceUpdate = 1;
 
   public DebugOverlay(Engine engine) {
@@ -43,11 +44,13 @@ public class DebugOverlay implements ISystem, Overlay {
     }).orElse("-");
     final var p = this.engine.physics().stats();
     this.text = String.format(Locale.ROOT, "%s %s\n%.0f fps\nentities %d\n"
-        + "draw calls %d  instances %d\nculled %d  shadow casters %d (%d cascades)  lights %d\n"
+        + "draw calls %d  instances %d\nculled %d  occluded %d (%d queries)\n"
+        + "shadow casters %d (%d cascades, %d point)  lights %d\n"
         + "bodies %d (%d asleep)  pairs %d  contacts %d\ncamera %s",
         this.engine.config().title(), this.engine.config().version(), this.engine.fps(), scene.entities().size(),
-        s.drawCalls, s.instances, s.culled, s.shadowCasters, s.shadowCascades, s.lights, p.bodies, p.sleepingBodies,
-        p.candidatePairs, p.contacts, cam);
+        s.drawCalls, s.instances, s.culled, s.occluded, s.occlusionQueries, s.shadowCasters, s.shadowCascades,
+        s.pointShadows, s.lights, p.bodies, p.sleepingBodies, p.candidatePairs, p.contacts, cam);
+    this.lines = (int) this.text.chars().filter(c -> c == '\n').count() + 1;
   }
 
   @Override
@@ -56,7 +59,7 @@ public class DebugOverlay implements ISystem, Overlay {
       return;
     }
     final float pad = 6f;
-    ui.drawRect(pad, pad, ui.textWidth(this.text, 1f) + 2 * pad, ui.lineHeight(1f) * 7 + 2 * pad, 0f, 0f, 0f,
+    ui.drawRect(pad, pad, ui.textWidth(this.text, 1f) + 2 * pad, ui.lineHeight(1f) * this.lines + 2 * pad, 0f, 0f, 0f,
         0.55f);
     ui.drawText(this.text, 2 * pad, 2 * pad, 1f, 1f, 1f, 1f, 1f);
   }

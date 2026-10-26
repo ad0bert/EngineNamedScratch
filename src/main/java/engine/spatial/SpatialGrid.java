@@ -21,6 +21,16 @@ public final class SpatialGrid {
   public static final class IntList {
     private int[] data = new int[4];
     private int size;
+    private int tag;
+
+    /** A value the grid's owner may attach to a cell (e.g. occlusion state); reset when the cell is recycled. */
+    public int tag() {
+      return this.tag;
+    }
+
+    public void setTag(int tag) {
+      this.tag = tag;
+    }
 
     public void add(int v) {
       if (this.size == this.data.length) {
@@ -48,6 +58,7 @@ public final class SpatialGrid {
 
     void clear() {
       this.size = 0;
+      this.tag = 0;
     }
   }
 
@@ -245,6 +256,7 @@ public final class SpatialGrid {
         list.removeValue(id);
         if (list.size() == 0) {
           this.cells.remove(key);
+          list.clear();
           this.pool.add(list);
         }
       }

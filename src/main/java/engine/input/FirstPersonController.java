@@ -17,6 +17,9 @@ public class FirstPersonController extends Component {
   public float sensitivityDegPerPixel = 0.12f;
   @Getter private float yaw;
   @Getter private float pitch;
+  private final Vector3f move = new Vector3f();
+  private final Vector3f fwd = new Vector3f();
+  private final Vector3f right = new Vector3f();
 
   public FirstPersonController(InputState input) {
     this.input = input;
@@ -31,6 +34,12 @@ public class FirstPersonController extends Component {
     input.bind("down", KeyEvent.VK_SHIFT);
   }
 
+  /** Turns the view: yaw in degrees about the world up axis (0 looks along -Z), pitch in degrees up from level. */
+  public void setLook(float yawDegrees, float pitchDegrees) {
+    this.yaw = yawDegrees;
+    this.pitch = Math.max(-89f, Math.min(89f, pitchDegrees));
+  }
+
   @Override
   public void update(double dt) {
     this.yaw -= this.input.consumeMouseDx() * this.sensitivityDegPerPixel;
@@ -39,9 +48,9 @@ public class FirstPersonController extends Component {
     final var t = entity().transform();
     t.rotation().identity().rotateY((float) Math.toRadians(this.yaw)).rotateX((float) Math.toRadians(this.pitch));
 
-    final var move = new Vector3f();
-    final var fwd = t.forward(new Vector3f());
-    final var right = t.right(new Vector3f());
+    final var move = this.move.zero();
+    final var fwd = t.forward(this.fwd);
+    final var right = t.right(this.right);
     if (this.input.isActionDown("forward")) {
       move.add(fwd);
     }

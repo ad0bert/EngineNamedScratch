@@ -139,7 +139,7 @@ public final class ObjLoader {
           + (r[2] < 0 ? "/" + flat[0] + "," + flat[1] + "," + flat[2] : "");
       var id = b.cache.get(key);
       if (id == null) {
-        id = b.vertices.size() / MeshData.FLOATS_PER_VERTEX;
+        id = b.vertices.size() / MeshData.INPUT_FLOATS_PER_VERTEX;
         b.cache.put(key, id);
         final float[] p = pos.get(r[0]);
         final float[] nn = r[2] >= 0 ? nor.get(r[2]) : flat;

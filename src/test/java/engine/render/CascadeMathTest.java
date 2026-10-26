@@ -127,4 +127,49 @@ class CascadeMathTest {
         new Matrix4f());
     assertTrue(a.equals(b, 1e-3f));
   }
+
+  @Test
+  void theCullingVolumeReachesFurtherTowardsTheLightThanTheCascade() {
+    final var dir = new Vector3f(0f, -1f, 0f); // light shining down
+    final var center = new Vector3f(0f, 0f, 0f);
+    final var cascade = ShadowMath.cascadeViewProj(dir, center, 10f, 1024, new Matrix4f());
+    final var volume = ShadowMath.cascadeCullingVolume(dir, center, 10f, 1024, 500f, new Matrix4f());
+    final var tower = new Vector4f(0f, 100f, 0f, 1f); // a tall caster 100 m above the slice (> 4 radii)
+    final var inCascade = cascade.transform(new Vector4f(tower));
+    final var inVolume = volume.transform(new Vector4f(tower));
+    assertTrue(inCascade.z / inCascade.w < -1f, "in front of the cascade's near plane (clamped when drawn)");
+    assertTrue(Math.abs(inVolume.z / inVolume.w) <= 1f, "but inside the volume casters are looked for in");
+    // the sides are the same: x/y of a point map identically
+    final var side = new Vector4f(7f, 0f, -3f, 1f);
+    assertEquals(cascade.transform(new Vector4f(side)).x, volume.transform(new Vector4f(side)).x, 1e-4f);
+    assertEquals(cascade.transform(new Vector4f(side)).y, volume.transform(new Vector4f(side)).y, 1e-4f);
+  }
+
+  /** Java copy of the lookup in basic.frag's pointShadow(): face, uv and depth of a point seen from the light. */
+  private static float[] shaderLookup(Vector3f d, float near, float far) {
+    final var a = new Vector3f(Math.abs(d.x), Math.abs(d.y), Math.abs(d.z));
+    final int face = a.x >= a.y && a.x >= a.z ? (d.x > 0 ? 0 : 1) : a.y >= a.z ? (d.y > 0 ? 2 : 3) : (d.z > 0 ? 4 : 5);
+    final var f = ShadowMath.CUBE_FORWARD[face];
+    final var u = ShadowMath.CUBE_UP[face];
+    final var r = f.cross(u, new Vector3f());
+    final float z = d.dot(f);
+    final float ndc = (far + near) / (far - near) - 2f * far * near / ((far - near) * z);
+    return new float[] { face, d.dot(r) / z * 0.5f + 0.5f, d.dot(u) / z * 0.5f + 0.5f, ndc * 0.5f + 0.5f };
+  }
+
+  @Test
+  void cubeFaceMatricesMatchTheLookupInTheShader() {
+    final var light = new Vector3f(1f, 2f, 3f);
+    final var rnd = new java.util.Random(3);
+    for (int i = 0; i < 200; i++) {
+      final var d = new Vector3f(rnd.nextFloat() - 0.5f, rnd.nextFloat() - 0.5f, rnd.nextFloat() - 0.5f).mul(20f);
+      final float[] lookup = shaderLookup(d, 0.05f, 15f);
+      final var m = ShadowMath.cubeFaceViewProj(light, (int) lookup[0], 0.05f, 15f, new Matrix4f());
+      final var clip = m.transform(new Vector4f(light.x + d.x, light.y + d.y, light.z + d.z, 1f));
+      assertEquals(lookup[1], clip.x / clip.w * 0.5f + 0.5f, 1e-4f, "u " + i);
+      assertEquals(lookup[2], clip.y / clip.w * 0.5f + 0.5f, 1e-4f, "v " + i);
+      assertEquals(lookup[3], clip.z / clip.w * 0.5f + 0.5f, 1e-4f, "depth " + i);
+      assertTrue(lookup[1] >= 0f && lookup[1] <= 1f && lookup[2] >= 0f && lookup[2] <= 1f, "on the chosen face");
+    }
+  }
 }

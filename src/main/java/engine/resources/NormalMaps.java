@@ -42,6 +42,54 @@ public final class NormalMaps {
     return new ImageData(width, height, rgba);
   }
 
+  /** Height field as a greyscale image (0 black, 1 white), e.g. for {@code Material.heightMap}. */
+  public static ImageData heightImage(float[] heights, int width, int height) {
+    if (heights.length != width * height) {
+      throw new IllegalArgumentException("expected " + width * height + " heights, got " + heights.length);
+    }
+    final byte[] rgba = new byte[width * height * 4];
+    for (int i = 0; i < heights.length; i++) {
+      final byte v = (byte) Math.round(Math.max(0f, Math.min(1f, heights[i])) * 255f);
+      rgba[i * 4] = v;
+      rgba[i * 4 + 1] = v;
+      rgba[i * 4 + 2] = v;
+      rgba[i * 4 + 3] = (byte) 255;
+    }
+    return new ImageData(width, height, rgba);
+  }
+
+  /** Brightness (0..1) of every pixel of a greyscale (or colour, averaged) image. */
+  public static float[] heights(ImageData image) {
+    final byte[] p = image.rgba();
+    final float[] h = new float[image.width() * image.height()];
+    for (int i = 0; i < h.length; i++) {
+      h[i] = ((p[i * 4] & 0xFF) + (p[i * 4 + 1] & 0xFF) + (p[i * 4 + 2] & 0xFF)) / (3f * 255f);
+    }
+    return h;
+  }
+
+  /**
+   * True if the image looks like a height map (grey) rather than a tangent-space normal map (mostly light blue, with
+   * blue the brightest channel). Wavefront MTL files use {@code bump} and {@code map_Bump} for both.
+   */
+  public static boolean looksLikeHeightMap(ImageData image) {
+    final byte[] p = image.rgba();
+    final int n = image.width() * image.height();
+    final int step = Math.max(1, n / 4096); // a sample is plenty
+    int grey = 0;
+    int samples = 0;
+    for (int i = 0; i < n; i += step) {
+      final int r = p[i * 4] & 0xFF;
+      final int g = p[i * 4 + 1] & 0xFF;
+      final int b = p[i * 4 + 2] & 0xFF;
+      if (Math.abs(r - g) < 12 && Math.abs(g - b) < 12) {
+        grey++;
+      }
+      samples++;
+    }
+    return grey > samples * 0.9f;
+  }
+
   private static byte encode(float v) {
     return (byte) Math.round((v * 0.5f + 0.5f) * 255f);
   }

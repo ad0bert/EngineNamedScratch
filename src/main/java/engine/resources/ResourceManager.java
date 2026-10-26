@@ -117,14 +117,92 @@ public class ResourceManager {
     out.color(m.kd()[0], m.kd()[1], m.kd()[2], m.alpha());
     out.specular = m.specular();
     out.shininess = m.shininess();
-    if (m.diffuseMap() != null) {
+    if (m.alphaMap() != null) {
+      out.texture = withAlpha(m.diffuseMap() != null ? dir + m.diffuseMap() : null, dir + m.alphaMap());
+      if (m.alpha() >= 1f) {
+        out.alphaCutoff = 0.5f; // a mask on an opaque material: cut-out, so it stays sorted and casts shadows
+      }
+    } else if (m.diffuseMap() != null) {
       out.texture = texture(dir + m.diffuseMap());
     }
     if (m.normalMap() != null) {
-      out.normalMap = texture(dir + m.normalMap());
+      out.normalMap = normalMap(dir + m.normalMap(), m.normalScale());
       out.normalScale = m.normalScale();
     }
+    if (m.specularMap() != null) {
+      out.specularMap = texture(dir + m.specularMap());
+    }
+    out.emissive.set(m.ke()[0], m.ke()[1], m.ke()[2]);
+    if (m.emissiveMap() != null) {
+      out.emissiveMap = texture(dir + m.emissiveMap());
+      if (out.emissive.lengthSquared() == 0f) {
+        out.emissive.set(1f); // the map alone decides (exporters often write Ke 0 next to a map_Ke)
+      }
+    }
+    if (m.heightMap() != null) {
+      out.heightMap = texture(dir + m.heightMap());
+    }
     return out;
+  }
+
+  /**
+   * A normal map, or a grey height (bump) map converted into one: MTL files use the same statements for both, so
+   * the pixels decide. The conversion is cached under its own key.
+   */
+  private GpuTexture normalMap(String path, float bumpScale) {
+    final var key = path + "|normals";
+    final var cached = this.textures.get(key);
+    if (cached != null) {
+      return cached;
+    }
+    final var image = image(path);
+    if (image == null) {
+      return white();
+    }
+    final var normals = NormalMaps.looksLikeHeightMap(image)
+        ? NormalMaps.fromHeights(NormalMaps.heights(image), image.width(), image.height(), 3f * bumpScale)
+        : image;
+    return texture(key, normals);
+  }
+
+  /** The diffuse texture (or white) with its alpha replaced by the brightness of a mask image (map_d). */
+  private GpuTexture withAlpha(String diffusePath, String maskPath) {
+    final var key = diffusePath + "|alpha=" + maskPath;
+    final var cached = this.textures.get(key);
+    if (cached != null) {
+      return cached;
+    }
+    final var mask = image(maskPath);
+    final var base = diffusePath != null ? image(diffusePath) : null;
+    if (mask == null) {
+      return base != null ? texture(diffusePath) : white();
+    }
+    final int w = base != null ? base.width() : mask.width();
+    final int h = base != null ? base.height() : mask.height();
+    final byte[] rgba = base != null ? base.rgba().clone() : new byte[w * h * 4];
+    for (int y = 0; y < h; y++) {
+      final int my = y * mask.height() / h;
+      for (int x = 0; x < w; x++) {
+        final int mo = (my * mask.width() + x * mask.width() / w) * 4;
+        final int o = (y * w + x) * 4;
+        if (base == null) {
+          rgba[o] = rgba[o + 1] = rgba[o + 2] = (byte) 255;
+        }
+        final byte[] mp = mask.rgba();
+        rgba[o + 3] = (byte) (((mp[mo] & 0xFF) + (mp[mo + 1] & 0xFF) + (mp[mo + 2] & 0xFF)) / 3);
+      }
+    }
+    return texture(key, new ImageData(w, h, rgba));
+  }
+
+  /** Decoded pixels of a classpath image, or null (with a logged error). */
+  private static ImageData image(String path) {
+    try (InputStream in = open(path)) {
+      return ImageLoader.load(in, path);
+    } catch (IOException | RuntimeException e) {
+      log.error("Could not load image {}", path, e);
+      return null;
+    }
   }
 
   private static InputStream open(String path) throws IOException {

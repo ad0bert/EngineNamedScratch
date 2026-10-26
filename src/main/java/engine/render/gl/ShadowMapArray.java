@@ -3,17 +3,23 @@ package engine.render.gl;
 import com.jogamp.opengl.GL3;
 
 /**
- * Depth-only 2D texture array with one layer per cascade, rendered through one framebuffer whose depth attachment is
- * switched layer by layer. The depth texture is hardware-compared, so it is read through a {@code sampler2DArrayShadow}
- * (with bilinear filtering that gives 2x2 percentage-closer filtering for free).
+ * Depth-only 2D texture array (one layer per shadow cascade, or six per point light cube), rendered through one
+ * framebuffer whose depth attachment is switched layer by layer. The depth texture is hardware-compared, so it is read
+ * through a {@code sampler2DArrayShadow} (with bilinear filtering that gives 2x2 percentage-closer filtering for free).
  */
-final class CascadedShadowMap {
+final class ShadowMapArray {
   private final int size;
+  private final int layers;
   private final int fbo;
   private final int texture;
 
-  CascadedShadowMap(GL3 gl, int size, int layers) {
+  /**
+   * @param clampToEdge repeat the edge texels outside the map (cube faces, whose neighbours continue the scene)
+   *                    instead of reading "lit" there (cascades, outside which nothing was rendered)
+   */
+  ShadowMapArray(GL3 gl, int size, int layers, boolean clampToEdge) {
     this.size = size;
+    this.layers = layers;
     final int[] ids = new int[1];
     gl.glGenTextures(1, ids, 0);
     this.texture = ids[0];
@@ -22,8 +28,9 @@ final class CascadedShadowMap {
         GL3.GL_DEPTH_COMPONENT, GL3.GL_FLOAT, null);
     gl.glTexParameteri(GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR);
     gl.glTexParameteri(GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
-    gl.glTexParameteri(GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_WRAP_S, GL3.GL_CLAMP_TO_BORDER);
-    gl.glTexParameteri(GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_WRAP_T, GL3.GL_CLAMP_TO_BORDER);
+    final int wrap = clampToEdge ? GL3.GL_CLAMP_TO_EDGE : GL3.GL_CLAMP_TO_BORDER;
+    gl.glTexParameteri(GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_WRAP_S, wrap);
+    gl.glTexParameteri(GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_WRAP_T, wrap);
     gl.glTexParameterfv(GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_BORDER_COLOR, new float[] { 1f, 1f, 1f, 1f }, 0);
     gl.glTexParameteri(GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_COMPARE_MODE, GL3.GL_COMPARE_REF_TO_TEXTURE);
     gl.glTexParameteri(GL3.GL_TEXTURE_2D_ARRAY, GL3.GL_TEXTURE_COMPARE_FUNC, GL3.GL_LEQUAL);
@@ -43,6 +50,10 @@ final class CascadedShadowMap {
 
   int size() {
     return this.size;
+  }
+
+  int layers() {
+    return this.layers;
   }
 
   /** Starts rendering into one cascade: binds the framebuffer, attaches the layer, clears its depth. */

@@ -28,6 +28,12 @@ public interface RenderBackend {
    */
   void render(Scene scene, float alpha, int width, int height, List<Overlay> overlays);
 
+  /** Reads back the last rendered frame (scene and overlays) as RGBA pixels, bottom row first. */
+  ImageData readPixels(int width, int height);
+
+  /** Quality and culling switches, read every frame. */
+  RenderSettings settings();
+
   /** Statistics of the last rendered frame. */
   RenderStats stats();
 

@@ -13,8 +13,8 @@ import engine.render.RenderQueue;
 import lombok.Getter;
 
 /**
- * VAO with static vertex/index buffers plus a dynamic per-instance buffer holding a model and a normal matrix per
- * instance (attribute locations 3-9), so every draw is an instanced draw.
+ * VAO with static vertex/index buffers (position 0, normal 1, uv 2, tangent 10) plus a dynamic per-instance buffer
+ * holding a model and a normal matrix per instance (attribute locations 3-9), so every draw is an instanced draw.
  */
 final class GlMesh implements GpuMesh {
   private static final int INSTANCE_STRIDE = RenderQueue.FLOATS_PER_INSTANCE * Float.BYTES;
@@ -52,6 +52,8 @@ final class GlMesh implements GpuMesh {
     gl.glVertexAttribPointer(1, 3, GL3.GL_FLOAT, false, stride, 3L * Float.BYTES);
     gl.glEnableVertexAttribArray(2);
     gl.glVertexAttribPointer(2, 2, GL3.GL_FLOAT, false, stride, 6L * Float.BYTES);
+    gl.glEnableVertexAttribArray(10);
+    gl.glVertexAttribPointer(10, 4, GL3.GL_FLOAT, false, stride, (long) MeshData.TANGENT_OFFSET * Float.BYTES);
 
     if (data.indices() != null) {
       gl.glGenBuffers(1, ids, 0);
