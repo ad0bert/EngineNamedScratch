@@ -33,6 +33,7 @@ import engine.render.ShadowMath;
  * <li>into the HDR target of {@link PostProcessor}: opaque geometry batched by (mesh, material) with GPU instancing,
  * skipping static cells that were occluded in the last frame;</li>
  * <li>occlusion queries for the visible static cells (read back in the next frame, so the GPU is never waited on);</li>
+ * <li>the sky ({@link GlSky}) where nothing opaque was drawn;</li>
  * <li>transparent geometry: weighted blended order-independent transparency (batched like opaque geometry), or sorted
  * back to front;</li>
  * <li>bloom, tone mapping and FXAA into the window.</li>
@@ -42,7 +43,7 @@ import engine.render.ShadowMath;
  *
  * <p>
  * Texture units: 0 albedo, 1 shadow cascades, 2 normal map, 3 specular map, 4 emissive map, 5 height map, 6 point and
- * spot light shadow maps, 7 metallic-roughness map.
+ * spot light shadow maps, 7 metallic-roughness map, 13 to 15 the sky's irradiance, reflection and BRDF maps.
  */
 final class GlSceneRenderer {
   private static final int UNIT_ALBEDO = 0;
@@ -53,6 +54,9 @@ final class GlSceneRenderer {
   private static final int UNIT_HEIGHT = 5;
   private static final int UNIT_LOCAL_SHADOWS = 6;
   private static final int UNIT_METAL_ROUGH = 7;
+  private static final int UNIT_IRRADIANCE = 13;
+  private static final int UNIT_PREFILTERED = 14;
+  private static final int UNIT_BRDF = 15;
   /** Point and spot lights that may cast shadows in one frame. */
   private static final int MAX_LOCAL_SHADOWS = 4;
   /** Casters up to this far towards the light from a cascade still shadow it. */
@@ -66,6 +70,7 @@ final class GlSceneRenderer {
   private final RenderSettings settings;
   private final RenderQueue queue = new RenderQueue();
   private final PostProcessor post = new PostProcessor();
+  private final GlSky sky = new GlSky();
   private ShaderProgram basic;
   private ShaderProgram depth;
   private ShaderProgram cutout;
@@ -147,6 +152,7 @@ final class GlSceneRenderer {
     this.cutout = new ShaderProgram(gl, "shaders/cutout.vert", "shaders/cutout.frag");
     this.box = new ShaderProgram(gl, "shaders/box.vert", "shaders/box.frag");
     this.post.init(gl);
+    this.sky.init(gl);
     // placeholders until a light needs them; the samplers must always have a texture of their type bound
     this.shadowMap = new ShadowMapArray(gl, 1, 1, false);
     this.localShadowMap = new ShadowMapArray(gl, 1, 6, true);
@@ -209,6 +215,7 @@ final class GlSceneRenderer {
 
     this.queue.collect(scene, alpha, this.cameraPos);
     prepareLights(scene, alpha);
+    this.sky.prepare(gl, this.settings); // bakes the sky's lighting when it is new or changed
 
     int cascades = 0;
     if (this.shadowLight != null) {
@@ -466,6 +473,7 @@ final class GlSceneRenderer {
     this.basic.set(gl, "uPointShadowMap", UNIT_LOCAL_SHADOWS);
     this.basic.set(gl, "uMetalRoughMap", UNIT_METAL_ROUGH);
     this.basic.set(gl, "uOit", 0);
+    this.sky.bindLighting(gl, this.basic, this.settings, UNIT_IRRADIANCE, UNIT_PREFILTERED, UNIT_BRDF);
     this.shadowMap.bindTexture(gl, UNIT_CASCADES);
     this.localShadowMap.bindTexture(gl, UNIT_LOCAL_SHADOWS);
 
@@ -484,6 +492,10 @@ final class GlSceneRenderer {
     if (occlusion) {
       this.stats.occluded = this.queue.occluded();
       issueOcclusionQueries(gl);
+      this.basic.use(gl);
+    }
+    if (this.settings.sky != null) {
+      drawSky(gl);
       this.basic.use(gl);
     }
 
@@ -509,6 +521,22 @@ final class GlSceneRenderer {
       gl.glDepthMask(true);
       gl.glDisable(GL3.GL_BLEND);
     }
+  }
+
+  /** The sky behind the opaque geometry, with the sun disc towards the first directional light. */
+  private void drawSky(GL3 gl) {
+    int sun = -1;
+    for (int i = 0; i < this.lightCount && sun < 0; i++) {
+      if (this.lightPos[i * 4 + 3] == 0f) {
+        sun = i;
+      }
+    }
+    if (sun >= 0) {
+      this.direction.set(this.lightPos[sun * 4], this.lightPos[sun * 4 + 1], this.lightPos[sun * 4 + 2]);
+      this.linear.set(this.lightColor[sun * 4], this.lightColor[sun * 4 + 1], this.lightColor[sun * 4 + 2]);
+    }
+    this.sky.drawBackground(gl, this.proj, this.view, this.settings, sun >= 0 ? this.direction : null,
+        sun >= 0 ? this.linear : null);
   }
 
   /** Draws a sorted list with the main shader; runs of the same mesh and material become one instanced call. */
@@ -711,6 +739,7 @@ final class GlSceneRenderer {
       this.shadowMap.dispose(gl);
       this.localShadowMap.dispose(gl);
       this.post.dispose(gl);
+      this.sky.dispose(gl);
       gl.glDeleteVertexArrays(1, new int[] { this.boxVao }, 0);
       gl.glDeleteBuffers(2, new int[] { this.boxVbo, this.boxEbo }, 0);
       if (this.queryPool.length > 0) {

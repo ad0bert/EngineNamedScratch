@@ -30,7 +30,9 @@ import engine.render.Light;
 import engine.render.Material;
 import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
+import engine.render.Sky;
 import engine.render.UiCanvas;
+import engine.resources.HdrLoader;
 import engine.ui.Gui;
 import lombok.extern.slf4j.Slf4j;
 
@@ -67,6 +69,7 @@ public class DemoGame implements Game {
     final var sunLight = sun.add(new Light());
     sunLight.shadowDistance = 70f; // three cascades reach 70 m from the camera
     scene.add(sun);
+    setUpSky(engine);
 
     this.player = new Entity("player");
     this.player.transform().position().set(0f, 1.5f, 8f);
@@ -366,6 +369,26 @@ public class DemoGame implements Game {
     engine.addOverlay((ui, width, height) -> drawPanel(engine, ui, width));
   }
 
+  /**
+   * A sky that lights the scene (the metal spheres reflect it): procedural by default, {@code -Ddemo.sky=file.hdr}
+   * for an HDR environment image, {@code -Ddemo.sky=none} for the plain background colour and flat ambient light.
+   */
+  private static void setUpSky(Engine engine) {
+    final var choice = System.getProperty("demo.sky", "procedural");
+    final var settings = engine.backend().settings();
+    if (choice.equals("none")) {
+      return;
+    }
+    settings.sky = Sky.procedural();
+    if (!choice.equals("procedural")) {
+      try (var in = java.nio.file.Files.newInputStream(java.nio.file.Path.of(choice))) {
+        settings.sky = Sky.image(HdrLoader.load(in));
+      } catch (java.io.IOException e) {
+        log.warn("cannot read sky {}: {}; using the procedural sky", choice, e.toString());
+      }
+    }
+  }
+
   private void drawPanel(Engine engine, UiCanvas ui, int width) {
     final boolean free = !engine.isMouseCaptured();
     this.gui.begin(ui, width, 0, free);
@@ -391,6 +414,7 @@ public class DemoGame implements Game {
       settings.orderIndependentTransparency = g.checkbox("OIT", settings.orderIndependentTransparency);
       settings.exposure = g.slider("Exposure", settings.exposure, 0.2f, 3f);
       settings.bloomStrength = g.slider("Bloom", settings.bloomStrength, 0f, 0.5f);
+      settings.skyIntensity = g.slider("Sky light", settings.skyIntensity, 0f, 3f);
       g.space(4f);
       engine.physics().gravity.y = -g.slider("Gravity", -engine.physics().gravity.y, 0f, 20f);
       this.turntableSpeed = g.slider("Turntable speed", this.turntableSpeed, -3f, 3f);
