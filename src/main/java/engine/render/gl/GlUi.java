@@ -18,9 +18,10 @@ import engine.render.UiCanvas;
 import engine.render.UiFont;
 
 /**
- * Batched 2D renderer. Every font has its own atlas texture (which also holds a white block for rectangles); quads
- * are collected in call order and drawn with one draw call per run of the same texture, all from one vertex buffer.
- * Atlases that gained glyphs during the frame are uploaded again before drawing.
+ * Batched 2D renderer. Every font (and size) has its own atlas texture, which also holds a white block for rectangles;
+ * quads are collected in call order and drawn with one draw call per run of the same texture and clip rectangle (a
+ * scissor test), all from one vertex buffer. Atlases that gained glyphs during the frame are uploaded again before
+ * drawing.
  */
 final class GlUi implements UiCanvas {
   private static final int FLOATS_PER_VERTEX = 8; // x y u v r g b a
@@ -41,6 +42,9 @@ final class GlUi implements UiCanvas {
   private final Map<UiFont, Face> faces = new HashMap<>();
   private final List<Face> batchFace = new ArrayList<>(); // texture of each batch
   private int[] batchStart = new int[16]; // first vertex of each batch
+  private float[] batchClip = new float[16 * 4]; // x, y, w, h of each batch; w < 0: no clip
+  private final float[] clipStack = new float[64 * 4];
+  private int clipDepth;
   private final float[] uv = new float[4];
   private final Matrix4f proj = new Matrix4f();
   private Supplier<GL3> glSupplier;
@@ -77,7 +81,7 @@ final class GlUi implements UiCanvas {
     var f = this.faces.get(font);
     if (f == null) {
       final var atlas = new FontAtlas(font);
-      f = new Face(atlas, new GlTexture(this.glSupplier, atlas.image()));
+      f = new Face(atlas, new GlTexture(this.glSupplier, atlas.image(), false)); // the UI draws after tone mapping
       this.faces.put(font, f);
     }
     return f;
@@ -87,21 +91,65 @@ final class GlUi implements UiCanvas {
     this.used = 0;
     this.batchFace.clear();
     this.current = null;
+    this.clipDepth = 0;
   }
 
   /** Switches to the font's texture, starting a new batch if it differs from the current one. */
   private Face use(UiFont font) {
     final var f = face(font);
     if (f != this.current) {
-      final int n = this.batchFace.size();
-      if (n == this.batchStart.length) {
-        this.batchStart = Arrays.copyOf(this.batchStart, n * 2);
-      }
-      this.batchStart[n] = this.used / FLOATS_PER_VERTEX;
-      this.batchFace.add(f);
-      this.current = f;
+      startBatch(f);
     }
     return f;
+  }
+
+  private void startBatch(Face f) {
+    final int n = this.batchFace.size();
+    if (n == this.batchStart.length) {
+      this.batchStart = Arrays.copyOf(this.batchStart, n * 2);
+      this.batchClip = Arrays.copyOf(this.batchClip, n * 8);
+    }
+    this.batchStart[n] = this.used / FLOATS_PER_VERTEX;
+    if (this.clipDepth > 0) {
+      System.arraycopy(this.clipStack, (this.clipDepth - 1) * 4, this.batchClip, n * 4, 4);
+    } else {
+      this.batchClip[n * 4 + 2] = -1f;
+    }
+    this.batchFace.add(f);
+    this.current = f;
+  }
+
+  @Override
+  public void pushClip(float x, float y, float w, float h) {
+    float x0 = x;
+    float y0 = y;
+    float x1 = x + Math.max(0f, w);
+    float y1 = y + Math.max(0f, h);
+    if (this.clipDepth > 0) { // intersect with the enclosing clip
+      final int o = (this.clipDepth - 1) * 4;
+      x0 = Math.max(x0, this.clipStack[o]);
+      y0 = Math.max(y0, this.clipStack[o + 1]);
+      x1 = Math.min(x1, this.clipStack[o] + this.clipStack[o + 2]);
+      y1 = Math.min(y1, this.clipStack[o + 1] + this.clipStack[o + 3]);
+    }
+    if (this.clipDepth * 4 >= this.clipStack.length) {
+      throw new IllegalStateException("UI clips nested too deeply");
+    }
+    final int o = this.clipDepth * 4;
+    this.clipStack[o] = x0;
+    this.clipStack[o + 1] = y0;
+    this.clipStack[o + 2] = Math.max(0f, x1 - x0);
+    this.clipStack[o + 3] = Math.max(0f, y1 - y0);
+    this.clipDepth++;
+    startBatch(this.current != null ? this.current : face(UiFont.DEFAULT));
+  }
+
+  @Override
+  public void popClip() {
+    if (this.clipDepth > 0) {
+      this.clipDepth--;
+      startBatch(this.current != null ? this.current : face(UiFont.DEFAULT));
+    }
   }
 
   /** Draws everything queued since {@link #begin()}. */
@@ -137,10 +185,21 @@ final class GlUi implements UiCanvas {
       final int start = this.batchStart[b];
       final int end = b + 1 < this.batchFace.size() ? this.batchStart[b + 1] : total;
       if (end > start) {
+        if (this.batchClip[b * 4 + 2] >= 0f) {
+          gl.glEnable(GL3.GL_SCISSOR_TEST);
+          final int x = (int) Math.floor(this.batchClip[b * 4]);
+          final int y = (int) Math.floor(this.batchClip[b * 4 + 1]);
+          final int w = (int) Math.ceil(this.batchClip[b * 4 + 2]);
+          final int h = (int) Math.ceil(this.batchClip[b * 4 + 3]);
+          gl.glScissor(x, height - y - h, w, h); // GL counts rows from the bottom
+        } else {
+          gl.glDisable(GL3.GL_SCISSOR_TEST);
+        }
         this.batchFace.get(b).texture.bind(gl, 0);
         gl.glDrawArrays(GL3.GL_TRIANGLES, start, end - start);
       }
     }
+    gl.glDisable(GL3.GL_SCISSOR_TEST);
     gl.glBindVertexArray(0);
 
     gl.glDisable(GL3.GL_BLEND);
@@ -192,8 +251,27 @@ final class GlUi implements UiCanvas {
     quad(x, y, w, h, this.uv[0], this.uv[1], this.uv[2], this.uv[3], r, g, b, a);
   }
 
+  /** The font at the size it will appear in, so scaled text is rasterized sharp instead of stretched. */
+  private static UiFont sized(UiFont font, float scale) {
+    if (scale == 1f) {
+      return font;
+    }
+    return new UiFont(font.family(), font.style(), Math.max(1, Math.round(font.size() * scale)));
+  }
+
+  /** What is left of the scale after picking the sized font (close to 1). */
+  private static float residual(UiFont font, UiFont sized, float scale) {
+    return scale * font.size() / sized.size();
+  }
+
   @Override
   public void drawText(UiFont font, String text, float x, float y, float scale, float r, float g, float b,
+      float a) {
+    final var sized = sized(font, scale);
+    drawSized(sized, text, x, y, residual(font, sized, scale), r, g, b, a);
+  }
+
+  private void drawSized(UiFont font, String text, float x, float y, float scale, float r, float g, float b,
       float a) {
     final var atlas = use(font).atlas;
     final float pad = atlas.padding() * scale;
@@ -220,7 +298,8 @@ final class GlUi implements UiCanvas {
 
   @Override
   public float textWidth(UiFont font, String text, float scale) {
-    return measure(face(font).atlas, text) * scale;
+    final var sized = sized(font, scale);
+    return measure(face(sized).atlas, text) * residual(font, sized, scale);
   }
 
   /** Width of the widest line, in pixels at scale 1. */
@@ -242,6 +321,7 @@ final class GlUi implements UiCanvas {
 
   @Override
   public float lineHeight(UiFont font, float scale) {
-    return face(font).atlas.lineHeight() * scale;
+    final var sized = sized(font, scale);
+    return face(sized).atlas.lineHeight() * residual(font, sized, scale);
   }
 }

@@ -2,11 +2,13 @@ package engine.render.gl;
 
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
+import org.joml.Vector4f;
 
 import com.jogamp.common.nio.Buffers;
 import com.jogamp.opengl.GL3;
@@ -25,18 +27,22 @@ import engine.render.ShadowMath;
  * Forward scene renderer. All scene bookkeeping (interpolated matrices, caching, culling) lives in
  * {@link RenderQueue}; this class only issues GL calls, per frame:
  * <ol>
- * <li>cascaded shadow maps for the first shadow-casting directional light, and a cube of six shadow maps for each
- * shadow-casting point light (up to {@link RenderSettings#maxPointShadows});</li>
- * <li>opaque geometry batched by (mesh, material) with GPU instancing, skipping static cells that were occluded in the
- * last frame;</li>
+ * <li>cascaded shadow maps for the first shadow-casting directional light; six shadow maps (a cube) for each
+ * shadow-casting point light and one for each spot light (up to {@link RenderSettings#maxPointShadows} lights),
+ * re-rendered only when the light or one of its casters moved;</li>
+ * <li>into the HDR target of {@link PostProcessor}: opaque geometry batched by (mesh, material) with GPU instancing,
+ * skipping static cells that were occluded in the last frame;</li>
  * <li>occlusion queries for the visible static cells (read back in the next frame, so the GPU is never waited on);</li>
- * <li>transparent geometry back to front, still instanced where neighbours in that order share mesh and material.</li>
+ * <li>transparent geometry: weighted blended order-independent transparency (batched like opaque geometry), or sorted
+ * back to front;</li>
+ * <li>bloom, tone mapping and FXAA into the window.</li>
  * </ol>
- * Per-frame work reuses its lists, buffers and matrices.
+ * Lighting happens in linear space: colour textures are sRGB-decoded by the GPU, material colours are converted on
+ * upload. Per-frame work reuses its lists, buffers and matrices.
  *
  * <p>
- * Texture units: 0 albedo, 1 shadow cascades, 2 normal map, 3 specular map, 4 emissive map, 5 height map, 6 point
- * light shadow cubes.
+ * Texture units: 0 albedo, 1 shadow cascades, 2 normal map, 3 specular map, 4 emissive map, 5 height map, 6 point and
+ * spot light shadow maps, 7 metallic-roughness map.
  */
 final class GlSceneRenderer {
   private static final int UNIT_ALBEDO = 0;
@@ -45,9 +51,10 @@ final class GlSceneRenderer {
   private static final int UNIT_SPECULAR = 3;
   private static final int UNIT_EMISSIVE = 4;
   private static final int UNIT_HEIGHT = 5;
-  private static final int UNIT_POINT_SHADOWS = 6;
-  /** Mirrors MAX_POINT_SHADOWS in basic.frag. */
-  private static final int MAX_POINT_SHADOWS = 4;
+  private static final int UNIT_LOCAL_SHADOWS = 6;
+  private static final int UNIT_METAL_ROUGH = 7;
+  /** Point and spot lights that may cast shadows in one frame. */
+  private static final int MAX_LOCAL_SHADOWS = 4;
   /** Casters up to this far towards the light from a cascade still shadow it. */
   private static final float CASTER_REACH = 500f;
 
@@ -58,12 +65,13 @@ final class GlSceneRenderer {
   private final RenderStats stats;
   private final RenderSettings settings;
   private final RenderQueue queue = new RenderQueue();
+  private final PostProcessor post = new PostProcessor();
   private ShaderProgram basic;
   private ShaderProgram depth;
   private ShaderProgram cutout;
   private ShaderProgram box;
   private ShadowMapArray shadowMap;
-  private ShadowMapArray pointShadowMap;
+  private ShadowMapArray localShadowMap;
   private GlTexture white;
   private GlTexture flatNormal;
 
@@ -88,17 +96,26 @@ final class GlSceneRenderer {
   private final Vector3f cameraUp = new Vector3f();
   private final Vector3f focus = new Vector3f();
   private final Vector3f direction = new Vector3f();
+  private final Vector3f spotDir = new Vector3f();
   private final Vector3f ambient = new Vector3f(0.25f, 0.25f, 0.28f);
+  private final Vector3f linear = new Vector3f();
+  private final Vector4f linearColor = new Vector4f();
   private float cameraNear;
 
   private final float[] lightPos = new float[Light.MAX_LIGHTS * 4];
   private final float[] lightColor = new float[Light.MAX_LIGHTS * 4];
+  private final float[] lightSpot = new float[Light.MAX_LIGHTS * 4];
+  private final float[] lightInner = new float[Light.MAX_LIGHTS];
   private final int[] lightShadow = new int[Light.MAX_LIGHTS];
-  private final float[] pointShadowRange = new float[MAX_POINT_SHADOWS * 2];
+  private final float[] shadowRange = new float[Light.MAX_LIGHTS * 2];
+  private final Matrix4f[] spotMatrix = new Matrix4f[Light.MAX_LIGHTS];
   private final List<Light> orderedLights = new ArrayList<>();
-  private final List<Light> pointShadowLights = new ArrayList<>();
+  private int localLayers;
   private int lightCount;
   private Light shadowLight;
+  // what each local shadow layer holds, to skip re-rendering it while nothing moved
+  private long[] layerSignature = new long[0];
+  private boolean[] layerValid = new boolean[0];
 
   // occlusion queries issued last frame: the cell each one tested and the query object
   private int boxVao;
@@ -117,6 +134,9 @@ final class GlSceneRenderer {
     for (int i = 0; i < this.cascadeMatrix.length; i++) {
       this.cascadeMatrix[i] = new Matrix4f();
     }
+    for (int i = 0; i < this.spotMatrix.length; i++) {
+      this.spotMatrix[i] = new Matrix4f();
+    }
   }
 
   void init(GL3 gl, GlTexture white, GlTexture flatNormal) {
@@ -126,11 +146,11 @@ final class GlSceneRenderer {
     this.depth = new ShaderProgram(gl, "shaders/depth.vert", "shaders/depth.frag");
     this.cutout = new ShaderProgram(gl, "shaders/cutout.vert", "shaders/cutout.frag");
     this.box = new ShaderProgram(gl, "shaders/box.vert", "shaders/box.frag");
+    this.post.init(gl);
     // placeholders until a light needs them; the samplers must always have a texture of their type bound
     this.shadowMap = new ShadowMapArray(gl, 1, 1, false);
-    this.pointShadowMap = new ShadowMapArray(gl, 1, 6, true);
+    this.localShadowMap = new ShadowMapArray(gl, 1, 6, true);
     createUnitBox(gl);
-    gl.glClearColor(0.53f, 0.7f, 0.9f, 1f);
     gl.glClearDepth(1.0);
     gl.glEnable(GL3.GL_DEPTH_TEST);
     gl.glDepthFunc(GL3.GL_LEQUAL);
@@ -167,9 +187,12 @@ final class GlSceneRenderer {
 
   void render(GL3 gl, Scene scene, float alpha, int width, int height) {
     readOcclusionResults(gl);
-    gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
+    final int screen = gl.getContext().getDefaultDrawFramebuffer();
+    final var sky = srgbToLinear(this.settings.clearColor, this.linear);
     final var activeCamera = scene.activeCamera();
     if (activeCamera.isEmpty()) {
+      this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z);
+      this.post.finish(gl, this.settings, screen);
       return;
     }
     final var camera = activeCamera.get();
@@ -189,12 +212,23 @@ final class GlSceneRenderer {
 
     int cascades = 0;
     if (this.shadowLight != null) {
-      cascades = shadowPasses(gl, camera, aspect, alpha, width, height);
+      cascades = shadowPasses(gl, camera, aspect, alpha);
     }
-    if (!this.pointShadowLights.isEmpty()) {
-      pointShadowPasses(gl, width, height);
+    if (this.localLayers > 0) {
+      localShadowPasses(gl);
     }
+    this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z);
     mainPass(gl, cascades);
+    this.post.finish(gl, this.settings, screen);
+  }
+
+  /** sRGB to linear, per channel (the exact curve, not a gamma of 2.2). */
+  static float srgbToLinear(float c) {
+    return c <= 0.04045f ? c / 12.92f : (float) Math.pow((c + 0.055f) / 1.055f, 2.4f);
+  }
+
+  private static Vector3f srgbToLinear(Vector3f c, Vector3f dest) {
+    return dest.set(srgbToLinear(c.x), srgbToLinear(c.y), srgbToLinear(c.z));
   }
 
   private void prepareLights(Scene scene, float alpha) {
@@ -217,8 +251,9 @@ final class GlSceneRenderer {
       }
     }
     this.lightCount = this.orderedLights.size();
-    this.pointShadowLights.clear();
-    final int maxPointShadows = Math.max(0, Math.min(MAX_POINT_SHADOWS, this.settings.maxPointShadows));
+    this.localLayers = 0;
+    int shadowed = 0;
+    final int maxShadowed = Math.max(0, Math.min(MAX_LOCAL_SHADOWS, this.settings.maxPointShadows));
     for (int i = 0; i < this.lightCount; i++) {
       final var l = this.orderedLights.get(i);
       l.entity().transform().interpolatedWorldMatrix(alpha, this.world);
@@ -228,13 +263,21 @@ final class GlSceneRenderer {
         put(this.lightPos, i, this.direction.x, this.direction.y, this.direction.z, 0f);
       } else {
         this.world.getTranslation(this.direction);
-        put(this.lightPos, i, this.direction.x, this.direction.y, this.direction.z, 1f);
-        if (l.castShadows && this.pointShadowLights.size() < maxPointShadows && l.range > l.shadowNear) {
-          final int s = this.pointShadowLights.size();
-          this.lightShadow[i] = s;
-          this.pointShadowRange[s * 2] = Math.max(l.shadowNear, 1e-3f);
-          this.pointShadowRange[s * 2 + 1] = l.range;
-          this.pointShadowLights.add(l);
+        final boolean spot = l.type == Light.Type.SPOT;
+        put(this.lightPos, i, this.direction.x, this.direction.y, this.direction.z, spot ? 2f : 1f);
+        if (spot) {
+          this.world.transformDirection(this.spotDir.set(0f, 0f, -1f)).normalize();
+          final float outer = (float) Math.toRadians(Math.max(1f, Math.min(89f, l.spotAngle)));
+          final float inner = outer * (1f - Math.max(0f, Math.min(1f, l.spotSoftness)));
+          put(this.lightSpot, i, this.spotDir.x, this.spotDir.y, this.spotDir.z, (float) Math.cos(outer));
+          this.lightInner[i] = (float) Math.cos(inner);
+        }
+        if (l.castShadows && shadowed < maxShadowed && l.range > l.shadowNear) {
+          shadowed++;
+          this.lightShadow[i] = this.localLayers;
+          this.localLayers += spot ? 1 : 6;
+          this.shadowRange[i * 2] = Math.max(l.shadowNear, 1e-3f);
+          this.shadowRange[i * 2 + 1] = l.range;
         }
       }
       put(this.lightColor, i, l.color.x * l.intensity, l.color.y * l.intensity, l.color.z * l.intensity,
@@ -270,7 +313,7 @@ final class GlSceneRenderer {
   }
 
   /** Renders every cascade into its layer; returns the number of cascades (0 if the range is empty). */
-  private int shadowPasses(GL3 gl, Camera camera, float aspect, float alpha, int width, int height) {
+  private int shadowPasses(GL3 gl, Camera camera, float aspect, float alpha) {
     final var light = this.shadowLight;
     final int count = Math.max(1, Math.min(Light.MAX_CASCADES, light.shadowCascades));
     final float near = camera.near;
@@ -306,46 +349,90 @@ final class GlSceneRenderer {
     }
     gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
     gl.glDisable(GL3.GL_DEPTH_CLAMP);
-    this.shadowMap.end(gl, width, height);
+    this.shadowMap.end(gl);
     this.stats.shadowCasters = totalCasters;
     this.stats.shadowCascades = count;
     return count;
   }
 
-  /** Six 90 degree depth passes per shadowed point light, one per cube face. */
-  private void pointShadowPasses(GL3 gl, int width, int height) {
-    final int lights = this.pointShadowLights.size();
+  /**
+   * Shadow maps of point lights (six 90 degree faces) and spot lights (one perspective view covering the cone). A
+   * layer is rendered again only when its content would differ: when the light moved, when its casters changed, or
+   * when one of them is moving.
+   */
+  private void localShadowPasses(GL3 gl) {
     final int size = Math.max(16, this.settings.pointShadowMapSize);
-    this.pointShadowMap = ensure(gl, this.pointShadowMap, size, lights * 6, true);
+    final var before = this.localShadowMap;
+    this.localShadowMap = ensure(gl, this.localShadowMap, size, this.localLayers, true);
+    if (this.localShadowMap != before || this.layerValid.length < this.localShadowMap.layers()) {
+      this.layerSignature = new long[this.localShadowMap.layers()];
+      this.layerValid = new boolean[this.localShadowMap.layers()];
+    }
     gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
     gl.glPolygonOffset(1.5f, 2f);
     int totalCasters = 0;
-    for (int s = 0; s < lights; s++) {
-      final int light = indexOf(this.pointShadowLights.get(s));
-      this.direction.set(this.lightPos[light * 4], this.lightPos[light * 4 + 1], this.lightPos[light * 4 + 2]);
-      for (int face = 0; face < 6; face++) {
-        ShadowMath.cubeFaceViewProj(this.direction, face, this.pointShadowRange[s * 2],
-            this.pointShadowRange[s * 2 + 1], this.faceMatrix);
-        this.queue.cull(this.faceMatrix, RenderQueue.Pass.SHADOW, this.casters);
+    int lights = 0;
+    int reused = 0;
+    for (int i = 0; i < this.lightCount; i++) {
+      final int layer = this.lightShadow[i];
+      if (layer < 0 || this.orderedLights.get(i).type == Light.Type.DIRECTIONAL) {
+        continue;
+      }
+      lights++;
+      final var l = this.orderedLights.get(i);
+      this.direction.set(this.lightPos[i * 4], this.lightPos[i * 4 + 1], this.lightPos[i * 4 + 2]);
+      final float near = this.shadowRange[i * 2];
+      final float far = this.shadowRange[i * 2 + 1];
+      final boolean spot = l.type == Light.Type.SPOT;
+      for (int face = 0; face < (spot ? 1 : 6); face++) {
+        final var m = spot ? this.spotMatrix[i] : this.faceMatrix;
+        if (spot) {
+          this.spotDir.set(this.lightSpot[i * 4], this.lightSpot[i * 4 + 1], this.lightSpot[i * 4 + 2]);
+          ShadowMath.spotViewProj(this.direction, this.spotDir, l.spotAngle, near, far, m);
+        } else {
+          ShadowMath.cubeFaceViewProj(this.direction, face, near, far, m);
+        }
+        this.queue.cull(m, RenderQueue.Pass.SHADOW, this.casters);
         totalCasters += this.casters.size();
+        final long signature = signature(m, this.casters);
+        if (signature != 0L && this.layerValid[layer + face] && this.layerSignature[layer + face] == signature) {
+          reused++;
+          continue; // nothing in view of this layer changed
+        }
+        this.layerSignature[layer + face] = signature;
+        this.layerValid[layer + face] = signature != 0L;
         this.casters.sort(SHADOW_ORDER);
-        this.pointShadowMap.beginLayer(gl, s * 6 + face);
-        drawShadowCasters(gl, this.faceMatrix);
+        this.localShadowMap.beginLayer(gl, layer + face);
+        drawShadowCasters(gl, m);
       }
     }
     gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
-    this.pointShadowMap.end(gl, width, height);
+    this.localShadowMap.end(gl);
     this.stats.shadowCasters += totalCasters;
     this.stats.pointShadows = lights;
+    this.stats.cachedShadowMaps = reused;
   }
 
-  private int indexOf(Light l) {
-    for (int i = 0; i < this.lightCount; i++) {
-      if (this.orderedLights.get(i) == l) {
-        return i;
+  /**
+   * What a shadow layer would show: the light's matrix and every caster with its version; 0 (never equal) while a
+   * caster is moving.
+   */
+  private static long signature(Matrix4f lightViewProj, List<MeshRenderer> casters) {
+    long h = 0xcbf29ce484222325L;
+    for (int c = 0; c < 4; c++) {
+      for (int r = 0; r < 4; r++) {
+        h = (h ^ Float.floatToIntBits(lightViewProj.get(c, r))) * 0x100000001b3L;
       }
     }
-    return 0;
+    for (int k = 0; k < casters.size(); k++) {
+      final var r = casters.get(k);
+      if (!RenderQueue.isSettled(r)) {
+        return 0L;
+      }
+      h = (h ^ System.identityHashCode(r)) * 0x100000001b3L;
+      h = (h ^ RenderQueue.version(r)) * 0x100000001b3L;
+    }
+    return h == 0L ? 1L : h;
   }
 
   private void mainPass(GL3 gl, int cascades) {
@@ -356,7 +443,11 @@ final class GlSceneRenderer {
     this.basic.set(gl, "uLightCount", this.lightCount);
     this.basic.setVec4Array(gl, "uLightPos", this.lightPos, this.lightCount);
     this.basic.setVec4Array(gl, "uLightColor", this.lightColor, this.lightCount);
+    this.basic.setVec4Array(gl, "uLightSpot", this.lightSpot, this.lightCount);
+    this.basic.setFloatArray(gl, "uLightInner", this.lightInner, this.lightCount);
     this.basic.setIntArray(gl, "uLightShadow", this.lightShadow, this.lightCount);
+    this.basic.setVec2Array(gl, "uShadowRange", this.shadowRange, this.lightCount);
+    this.basic.setMat4Array(gl, "uSpotShadow", this.spotMatrix, this.lightCount);
     this.basic.set(gl, "uCascadeCount", cascades);
     if (cascades > 0) {
       this.basic.setMat4Array(gl, "uCascadeMatrix", this.cascadeMatrix, cascades);
@@ -364,8 +455,7 @@ final class GlSceneRenderer {
       this.basic.setFloatArray(gl, "uCascadeTexel", this.cascadeTexel, cascades);
     }
     this.basic.set(gl, "uShadowTexel", 1f / this.shadowMap.size());
-    this.basic.setVec2Array(gl, "uPointShadowRange", this.pointShadowRange, this.pointShadowLights.size());
-    this.basic.set(gl, "uPointShadowTexel", 1f / this.pointShadowMap.size());
+    this.basic.set(gl, "uPointShadowTexel", 1f / this.localShadowMap.size());
     this.basic.set(gl, "uDebugCascades", this.settings.debugCascades ? 1 : 0);
     this.basic.set(gl, "uTexture", UNIT_ALBEDO);
     this.basic.set(gl, "uShadowMap", UNIT_CASCADES);
@@ -373,9 +463,11 @@ final class GlSceneRenderer {
     this.basic.set(gl, "uSpecularMap", UNIT_SPECULAR);
     this.basic.set(gl, "uEmissiveMap", UNIT_EMISSIVE);
     this.basic.set(gl, "uHeightMap", UNIT_HEIGHT);
-    this.basic.set(gl, "uPointShadowMap", UNIT_POINT_SHADOWS);
+    this.basic.set(gl, "uPointShadowMap", UNIT_LOCAL_SHADOWS);
+    this.basic.set(gl, "uMetalRoughMap", UNIT_METAL_ROUGH);
+    this.basic.set(gl, "uOit", 0);
     this.shadowMap.bindTexture(gl, UNIT_CASCADES);
-    this.pointShadowMap.bindTexture(gl, UNIT_POINT_SHADOWS);
+    this.localShadowMap.bindTexture(gl, UNIT_LOCAL_SHADOWS);
 
     final boolean occlusion = this.settings.occlusionCulling;
     this.queue.cull(this.viewProj, RenderQueue.Pass.MAIN, this.visible, occlusion);
@@ -395,7 +487,18 @@ final class GlSceneRenderer {
       this.basic.use(gl);
     }
 
-    if (!this.transparent.isEmpty()) {
+    if (this.transparent.isEmpty()) {
+      return;
+    }
+    if (this.settings.orderIndependentTransparency) {
+      // the order does not matter: batch them like opaque geometry
+      RenderQueue.sortForBatching(this.transparent, true);
+      this.post.beginTransparent(gl);
+      this.basic.set(gl, "uOit", 1);
+      drawList(gl, this.transparent);
+      this.basic.set(gl, "uOit", 0);
+      this.post.endTransparent(gl);
+    } else {
       RenderQueue.sortBackToFront(this.transparent);
       gl.glEnable(GL3.GL_BLEND);
       gl.glBlendFunc(GL3.GL_SRC_ALPHA, GL3.GL_ONE_MINUS_SRC_ALPHA);
@@ -487,6 +590,7 @@ final class GlSceneRenderer {
     ((GlTexture) (m.specularMap != null ? m.specularMap : this.white)).bind(gl, UNIT_SPECULAR);
     ((GlTexture) (m.emissiveMap != null ? m.emissiveMap : this.white)).bind(gl, UNIT_EMISSIVE);
     ((GlTexture) (m.heightMap != null ? m.heightMap : this.white)).bind(gl, UNIT_HEIGHT);
+    ((GlTexture) (m.metalRoughMap != null ? m.metalRoughMap : this.white)).bind(gl, UNIT_METAL_ROUGH);
     this.basic.set(gl, "uHasNormalMap", m.normalMap != null ? 1 : 0);
     if (m.normalMap != null) {
       this.basic.set(gl, "uNormalScale", m.normalScale);
@@ -496,10 +600,20 @@ final class GlSceneRenderer {
     this.basic.set(gl, "uHasEmissiveMap", m.emissiveMap != null ? 1 : 0);
     this.basic.set(gl, "uHasHeightMap", m.heightMap != null && m.heightScale != 0f ? 1 : 0);
     this.basic.set(gl, "uHeightScale", m.heightScale);
-    this.basic.set(gl, "uEmissive", m.emissive);
-    this.basic.set(gl, "uColor", m.color);
+    this.basic.set(gl, "uEmissive", srgbToLinear(m.emissive, this.linear));
+    this.linearColor.set(srgbToLinear(m.color.x), srgbToLinear(m.color.y), srgbToLinear(m.color.z), m.color.w);
+    this.basic.set(gl, "uColor", this.linearColor);
     this.basic.set(gl, "uSpecular", m.specular);
     this.basic.set(gl, "uShininess", m.shininess);
+    this.basic.set(gl, "uPbr", m.pbr ? 1 : 0);
+    this.basic.set(gl, "uMetallic", m.metallic);
+    this.basic.set(gl, "uRoughness", m.roughness);
+    this.basic.set(gl, "uHasMetalRoughMap", m.metalRoughMap != null ? 1 : 0);
+    this.basic.set(gl, "uReflectance", m.reflectance);
+    this.basic.set(gl, "uMaterialAmbient", srgbToLinear(m.ambient, this.linear));
+    this.linearColor.set(m.uvScale.x, m.uvScale.y, m.uvOffset.x, m.uvOffset.y);
+    this.basic.set(gl, "uUvTransform", this.linearColor);
+    this.basic.set(gl, "uClampUv", m.clampUv ? 1 : 0);
     this.basic.set(gl, "uUnlit", m.unlit ? 1 : 0);
     this.basic.set(gl, "uAlphaCutoff", m.transparent ? 0f : m.alphaCutoff);
     this.basic.set(gl, "uPointSize", m.pointSize);
@@ -560,8 +674,8 @@ final class GlSceneRenderer {
 
   private void addPending(Object key, int query) {
     if (this.pendingCount == this.pendingKeys.length) {
-      this.pendingKeys = java.util.Arrays.copyOf(this.pendingKeys, this.pendingCount * 2);
-      this.pendingQueries = java.util.Arrays.copyOf(this.pendingQueries, this.pendingCount * 2);
+      this.pendingKeys = Arrays.copyOf(this.pendingKeys, this.pendingCount * 2);
+      this.pendingQueries = Arrays.copyOf(this.pendingQueries, this.pendingCount * 2);
     }
     this.pendingKeys[this.pendingCount] = key;
     this.pendingQueries[this.pendingCount] = query;
@@ -595,7 +709,8 @@ final class GlSceneRenderer {
       this.cutout.dispose(gl);
       this.box.dispose(gl);
       this.shadowMap.dispose(gl);
-      this.pointShadowMap.dispose(gl);
+      this.localShadowMap.dispose(gl);
+      this.post.dispose(gl);
       gl.glDeleteVertexArrays(1, new int[] { this.boxVao }, 0);
       gl.glDeleteBuffers(2, new int[] { this.boxVbo, this.boxEbo }, 0);
       if (this.queryPool.length > 0) {

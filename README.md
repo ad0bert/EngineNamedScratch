@@ -15,9 +15,9 @@ mvn -q dependency:build-classpath -Dmdep.outputFile=cp.txt
 java -cp "target/classes:$(cat cp.txt)" game.Main     # use ';' instead of ':' on Windows
 ```
 
-Demo controls: mouse look, `WASD`/arrows move, `Space`/`Shift` up/down, `F` throws a crate, `E` pushes the crate
+Demo controls: mouse look, `WASD`/arrows move, `Space`/`Shift` up/down, `F` throws a crate, `E` pushes the body
 under the crosshair, `F3` toggles the on-screen debug text, `Esc` frees the mouse and shows a settings panel (click
-outside it to look around again).
+outside it to look around again, `Tab` moves between its widgets).
 
 System properties:
 
@@ -30,6 +30,8 @@ System properties:
 | `engine.shadowMapSize=2048`, `engine.pointShadowMapSize=512`, `engine.maxPointShadows=4` | shadow quality |
 | `engine.occlusionCulling=false` | draw hidden static geometry too |
 | `engine.debugCascades=true` | tint the shadow cascades |
+| `engine.exposure=1`, `engine.bloomStrength=0.08`, `engine.bloomThreshold=1` | HDR tone mapping and bloom |
+| `engine.antiAliasing=false`, `engine.orderIndependentTransparency=false` | turn off FXAA / weighted blended OIT |
 | `demo.camera=x,y,z,yaw,pitch` | demo only: start somewhere else |
 
 The render settings can also be changed at run time through `engine.backend().settings()`.
@@ -44,25 +46,33 @@ xvfb-run -a -s "-screen 0 1280x800x24" java -Dengine.debugGL=true -Dengine.exitA
 
 ## Features
 
-- **Rendering:** GL3 core forward renderer, GPU-instanced draw calls batched by (mesh, material), frustum culling
-  (sphere, then box for long or flat objects), occlusion culling of static geometry, up to 8 lights (directional +
-  point), up to 4 cascaded shadow maps with soft edges and cascade blending for the first shadow-casting directional
-  light, cube shadow maps for up to 4 shadow-casting point lights, alpha-blended transparent objects sorted back to
-  front (still instanced where possible), alpha cut-outs (with matching holes in the shadows), points.
-- **Materials:** colour or texture, tangent-space normal maps (meshes carry tangents with handedness, so mirrored uvs
-  work), specular maps, emissive colour and maps, height maps with parallax occlusion mapping.
-- **Models:** OBJ with MTL: `Kd Ks Ke Ns d illum`, `map_Kd map_Ks map_Ke map_d`, `map_Bump`/`bump`/`norm` (normal
-  maps, or grey bump maps that are converted) and `disp`/`map_disp` (height); one part per `usemtl`. Generated meshes:
-  cube, quad, sphere, points.
+- **Rendering:** GL3 core forward renderer into an HDR target, then bloom, ACES tone mapping and FXAA; linear
+  lighting (colour textures and colours are sRGB, data maps are linear). GPU-instanced draw calls batched by (mesh,
+  material), frustum culling (sphere, then box for long or flat objects), occlusion culling of static geometry, up to 8
+  lights (directional, point and spot), up to 4 cascaded shadow maps with soft edges and cascade blending for the first
+  shadow-casting directional light, shadows for up to 4 point or spot lights (a point light uses a cube, a spot light
+  one map; maps whose light and casters did not change are reused), weighted blended order-independent transparency
+  (or back-to-front sorting), alpha cut-outs (with matching holes in the shadows), points.
+- **Materials:** Blinn-Phong or physically based (GGX, metallic/roughness, glTF-style metal-rough maps); colour or
+  texture, tangent-space normal maps (meshes carry tangents with handedness, so mirrored uvs work), specular maps,
+  emissive colour and maps, height maps with parallax occlusion mapping, uv scale/offset and clamping.
+- **Models:** OBJ with MTL: `Ka Kd Ks Ke Ns Ni d Tr illum`, the PBR extension (`Pr Pm map_Pr map_Pm`), `map_Kd map_Ks
+  map_Ke map_d`, `map_Bump`/`bump`/`norm` (normal maps, or grey bump maps that are converted), `disp`/`map_disp`
+  (height), texture options `-s -o -clamp -bm`; one part per `usemtl`. Generated meshes: cube, quad, sphere, points.
 - **UI:** immediate-mode drawing with any number of fonts (any installed or logical Java font, proportional or fixed,
-  glyphs rasterized on demand, so any character the font has works), and immediate-mode widgets (`engine.ui.Gui`):
-  panels, labels, buttons, checkboxes, sliders, text fields, rows, mouse and keyboard handling.
-- **Physics:** oriented box and sphere colliders, compound bodies (several colliders on one rigidbody, with the
-  combined centre of mass and inertia), rigidbodies (gravity, restitution, friction, rotation, kinematic bodies),
-  multi-point contact manifolds, warm-started impulses and speculative contacts (stable stacks), moving platforms
-  (kinematic or static colliders moved by code carry what rests on them), triggers, enter/exit `CollisionEvent`s,
-  grid broadphase, sleeping, parented bodies, grid-accelerated `raycast` and `overlapSphere` queries,
-  `Camera.viewRay` for picking.
+  glyphs rasterized on demand at the size they are drawn, so any character the font has works and scaled text stays
+  sharp), clipping, and immediate-mode widgets (`engine.ui.Gui`): panels, labels, buttons, checkboxes, sliders,
+  single- and multi-line text fields (cursor, selection, Home/End, arrows), scroll regions, rows; Tab/Shift+Tab
+  focus navigation with Space/Enter to press.
+- **Physics:** box, sphere and capsule colliders, triangle-mesh colliders for static or kinematic level geometry
+  (BVH, one- or two-sided), compound bodies (several colliders on one rigidbody, with the combined centre of mass and
+  inertia), rigidbodies (gravity, restitution, friction, rotation, kinematic bodies), ball, hinge (with motor) and
+  distance (rod, rope, range) joints that can break, continuous collision for fast bodies (`Rigidbody.continuous`),
+  multi-point contact manifolds solved as a block with friction at their centre, warm-started impulses and
+  speculative contacts (40-crate stacks stand), moving platforms (kinematic or static colliders moved by code carry
+  what rests on them), triggers, enter/exit `CollisionEvent`s, grid broadphase, sleeping, parented bodies,
+  grid-accelerated `raycast` and `overlapSphere` queries (`syncQueries` makes them see colliders moved since the last
+  step), `Camera.viewRay` for picking.
 - **Loop:** fixed-timestep updates with render interpolation between the last two steps.
 - **ECS, input (keys, mouse, text), first-person controller, message queues, resource caching, screenshots** (see
   below).
@@ -79,7 +89,14 @@ Measured on a desktop PC with unit-test style benchmarks (single thread, no GPU)
 | Culling 10,000 objects | 0.46 ms | 0.07 ms when they are marked static |
 
 Warm starting and speculative contacts cost about 7 % more per awake physics step; in exchange a 12-crate stack stands
-without sleeping (it fell over before) and a 20-crate stack comes to rest.
+without sleeping (it fell over before) and a 20-crate stack comes to rest. Solving each contact manifold as one block
+(instead of point by point) and its friction at the centre removed the sideways creep of tall stacks and made the
+awake step about a third faster (800 awake crates: 5.2 ms → 3.5 ms in the CI container). Sixty bodies on a
+3,200-triangle mesh collider step in 0.9 ms; its BVH is only rebuilt when the mesh moves.
+
+The post-processing passes (bloom, tone mapping, FXAA, OIT composite) each touch every pixel once; they are cheap on
+a GPU but dominate on a software renderer. Local shadow maps are re-rendered only when their light or a caster in
+range changed, so a scene with still lights and sleeping bodies renders its point and spot shadows once.
 
 How it works:
 
@@ -98,6 +115,10 @@ How it works:
 - Models carry a per-instance normal matrix, so the shader does no matrix inversion, and the renderer reuses its lists,
   buffers and matrices every frame. Shadow casters with cut-outs use their own program, so every other caster keeps
   early depth testing.
+- Contacts with a triangle mesh are found per triangle (through the mesh's BVH) and cached per triangle, so warm
+  starting works on meshes too. Joints are solved together with the contacts; their drift is corrected by moving the
+  bodies in extra position rounds rather than by a velocity bias, so chains come to rest and sleep. Continuous
+  collision sweeps a sphere inside each fast body through the grid and stops it at the first hit.
 - `Transform` matrix queries are allocation-free (per-thread scratch), and `Scene.components(Class)` is cached until
   entities or components change.
 
@@ -108,13 +129,13 @@ How it works:
 | `engine.core` | `Engine` (window, GL loop, lifecycle, screenshots), `Game` (your entry point), `FixedTimestep`, `EngineConfig` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
 | `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer`, `Camera`, `Light`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
-| `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, shadow maps, occlusion queries, UI batching) |
-| `engine.ui` | `Gui`: immediate-mode widgets on any `UiCanvas` |
+| `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, shadow maps, occlusion queries, post-processing, UI batching) |
+| `engine.ui` | `Gui`: immediate-mode widgets on any `UiCanvas`; `TextEdit` (text editing model) |
 | `engine.resources` | `ResourceManager` (cached meshes/textures/models, generated textures), `ObjLoader`, `MtlLoader`, `ImageLoader` (ImageIO), `NormalMaps` (height field to normal map), `Model` |
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key bindings, mouse, typed text), `FirstPersonController` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
-| `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `Narrowphase`, `PhysicsSystem` (+ raycasts) |
+| `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `PhysicsSystem` (+ raycasts) |
 | `engine.debug` | `DebugOverlay` |
 | `game` | Demo scene (`DemoGame`, `Main`) |
 
@@ -129,7 +150,8 @@ public).
 Writing a game: implement `Game.init`, build entities (`new Entity().add(new MeshRenderer(...))`), add them to
 `engine.scene()`, register extra `ISystem`s with `engine.addSystem` and HUD code with `engine.addOverlay`. Entities with
 a collider and no `Rigidbody` are static; add a `Rigidbody` to make them move, several colliders to give it a compound
-shape. Mark scenery that rarely or never moves with `MeshRenderer.setStaticGeometry(true)`; if it does move, the engine
+shape, a joint (`link.add(new BallJoint()).setWorldAnchor(point)`, with `connected` set to the other entity or left
+null for the world) to tie it to something. Mark scenery that rarely or never moves with `MeshRenderer.setStaticGeometry(true)`; if it does move, the engine
 notices at the next fixed step (call `invalidate()` to apply it in the same frame). For menus and tools, create a
 `Gui` and call its widgets from an overlay; `engine.setClickCapturesMouse(() -> !gui.wantsMouse())` keeps clicks on
 widgets from grabbing the mouse.
@@ -138,17 +160,18 @@ widgets from grabbing the mouse.
 
 - Developed on Windows with an NVIDIA GPU; Linux is tested (CI runs the demo on Mesa's software OpenGL with GL error
   checking). macOS is untested.
-- Physics knows boxes and spheres only (no capsules, cylinders or triangle meshes) and has no joints. There is no
-  continuous collision detection: speculative contacts only cover shapes that start a step less than 2 cm apart, so
-  small, fast bodies can still tunnel through thin colliders. Stacks of more than about 20 crates slowly
-  creep sideways. Queries find their candidates through the grid of the last physics step, so a collider moved by code
-  since then is only found where it was (exact shapes are always tested where they are now).
-- Lighting is Blinn-Phong in a forward renderer: at most 8 lights per frame, no spot lights, no PBR, HDR or
-  post-processing. Point light shadows cost six passes over the casters in range each.
+- Mesh colliders are for static or kinematic geometry: two meshes never collide with each other, and a rigidbody with
+  a mesh collider gets no mass from it. There are no cylinder or convex-hull colliders. Joints have no angle or twist
+  limits (hinges turn freely, ball joints have no cone). Continuous collision sweeps the largest sphere inside a body,
+  so a fast box can still clip a corner, and it stops the body at the first hit instead of solving the rest of the
+  step.
+- At most 8 lights per frame in a forward renderer; only the first directional light has cascaded shadows and at most
+  4 point or spot lights cast shadows. No image-based lighting, so metals only reflect the lights and the ambient
+  colour (they look dark against the sky).
 - Occlusion culling only skips static geometry, in whole grid cells, and is one frame late: an object coming out from
-  behind a wall can appear a frame after it should. Transparent objects are sorted per object, not per triangle.
-- A moved static renderer is re-registered at the next fixed step, so it can be drawn at its old place for a frame
-  unless `invalidate()` is called.
-- The UI has no clipping or scrolling, no keyboard navigation between widgets, and its text fields are single-line
-  without cursor movement or selection; glyphs are rasterized at one pixel size, so scaled text gets blurry.
-- MTL texture options other than `-bm` are ignored, as are `Ka`, `Tr`, `Ni` and the PBR extensions.
+  behind a wall can appear a frame after it should. A moved static renderer is re-registered at the next fixed step,
+  so it can be drawn at its old place for a frame unless `invalidate()` is called. Order-independent transparency is
+  an approximation: overlapping layers of very different opacity blend a little differently from exact sorting.
+- The UI has no clipboard, no word wrap and no input method support.
+- MTL statements the renderer has no use for (`Ps`, `Pc`, `aniso`, reflection maps) and the texture options other than
+  `-s -o -clamp -bm` are ignored; one uv transform is used for all of a material's maps.

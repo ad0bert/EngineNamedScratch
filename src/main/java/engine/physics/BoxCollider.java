@@ -68,6 +68,12 @@ public class BoxCollider extends Collider {
   }
 
   @Override
+  float cachedInnerRadius() {
+    final float[] h = this.box.half();
+    return Math.min(h[0], Math.min(h[1], h[2]));
+  }
+
+  @Override
   Matrix4f cachedMatrix() {
     return this.matrix;
   }

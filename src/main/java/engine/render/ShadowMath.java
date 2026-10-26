@@ -98,6 +98,18 @@ public final class ShadowMath {
   public static final Vector3f[] CUBE_UP = { new Vector3f(0, 1, 0), new Vector3f(0, 1, 0), new Vector3f(0, 0, 1),
       new Vector3f(0, 0, -1), new Vector3f(0, 1, 0), new Vector3f(0, 1, 0) };
 
+  /** Perspective view-projection of a spot light's shadow map: the cone ({@code angleDegrees} each side) fits in. */
+  public static Matrix4f spotViewProj(Vector3f lightPos, Vector3f direction, float angleDegrees, float near,
+      float far, Matrix4f dest) {
+    final var d = new Vector3f(direction).normalize();
+    final var up = Math.abs(d.y) > 0.99f ? new Vector3f(1f, 0f, 0f) : new Vector3f(0f, 1f, 0f);
+    final float fov = (float) Math.toRadians(2f * Math.max(1f, Math.min(89f, angleDegrees)) + 2f);
+    final var proj = new Matrix4f().setPerspective(fov, 1f, near, far);
+    final var view = new Matrix4f().lookAt(lightPos.x, lightPos.y, lightPos.z, lightPos.x + d.x, lightPos.y + d.y,
+        lightPos.z + d.z, up.x, up.y, up.z);
+    return proj.mul(view, dest);
+  }
+
   /** 90 degree perspective view-projection of one face of a point light's shadow cube. */
   public static Matrix4f cubeFaceViewProj(Vector3f lightPos, int face, float near, float far, Matrix4f dest) {
     final var f = CUBE_FORWARD[face];

@@ -61,23 +61,39 @@ class PhysicsMotionTest {
     simulate(10.0);
     final var top = stack.get(11).transform().position();
     assertEquals(11.4f, top.y, 0.1f);
-    assertEquals(0f, top.x, 0.3f);
-    assertEquals(0f, top.z, 0.3f);
+    assertEquals(0f, top.x, 0.05f);
+    assertEquals(0f, top.z, 0.05f);
     assertTrue(this.physics.cachedContacts() >= 12, "every resting contact is kept for the next step");
   }
 
   @Test
-  void aTwentyCrateStackStandsAndFallsAsleep() {
+  void aFortyCrateStackStandsStraightAndFallsAsleep() {
     floor();
     final List<Entity> stack = new ArrayList<>();
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < 40; i++) {
       stack.add(crate(0f, 0.5f + i * 1.02f, 0f));
     }
-    simulate(8.0);
-    final var top = stack.get(19).transform().position();
-    assertEquals(19.4f, top.y, 0.15f);
-    assertEquals(0f, top.x, 0.5f);
-    assertEquals(20, this.physics.stats().sleepingBodies);
+    simulate(10.0);
+    final var top = stack.get(39).transform().position();
+    assertEquals(38.9f, top.y, 0.2f);
+    assertEquals(0f, top.x, 0.05f);
+    assertEquals(0f, top.z, 0.05f);
+    assertEquals(40, this.physics.stats().sleepingBodies);
+  }
+
+  @Test
+  void aSymmetricStackGetsNoSidewaysKickFromTheSolver() {
+    this.physics.sleepingEnabled = false;
+    floor();
+    Entity top = null;
+    for (int i = 0; i < 3; i++) {
+      top = crate(0f, 0.5f + i, 0f);
+    }
+    simulate(DT);
+    final var body = top.get(Rigidbody.class);
+    assertEquals(0f, body.velocity.x, 1e-5f);
+    assertEquals(0f, body.velocity.z, 1e-5f);
+    assertEquals(0f, body.angularVelocity.length(), 1e-5f);
   }
 
   @Test

@@ -18,6 +18,12 @@ class GuiTest {
   static final class FakeCanvas implements UiCanvas {
     final List<float[]> rects = new ArrayList<>();
     final List<String> texts = new ArrayList<>();
+    int clips;
+
+    @Override
+    public void pushClip(float x, float y, float w, float h) {
+      this.clips++;
+    }
 
     @Override
     public void drawRect(float x, float y, float w, float h, float r, float g, float b, float a) {
@@ -237,5 +243,106 @@ class GuiTest {
     assertTrue(shortened.length() * 8f <= 188f);
     assertEquals("ab", Gui.edit("abc", "\b"));
     assertEquals("", Gui.edit("", "\b\b"));
+  }
+
+  // ---- keyboard ----------------------------------------------------------------------------------------------
+
+  @Test
+  void tabMovesTheFocusAndEnterPressesTheFocusedButton() {
+    final boolean[] clicked = new boolean[2];
+    final Runnable ui = () -> {
+      clicked[0] = this.gui.button("First");
+      clicked[1] = this.gui.button("Second");
+    };
+    frame(ui); // the gui learns its widgets
+    this.input.typed('\t');
+    frame(ui);
+    this.input.typed('\t');
+    this.input.typed('\n');
+    frame(ui);
+    assertFalse(clicked[0]);
+    assertTrue(clicked[1], "two tabs reached the second button");
+    this.input.typed(InputState.KEY_BACKTAB);
+    this.input.typed(' ');
+    frame(ui);
+    assertTrue(clicked[0], "shift+tab went back; space presses too");
+  }
+
+  @Test
+  void aFocusedSliderMovesWithTheArrowKeys() {
+    final float[] v = { 5f };
+    final Runnable ui = () -> v[0] = this.gui.slider("V", v[0], 0f, 10f);
+    frame(ui);
+    this.input.typed('\t');
+    frame(ui);
+    this.input.typed(InputState.KEY_RIGHT);
+    this.input.typed(InputState.KEY_RIGHT);
+    frame(ui);
+    assertEquals(6f, v[0], 1e-5f);
+    this.input.typed(InputState.KEY_HOME);
+    frame(ui);
+    assertEquals(0f, v[0], 0f);
+  }
+
+  @Test
+  void clickingIntoATextFieldPlacesTheCursor() {
+    final String[] text = { "abcdef" };
+    final Runnable ui = () -> text[0] = this.gui.textField("##t", text[0]);
+    pointAt(16f + 6f + 8f * 2f + 1f, FIRST_Y + 10f); // between the c and the d... nearest to after "ab"
+    this.input.mouseButton(InputState.BUTTON_LEFT, true);
+    this.input.mouseButton(InputState.BUTTON_LEFT, false);
+    frame(ui);
+    this.input.typed('X');
+    frame(ui);
+    assertEquals("abXcdef", text[0]);
+  }
+
+  @Test
+  void textAreasTakeNewLines() {
+    final String[] text = { "one" };
+    final Runnable ui = () -> text[0] = this.gui.textArea("Notes", text[0], 3);
+    pointAt(100f, FIRST_Y + 10f);
+    this.input.mouseButton(InputState.BUTTON_LEFT, true);
+    this.input.mouseButton(InputState.BUTTON_LEFT, false);
+    frame(ui);
+    for (char c : (InputState.KEY_END + "\ntwo").toCharArray()) {
+      this.input.typed(c);
+    }
+    frame(ui);
+    assertEquals("one\ntwo", text[0]);
+    assertTrue(this.gui.wantsKeyboard(), "still editing: Enter does not end a text area");
+  }
+
+  // ---- scrolling ---------------------------------------------------------------------------------------------
+
+  @Test
+  void aScrollRegionClipsItsContentAndScrollsWithTheWheel() {
+    final boolean[] clicked = new boolean[10];
+    final Runnable ui = () -> {
+      this.gui.beginScroll("list", 100f);
+      for (int i = 0; i < 10; i++) {
+        clicked[i] = this.gui.button("Item " + i);
+      }
+      this.gui.endScroll();
+    };
+    frame(ui);
+    frame(ui); // now the content height is known
+    assertTrue(this.canvas.clips > 0);
+
+    // item 5 is at 5 * 32 = 160 px into the content: hidden below the 100 px region, so it cannot be clicked
+    pointAt(50f, FIRST_Y + 160f + 10f);
+    this.input.mouseButton(InputState.BUTTON_LEFT, true);
+    this.input.mouseButton(InputState.BUTTON_LEFT, false);
+    frame(ui);
+    assertFalse(clicked[5]);
+
+    pointAt(50f, FIRST_Y + 50f);
+    this.input.mouseWheel(-2f); // towards the user: scroll down by 2 * 3 lines = 96 px
+    frame(ui);
+    pointAt(50f, FIRST_Y + 160f - 96f + 10f);
+    this.input.mouseButton(InputState.BUTTON_LEFT, true);
+    this.input.mouseButton(InputState.BUTTON_LEFT, false);
+    frame(ui);
+    assertTrue(clicked[5], "scrolled into view and clickable");
   }
 }

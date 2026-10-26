@@ -16,8 +16,12 @@ import engine.input.FirstPersonController;
 import engine.messaging.IMessageReceiver;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
+import engine.physics.BallJoint;
 import engine.physics.BoxCollider;
+import engine.physics.CapsuleCollider;
 import engine.physics.CollisionEvent;
+import engine.physics.HingeJoint;
+import engine.physics.MeshCollider;
 import engine.physics.Rigidbody;
 import engine.physics.SphereCollider;
 import engine.render.Camera;
@@ -33,7 +37,8 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Sample scene exercising the engine: cascaded and point-light shadows, normal, height and specular maps, a cut-out
  * grate, instanced crates under physics, a turntable carrying crates, a compound body, an MTL-textured model,
- * transparency, points, a sprite and a HUD. Press F to throw a crate.
+ * transparency, points, a sprite, a jointed chain, a motorised hinge, a mesh-collider dome and a HUD. Press F to
+ * throw a crate.
  */
 @Slf4j
 public class DemoGame implements Game {
@@ -46,6 +51,9 @@ public class DemoGame implements Game {
   private Gui gui;
   private FirstPersonController controller;
   private String playerName = "Player";
+  private String notes = "";
+  /** Recent collision events of the player, newest last (shown in a scrolling list). */
+  private final java.util.ArrayDeque<String> events = new java.util.ArrayDeque<>();
 
   @Override
   public void init(Engine engine) {
@@ -82,7 +90,7 @@ public class DemoGame implements Game {
     ground.transform().position().set(0f, -1f, 0f);
     final var grass = new Material().color(0.35f, 0.55f, 0.3f, 1f);
     grass.specular = 0f;
-    grass.normalMap = res.texture("gen:ground-bumps", ProceduralTextures.bumps(256, 5f, 4L));
+    grass.normalMap = res.dataTexture("gen:ground-bumps", ProceduralTextures.bumps(256, 5f, 4L));
     grass.normalScale = 0.8f;
     ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(60f, 60f, 24f, 24f)), grass)).setStaticGeometry(true);
     scene.add(ground);
@@ -124,10 +132,10 @@ public class DemoGame implements Game {
     // sweeps across its relief
     final var bricks = ProceduralTextures.bricks(256);
     final var brickMaterial = new Material(res.texture("gen:bricks-albedo", bricks.albedo()));
-    brickMaterial.normalMap = res.texture("gen:bricks-normal", bricks.normal());
-    brickMaterial.heightMap = res.texture("gen:bricks-height", bricks.height());
+    brickMaterial.normalMap = res.dataTexture("gen:bricks-normal", bricks.normal());
+    brickMaterial.heightMap = res.dataTexture("gen:bricks-height", bricks.height());
     brickMaterial.heightScale = 0.03f;
-    brickMaterial.specularMap = res.texture("gen:bricks-gloss", bricks.specular());
+    brickMaterial.specularMap = res.dataTexture("gen:bricks-gloss", bricks.specular());
     brickMaterial.specular = 0.5f;
     final var wall = new Entity("wall");
     wall.transform().position().set(-6f, 0.5f, -2f);
@@ -197,6 +205,41 @@ public class DemoGame implements Game {
       }
     }
 
+    // physically based materials: rougher from left to right, the back row metallic (gold)
+    final var sphereMesh = res.mesh(MeshFactory.sphere(0.35f, 32, 16));
+    for (int i = 0; i < 5; i++) {
+      for (int row = 0; row < 2; row++) {
+        final var m = new Material();
+        if (row == 0) {
+          m.color(0.75f, 0.1f, 0.1f, 1f).pbr(0f, 0.1f + 0.2f * i);
+        } else {
+          m.color(1f, 0.78f, 0.34f, 1f).pbr(1f, 0.1f + 0.2f * i);
+        }
+        final var ball = new Entity("pbr-sphere");
+        ball.transform().position().set(-2f + i, -0.6f, 4.5f - row);
+        ball.add(new MeshRenderer(sphereMesh, m)).setStaticGeometry(true);
+        scene.add(ball);
+      }
+    }
+
+    // a spot light on a post, aimed at the wall; it casts its own shadows
+    final var lamp = new Entity("spot");
+    lamp.transform().position().set(-2.5f, 3.5f, 2f);
+    lamp.transform().rotation().lookAlong(new Vector3f(-1f, -1.2f, -1.1f), new Vector3f(0f, 1f, 0f)).conjugate();
+    lamp.add(Light.spot(1f, 0.85f, 0.6f, 4f, 14f, 28f));
+    scene.add(lamp);
+
+    // two transparent panes crossing each other: order-independent transparency blends them correctly
+    final var paneMesh = res.mesh(MeshFactory.quad(2f, 1.6f));
+    for (int i = 0; i < 2; i++) {
+      final var pane = new Entity("pane");
+      pane.transform().position().set(5f, 0f, 6f);
+      pane.transform().setEulerDegrees(0f, i == 0 ? 35f : -35f, 0f);
+      final var m = new Material().color(i == 0 ? 1f : 0.2f, i == 0 ? 0.3f : 0.9f, 0.3f, 0.45f);
+      pane.add(new MeshRenderer(paneMesh, m)).castShadows = false;
+      scene.add(pane);
+    }
+
     // a kinematic turntable turned by code (see update): the crates on it ride along
     this.turntable = new Entity("turntable");
     this.turntable.transform().position().set(9f, -0.75f, -6f);
@@ -240,6 +283,49 @@ public class DemoGame implements Game {
     scene.add(small);
     scene.add(bar);
 
+    // a chain of capsules hanging from a fixed point by ball joints; push it with E
+    final var linkMesh = res.mesh(MeshFactory.cube(1f));
+    final var linkMaterial = new Material().color(0.85f, 0.85f, 0.9f, 1f).pbr(1f, 0.3f);
+    Entity previous = null;
+    for (int i = 0; i < 6; i++) {
+      final var link = new Entity("chain-link");
+      link.transform().position().set(-9f + 0.25f + i * 0.5f, 4.6f, -1f); // laid out level: it swings down
+      link.transform().setEulerDegrees(0f, 0f, 90f);
+      link.transform().scale().set(0.12f, 0.5f, 0.12f);
+      link.add(new MeshRenderer(linkMesh, linkMaterial));
+      link.add(new CapsuleCollider(0.5f, 0.5f));
+      link.add(new Rigidbody()).linearDamping = 0.3f;
+      scene.add(link);
+      final var joint = link.add(new BallJoint());
+      joint.connected = previous;
+      joint.setWorldAnchor(new Vector3f(-9f + i * 0.5f, 4.6f, -1f));
+      previous = link;
+    }
+
+    // a paddle turned by a hinge motor: it sweeps whatever lies in its way
+    final var paddle = new Entity("paddle");
+    paddle.transform().position().set(9f, -0.3f, 2f);
+    paddle.transform().scale().set(2.4f, 0.5f, 0.15f);
+    paddle.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), new Material().color(0.9f, 0.6f, 0.1f, 1f)));
+    paddle.add(new BoxCollider(0.5f, 0.5f, 0.5f));
+    paddle.add(new Rigidbody()).mass = 4f;
+    scene.add(paddle);
+    final var hinge = paddle.add(new HingeJoint());
+    hinge.setWorldAnchor(new Vector3f(9f, -0.3f, 2f));
+    hinge.setWorldAxis(new Vector3f(0f, 1f, 0f));
+    hinge.motor = true;
+    hinge.motorSpeed = 1.2f;
+    hinge.maxMotorTorque = 60f;
+
+    // a dome with a triangle-mesh collider: thrown crates roll and slide off its faceted surface
+    final var domeMesh = MeshFactory.sphere(3f, 20, 10);
+    final var dome = new Entity("dome");
+    dome.transform().position().set(10f, -2.4f, 9f);
+    dome.add(new MeshRenderer(res.mesh(domeMesh), new Material().color(0.45f, 0.5f, 0.6f, 1f).pbr(0f, 0.6f)))
+        .setStaticGeometry(true);
+    dome.add(new MeshCollider(domeMesh));
+    scene.add(dome);
+
     // static scenery: cached matrices and grid-based culling; only the pillars near the view cost anything
     final var pillarMesh = res.mesh(MeshFactory.cube(0.5f));
     final var stone = new Material().color(0.6f, 0.58f, 0.55f, 1f);
@@ -263,6 +349,11 @@ public class DemoGame implements Game {
         if (m.getPayload() instanceof CollisionEvent c && (c.a() == DemoGame.this.player
             || c.b() == DemoGame.this.player)) {
           log.debug("player collision {}: {} <-> {}", c.started() ? "start" : "end", c.a(), c.b());
+          final var other = c.a() == DemoGame.this.player ? c.b() : c.a();
+          DemoGame.this.events.addLast((c.started() ? "touched " : "left ") + other.name());
+          if (DemoGame.this.events.size() > 50) {
+            DemoGame.this.events.removeFirst();
+          }
         }
       }
     }, MessageQueue.COLLISION);
@@ -295,10 +386,25 @@ public class DemoGame implements Game {
       settings.occlusionCulling = g.checkbox("Occlusion culling", settings.occlusionCulling);
       settings.maxPointShadows = g.checkbox("Point light shadows", settings.maxPointShadows > 0) ? 4 : 0;
       settings.debugCascades = g.checkbox("Tint shadow cascades", settings.debugCascades);
+      g.row(2);
+      settings.antiAliasing = g.checkbox("FXAA", settings.antiAliasing);
+      settings.orderIndependentTransparency = g.checkbox("OIT", settings.orderIndependentTransparency);
+      settings.exposure = g.slider("Exposure", settings.exposure, 0.2f, 3f);
+      settings.bloomStrength = g.slider("Bloom", settings.bloomStrength, 0f, 0.5f);
       g.space(4f);
       engine.physics().gravity.y = -g.slider("Gravity", -engine.physics().gravity.y, 0f, 20f);
       this.turntableSpeed = g.slider("Turntable speed", this.turntableSpeed, -3f, 3f);
       this.playerName = g.textField("Name", this.playerName);
+      this.notes = g.textArea("Notes (Enter for a new line)##notes", this.notes, 2);
+      g.label("Player collisions:");
+      g.beginScroll("log", 70f);
+      if (this.events.isEmpty()) {
+        g.label("(walk into something)");
+      }
+      for (var line : this.events) {
+        g.label(line);
+      }
+      g.endScroll();
       g.endPanel();
     }
     this.gui.end();
@@ -312,6 +418,7 @@ public class DemoGame implements Game {
     crate.add(new BoxCollider(0.5f, 0.5f, 0.5f));
     final var body = crate.add(new Rigidbody());
     body.velocity.set(velocity);
+    body.continuous = velocity.lengthSquared() > 0f; // thrown crates do not tunnel through thin walls
     engine.scene().add(crate);
   }
 
@@ -322,7 +429,7 @@ public class DemoGame implements Game {
     final var t = this.player.transform();
     final var forward = t.forward(new Vector3f());
     if (engine.input().wasActionPressed("spawn")) {
-      spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(10f));
+      spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(18f));
     }
 
     // what is the crosshair pointing at? E pushes it (wakes sleeping bodies)
@@ -347,11 +454,11 @@ public class DemoGame implements Game {
     final float cy = height / 2f;
     ui.drawRect(cx - 8, cy - 1, 16, 2, 1f, 1f, 1f, 0.8f);
     ui.drawRect(cx - 1, cy - 8, 2, 16, 1f, 1f, 1f, 0.8f);
-    if (!this.aim.isEmpty()) {
-      ui.drawText(this.aim, cx + 15f, cy + 9f, 1f, 0f, 0f, 0f, 0.8f);
-      ui.drawText(this.aim, cx + 14f, cy + 8f, 1f, 1f, 1f, 1f, 1f);
+    if (!this.aim.isEmpty()) { // a little larger than the rest: scaled text is rasterized at its size, so it stays sharp
+      ui.drawText(this.aim, cx + 15f, cy + 9f, 1.25f, 0f, 0f, 0f, 0.8f);
+      ui.drawText(this.aim, cx + 14f, cy + 8f, 1.25f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings";
+    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings (Tab to navigate)";
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);
   }

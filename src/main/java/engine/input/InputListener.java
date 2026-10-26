@@ -54,13 +54,31 @@ public class InputListener implements KeyListener, MouseListener {
       post(MessageQueue.KEYBOARD, e);
     }
     // text input wants auto-repeat
-    if (e.getKeySymbol() == KeyEvent.VK_BACK_SPACE) {
-      this.state.typed('\b');
-    } else if (e.getKeySymbol() == KeyEvent.VK_ENTER) {
-      this.state.typed('\n');
-    } else if (e.isPrintableKey() && !Character.isISOControl(e.getKeyChar())) {
+    final char special = special(e);
+    if (special != 0) {
+      this.state.typed(special);
+    } else if (e.isPrintableKey() && !Character.isISOControl(e.getKeyChar()) && !e.isControlDown()) {
       this.state.typed(e.getKeyChar());
     }
+  }
+
+  /** The editing or navigation key as an {@link InputState} key character, or 0. */
+  private static char special(KeyEvent e) {
+    final int shift = e.isShiftDown() ? InputState.SHIFT : 0;
+    return switch (e.getKeySymbol()) {
+    case KeyEvent.VK_BACK_SPACE -> '\b';
+    case KeyEvent.VK_ENTER -> '\n';
+    case KeyEvent.VK_TAB -> e.isShiftDown() ? InputState.KEY_BACKTAB : '\t';
+    case KeyEvent.VK_DELETE -> InputState.KEY_DELETE;
+    case KeyEvent.VK_LEFT -> (char) (InputState.KEY_LEFT + shift);
+    case KeyEvent.VK_RIGHT -> (char) (InputState.KEY_RIGHT + shift);
+    case KeyEvent.VK_UP -> (char) (InputState.KEY_UP + shift);
+    case KeyEvent.VK_DOWN -> (char) (InputState.KEY_DOWN + shift);
+    case KeyEvent.VK_HOME -> (char) (InputState.KEY_HOME + shift);
+    case KeyEvent.VK_END -> (char) (InputState.KEY_END + shift);
+    case KeyEvent.VK_A -> e.isControlDown() ? InputState.KEY_SELECT_ALL : 0;
+    default -> 0;
+    };
   }
 
   @Override

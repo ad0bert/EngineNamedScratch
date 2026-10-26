@@ -43,6 +43,9 @@ public abstract class Collider extends Component {
   /** Radius of a sphere around {@link #worldCenter} that contains the whole shape. */
   public abstract float boundingRadius();
 
+  /** Radius of the largest sphere around the centre inside the cached shape (continuous collision); 0 for none. */
+  abstract float cachedInnerRadius();
+
   /** The entity's world matrix as of the last {@link #refresh()}. */
   abstract Matrix4f cachedMatrix();
 

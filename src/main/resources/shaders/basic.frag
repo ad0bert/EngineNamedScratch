@@ -2,7 +2,7 @@
 
 #define MAX_LIGHTS 8
 #define MAX_CASCADES 4
-#define MAX_POINT_SHADOWS 4
+#define PI 3.14159265
 
 in vec3 vWorldPos;
 in vec3 vNormal;
@@ -14,9 +14,10 @@ uniform sampler2D uNormalMap;
 uniform sampler2D uSpecularMap;
 uniform sampler2D uEmissiveMap;
 uniform sampler2D uHeightMap;
+uniform sampler2D uMetalRoughMap;
 uniform sampler2DArrayShadow uShadowMap;
 uniform sampler2DArrayShadow uPointShadowMap;
-uniform vec4 uColor;
+uniform vec4 uColor;                           // linear (converted from sRGB on the CPU)
 uniform vec3 uEmissive;
 uniform vec3 uAmbient;
 uniform vec3 uCameraPos;
@@ -32,11 +33,24 @@ uniform int uHasSpecularMap;
 uniform int uHasEmissiveMap;
 uniform int uHasHeightMap;
 uniform float uHeightScale;
+uniform int uPbr;                              // 1: metallic-roughness BRDF, 0: Blinn-Phong
+uniform float uMetallic;
+uniform float uRoughness;
+uniform int uHasMetalRoughMap;                 // glTF layout: roughness in green, metallic in blue
+uniform float uReflectance;                    // F0 of non-metals
+uniform vec3 uMaterialAmbient;                 // linear
+uniform vec4 uUvTransform;                     // xy scale, zw offset
+uniform int uClampUv;
+uniform int uOit;                              // 1: write weighted blended transparency targets
 
 uniform int uLightCount;
-uniform vec4 uLightPos[MAX_LIGHTS];   // xyz: direction towards the light (w=0) or position (w=1)
-uniform vec4 uLightColor[MAX_LIGHTS]; // rgb: colour * intensity, a: range (point lights)
-uniform int uLightShadow[MAX_LIGHTS]; // point lights: index of their cube shadow map, or -1
+uniform vec4 uLightPos[MAX_LIGHTS];   // xyz: direction towards the light (w=0) or position (w=1 point, w=2 spot)
+uniform vec4 uLightColor[MAX_LIGHTS]; // rgb: colour * intensity, a: range (point and spot lights)
+uniform vec4 uLightSpot[MAX_LIGHTS];  // spot lights: xyz direction the light shines, w: cos of the outer angle
+uniform float uLightInner[MAX_LIGHTS]; // spot lights: cos of the angle where the fade to the edge starts
+uniform int uLightShadow[MAX_LIGHTS]; // point/spot lights: first layer of their shadow maps, or -1
+uniform vec2 uShadowRange[MAX_LIGHTS]; // point lights: near, far plane of the shadow cube
+uniform mat4 uSpotShadow[MAX_LIGHTS]; // spot lights: world -> shadow clip space
 
 // cascaded shadows for light 0
 uniform int uCascadeCount;                     // 0: no shadows
@@ -46,11 +60,11 @@ uniform float uCascadeTexel[MAX_CASCADES];     // world size of one shadow texel
 uniform float uShadowTexel;                    // 1 / shadow map size
 uniform int uDebugCascades;
 
-// omnidirectional shadows: six layers per shadowed point light (+x -x +y -y +z -z)
-uniform vec2 uPointShadowRange[MAX_POINT_SHADOWS]; // near, far plane of the cube faces
-uniform float uPointShadowTexel;                   // 1 / face size
+// local light shadows: six layers per shadowed point light (+x -x +y -y +z -z), one per spot light
+uniform float uPointShadowTexel;               // 1 / layer size
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
+layout(location = 1) out vec4 fragWeight;      // transparency pass only
 
 // Tangent frame (columns t, b, n). Meshes with uvs carry a tangent attribute; without one, the frame comes from
 // screen-space derivatives of the position and uv. Returns false when there is no usable frame.
@@ -145,7 +159,7 @@ const vec3 CUBE_FORWARD[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0
 const vec3 CUBE_UP[6] = vec3[6](vec3(0, 1, 0), vec3(0, 1, 0), vec3(0, 0, 1), vec3(0, 0, -1), vec3(0, 1, 0),
     vec3(0, 1, 0));
 
-float pointShadow(int s, vec3 lightPos, vec3 n, float ndotl) {
+float pointShadow(int i, vec3 lightPos, vec3 n, float ndotl) {
   vec3 fromLight = vWorldPos - lightPos;
   float dist = length(fromLight);
   // normal offset of about a texel at this distance (a 90 degree face is 2 * dist wide)
@@ -164,15 +178,15 @@ float pointShadow(int s, vec3 lightPos, vec3 n, float ndotl) {
   vec3 u = CUBE_UP[face];
   vec3 r = cross(f, u);
   float z = dot(d, f);
-  float near = uPointShadowRange[s].x;
-  float far = uPointShadowRange[s].y;
+  float near = uShadowRange[i].x;
+  float far = uShadowRange[i].y;
   if (z >= far) {
     return 1.0;
   }
   vec2 uv = vec2(dot(d, r), dot(d, u)) / z * 0.5 + 0.5;
   float ndc = (far + near) / (far - near) - 2.0 * far * near / ((far - near) * z);
   float ref = ndc * 0.5 + 0.5 - 0.0002;
-  float layer = float(s * 6 + face);
+  float layer = float(uLightShadow[i] + face);
   float sum = 0.0;
   for (int x = -1; x <= 1; x++) {
     for (int y = -1; y <= 1; y++) {
@@ -182,6 +196,57 @@ float pointShadow(int s, vec3 lightPos, vec3 n, float ndotl) {
   return sum / 9.0;
 }
 
+// Opaque pass: the colour. Transparency pass: weighted colour and revealage, and the weight (McGuire & Bavoil);
+// the weight favours near surfaces.
+void writeColor(vec3 color, float alpha) {
+  if (uOit == 1) {
+    float w = clamp(alpha * max(1e-2, 3e3 * pow(1.0 - gl_FragCoord.z, 3.0)), 1e-2, 3e3);
+    fragColor = vec4(color * alpha * w, alpha);
+    fragWeight = vec4(alpha * w, 0.0, 0.0, alpha);
+  } else {
+    fragColor = vec4(color, alpha);
+    fragWeight = vec4(0.0);
+  }
+}
+
+float spotShadow(int i, vec3 lightPos, vec3 n, float ndotl) {
+  float dist = length(vWorldPos - lightPos);
+  vec3 p = vWorldPos + n * (2.0 * dist * uPointShadowTexel) * (1.5 + 2.0 * (1.0 - ndotl));
+  vec4 s = uSpotShadow[i] * vec4(p, 1.0);
+  vec3 q = s.xyz / s.w * 0.5 + 0.5;
+  if (s.w <= 0.0 || q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0 || q.z > 1.0) {
+    return 1.0;
+  }
+  float sum = 0.0;
+  for (int x = -1; x <= 1; x++) {
+    for (int y = -1; y <= 1; y++) {
+      sum += texture(uPointShadowMap, vec4(q.xy + vec2(x, y) * uPointShadowTexel, float(uLightShadow[i]),
+          q.z - 0.0002));
+    }
+  }
+  return sum / 9.0;
+}
+
+// Cook-Torrance with the GGX distribution, Smith-Schlick geometry and Schlick's Fresnel. Lights are given as the
+// light arriving at a surface facing them, so the diffuse part is albedo (not albedo / pi) like the Blinn-Phong path.
+vec3 brdf(vec3 n, vec3 v, vec3 l, vec3 albedo, float metallic, float roughness) {
+  vec3 h = normalize(l + v);
+  float ndotl = max(dot(n, l), 0.0);
+  float ndotv = max(dot(n, v), 1e-4);
+  float ndoth = max(dot(n, h), 0.0);
+  float a = roughness * roughness;
+  float a2 = a * a;
+  float d = ndoth * ndoth * (a2 - 1.0) + 1.0;
+  float distribution = a2 / (PI * d * d);
+  float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+  float geometry = ndotv / (ndotv * (1.0 - k) + k) * ndotl / (ndotl * (1.0 - k) + k);
+  vec3 f0 = mix(vec3(uReflectance), albedo, metallic);
+  vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(h, v), 0.0), 5.0);
+  vec3 specular = distribution * geometry * fresnel / (4.0 * ndotv * max(ndotl, 1e-4));
+  vec3 diffuse = (1.0 - fresnel) * (1.0 - metallic) * albedo;
+  return (diffuse + specular * PI) * ndotl;
+}
+
 void main() {
   vec3 geometric = normalize(vNormal);
   // light both sides so un-culled thin geometry never goes black
@@ -189,7 +254,10 @@ void main() {
     geometric = -geometric;
   }
   vec3 v = normalize(uCameraPos - vWorldPos);
-  vec2 uv = vUv;
+  vec2 uv = vUv * uUvTransform.xy + uUvTransform.zw;
+  if (uClampUv == 1) {
+    uv = clamp(uv, 0.0, 1.0);
+  }
   mat3 tbn;
   bool hasFrame = (uHasNormalMap == 1 || uHasHeightMap == 1) && tangentFrame(geometric, tbn);
   if (hasFrame && uHasHeightMap == 1) {
@@ -201,7 +269,7 @@ void main() {
     discard;
   }
   if (uUnlit == 1) {
-    fragColor = albedo;
+    writeColor(albedo.rgb, albedo.a);
     return;
   }
   vec3 n = geometric;
@@ -215,6 +283,14 @@ void main() {
   if (uHasSpecularMap == 1) {
     specularStrength *= dot(texture(uSpecularMap, uv).rgb, vec3(1.0 / 3.0));
   }
+  float metallic = uMetallic;
+  float roughness = uRoughness;
+  if (uHasMetalRoughMap == 1) {
+    vec3 mr = texture(uMetalRoughMap, uv).rgb;
+    roughness *= mr.g;
+    metallic *= mr.b;
+  }
+  roughness = clamp(roughness, 0.03, 1.0);
   vec3 diffuse = vec3(0.0);
   vec3 specular = vec3(0.0);
   int cascade = 0;
@@ -229,6 +305,10 @@ void main() {
       l = d / max(dist, 1e-4);
       float x = clamp(1.0 - (dist * dist) / (uLightColor[i].a * uLightColor[i].a), 0.0, 1.0);
       atten = x * x;
+      if (uLightPos[i].w > 1.5) { // spot: fade from the inner to the outer cone
+        float c = dot(-l, uLightSpot[i].xyz);
+        atten *= smoothstep(uLightSpot[i].w, uLightInner[i], c);
+      }
     }
     float diff = max(dot(n, l), 0.0);
     float shadow = 1.0;
@@ -237,24 +317,39 @@ void main() {
       if (i == 0 && uCascadeCount > 0) {
         shadow = shadowFactor(geometric, l, cascade);
       } else if (uLightShadow[i] >= 0) {
-        shadow = pointShadow(uLightShadow[i], uLightPos[i].xyz, geometric, max(dot(geometric, l), 0.0));
+        float ndotl = max(dot(geometric, l), 0.0);
+        shadow = uLightPos[i].w > 1.5 ? spotShadow(i, uLightPos[i].xyz, geometric, ndotl)
+            : pointShadow(i, uLightPos[i].xyz, geometric, ndotl);
       }
     }
     vec3 c = uLightColor[i].rgb * atten * shadow;
-    diffuse += c * diff;
-    if (diff > 0.0) {
-      vec3 h = normalize(l + v);
-      specular += c * pow(max(dot(n, h), 0.0), uShininess) * specularStrength;
+    if (uPbr == 1) {
+      if (diff > 0.0) {
+        specular += c * brdf(n, v, l, albedo.rgb, metallic, roughness); // diffuse included
+      }
+    } else {
+      diffuse += c * diff;
+      if (diff > 0.0) {
+        vec3 h = normalize(l + v);
+        specular += c * pow(max(dot(n, h), 0.0), uShininess) * specularStrength;
+      }
     }
   }
   vec3 emissive = uEmissive;
   if (uHasEmissiveMap == 1) {
     emissive *= texture(uEmissiveMap, uv).rgb;
   }
-  vec3 lit = albedo.rgb * (uAmbient + diffuse) + specular + emissive;
+  vec3 lit;
+  if (uPbr == 1) {
+    vec3 f0 = mix(vec3(uReflectance), albedo.rgb, metallic);
+    vec3 ambient = uAmbient * uMaterialAmbient;
+    lit = ambient * (albedo.rgb * (1.0 - metallic) + f0 * (1.0 - roughness) * 0.5) + specular + emissive;
+  } else {
+    lit = albedo.rgb * (uAmbient * uMaterialAmbient + diffuse) + specular + emissive;
+  }
   if (uDebugCascades == 1 && uCascadeCount > 0) {
     vec3 tint[4] = vec3[4](vec3(1.0, 0.4, 0.4), vec3(0.4, 1.0, 0.4), vec3(0.4, 0.5, 1.0), vec3(1.0, 1.0, 0.4));
     lit = mix(lit, lit * tint[cascade], 0.5);
   }
-  fragColor = vec4(lit, albedo.a);
+  writeColor(lit, albedo.a);
 }

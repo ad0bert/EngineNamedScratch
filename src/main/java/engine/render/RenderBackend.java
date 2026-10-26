@@ -17,7 +17,16 @@ public interface RenderBackend {
 
   GpuMesh createMesh(MeshData data);
 
-  GpuTexture createTexture(ImageData image);
+  /**
+   * @param srgb true for colour images (albedo, emissive), which are decoded from sRGB when sampled; false for data
+   *             (normal, height, specular, roughness maps), which are used as stored
+   */
+  GpuTexture createTexture(ImageData image, boolean srgb);
+
+  /** A colour texture (sRGB). */
+  default GpuTexture createTexture(ImageData image) {
+    return createTexture(image, true);
+  }
 
   /** A 1x1 white texture. */
   GpuTexture whiteTexture();

@@ -1,6 +1,9 @@
 package engine.ui;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import engine.input.InputState;
@@ -8,9 +11,10 @@ import engine.render.UiCanvas;
 import engine.render.UiFont;
 
 /**
- * Immediate-mode widgets on top of a {@link UiCanvas}: panels, labels, buttons, checkboxes, sliders and text fields,
- * laid out top to bottom inside a panel (or side by side after {@link #row(int)}). Widgets are plain method calls that
- * draw themselves and return what the user did, so there is no widget tree to keep in sync with game state:
+ * Immediate-mode widgets on top of a {@link UiCanvas}: panels, labels, buttons, checkboxes, sliders, text fields and
+ * text areas, laid out top to bottom inside a panel (or side by side after {@link #row(int)}), optionally inside a
+ * scrolling region. Widgets are plain method calls that draw themselves and return what the user did, so there is no
+ * widget tree to keep in sync with game state:
  *
  * <pre>
  * engine.addOverlay((ui, w, h) -&gt; {
@@ -26,10 +30,15 @@ import engine.render.UiFont;
  *
  * <p>
  * A widget is identified by its panel and label; to show two widgets with the same text, add a suffix after
- * {@code "##"} (it is not displayed): {@code button("OK##second")}. Clicks count when the button is released over the
- * widget it went down on. While a text field has the keyboard focus it consumes typed text, Backspace deletes and
- * Enter (or a click elsewhere) ends editing. {@link #wantsMouse()} tells the game (and the engine's mouse capture)
- * whether the pointer is over the interface.
+ * {@code "##"} (it is not displayed): {@code button("OK##second")}.
+ *
+ * <p>
+ * Mouse: clicks count when the button is released over the widget it went down on; the wheel scrolls the region under
+ * the pointer, and scroll bars can be dragged. Keyboard: Tab and Shift+Tab move the focus through the widgets, Enter
+ * or Space presses the focused button or checkbox, the arrow keys (and Home/End) move a focused slider. Text fields
+ * and areas edit like any text box: a cursor that the arrows, Home and End move (with Shift to select), mouse
+ * placement and drag selection, Ctrl+A, Backspace and Delete; Enter ends editing a field and starts a new line in an
+ * area. {@link #wantsMouse()} and {@link #wantsKeyboard()} tell the game what the interface is using.
  */
 public class Gui {
   /** Colours and sizes; change them freely. Colours are RGBA. */
@@ -37,14 +46,27 @@ public class Gui {
     public UiFont font = UiFont.DEFAULT;
     public float padding = 6f;
     public float spacing = 4f;
+    public float scrollbar = 8f;
     public float[] panel = { 0.08f, 0.09f, 0.11f, 0.86f };
     public float[] title = { 0.16f, 0.32f, 0.55f, 1f };
     public float[] widget = { 0.22f, 0.23f, 0.27f, 1f };
     public float[] hot = { 0.3f, 0.32f, 0.38f, 1f };
     public float[] active = { 0.38f, 0.42f, 0.52f, 1f };
     public float[] accent = { 0.32f, 0.62f, 1f, 1f };
+    public float[] selection = { 0.25f, 0.45f, 0.8f, 0.6f };
     public float[] text = { 0.95f, 0.95f, 0.97f, 1f };
     public float[] dimText = { 0.7f, 0.72f, 0.78f, 1f };
+  }
+
+  /** A scrolling region being laid out. */
+  private static final class Scroll {
+    String id;
+    float x;
+    float y;
+    float w;
+    float h;
+    float offset;
+    float savedWidth;
   }
 
   public final Style style = new Style();
@@ -59,14 +81,26 @@ public class Gui {
   private boolean released;
   private int seenPresses;
   private int seenReleases;
+  private float wheel;
+  /** Keys and characters for the focused widget this frame. */
   private String typed = "";
 
   private String hot;
   private String active;
   private String focused;
+  private boolean focusFromKeyboard;
   private boolean focusClaimed;
   private boolean overPanel;
   private volatile boolean wantsMouse;
+  private volatile boolean wantsKeyboard;
+  private List<String> focusOrder = new ArrayList<>();
+  private List<String> lastFocusOrder = new ArrayList<>();
+  private TextEdit edit;
+  private String editId;
+
+  // clip rectangles for hit testing (x0, y0, x1, y1), mirroring what the canvas clips
+  private final float[] clips = new float[64 * 4];
+  private int clipDepth;
 
   // layout of the current panel
   private String panelId = "";
@@ -78,6 +112,10 @@ public class Gui {
   private int rowColumns;
   private int rowIndex;
   private float rowHeight;
+  private final ArrayDeque<Scroll> scrolls = new ArrayDeque<>();
+  private final Map<String, Float> scrollOffsets = new HashMap<>();
+  private final Map<String, Float> contentHeights = new HashMap<>();
+  private float grab;
 
   /** Rectangle of the widget being laid out. */
   private float wx;
@@ -106,19 +144,47 @@ public class Gui {
     this.released = interactive && releases != this.seenReleases;
     this.seenPresses = presses;
     this.seenReleases = releases;
-    // always drained, so text typed while no field had the focus does not appear in the next one that gets it
+    this.wheel = interactive ? this.input.consumeWheel() : 0f;
+    // always drained, so text typed while nothing had the focus does not appear in the next widget that gets it
     final var text = interactive ? this.input.consumeTypedText() : "";
-    this.typed = this.focused != null ? text : "";
+    final var forWidget = new StringBuilder();
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c == '\t' || c == InputState.KEY_BACKTAB) {
+        moveFocus(c == '\t' ? 1 : -1);
+        forWidget.setLength(0); // what was typed before belonged to the widget that lost the focus
+      } else if (this.focused != null) {
+        forWidget.append(c);
+      }
+    }
+    this.typed = forWidget.toString();
     this.hot = null;
     this.overPanel = false;
     this.focusClaimed = false;
+    this.clipDepth = 0;
+    final var order = this.lastFocusOrder;
+    this.lastFocusOrder = this.focusOrder;
+    this.focusOrder = order;
+    this.focusOrder.clear();
     if (!interactive) {
       this.active = null;
       this.focused = null;
     }
   }
 
-  /** Ends the frame: a release ends any drag, a click outside every text field ends editing. */
+  private void moveFocus(int direction) {
+    final var order = this.focusOrder; // last frame's order: begin() swaps the lists right after this
+    if (order.isEmpty()) {
+      return;
+    }
+    final int at = this.focused != null ? order.indexOf(this.focused) : -1;
+    final int n = order.size();
+    final int next = at < 0 ? (direction > 0 ? 0 : n - 1) : (at + direction + n) % n;
+    this.focused = order.get(next);
+    this.focusFromKeyboard = true;
+  }
+
+  /** Ends the frame: a release ends any drag, a click outside every widget ends the focus. */
   public void end() {
     if (this.released || !this.mouseDown && !this.pressed) {
       this.active = null;
@@ -126,7 +192,12 @@ public class Gui {
     if (this.pressed && !this.focusClaimed) {
       this.focused = null;
     }
+    if (this.focused == null || !this.focused.equals(this.editId)) {
+      this.edit = null;
+      this.editId = null;
+    }
     this.wantsMouse = this.interactive && (this.overPanel || this.active != null);
+    this.wantsKeyboard = this.interactive && this.editId != null;
   }
 
   /** True while the pointer is over a panel or a widget is being dragged; safe to call from any thread. */
@@ -134,12 +205,12 @@ public class Gui {
     return this.wantsMouse;
   }
 
-  /** True while a text field is being edited, so the game can ignore its key bindings. */
+  /** True while text is being edited, so the game can ignore its key bindings; safe to call from any thread. */
   public boolean wantsKeyboard() {
-    return this.focused != null;
+    return this.wantsKeyboard || this.editId != null;
   }
 
-  // ---- panels and layout -------------------------------------------------------------------------------------
+  // ---- panels, layout and scrolling --------------------------------------------------------------------------
 
   /**
    * Starts a panel with a title bar at x, y. Its background is as tall as the panel's content was in the last frame
@@ -164,6 +235,9 @@ public class Gui {
 
   public void endPanel() {
     endRow();
+    while (!this.scrolls.isEmpty()) {
+      endScroll(); // forgiving: an unclosed scroll region ends with its panel
+    }
     this.panelHeights.put(this.panelId, this.cursorY - this.panelY + this.style.padding - this.style.spacing);
     this.panelId = "";
   }
@@ -180,6 +254,70 @@ public class Gui {
   public void space(float pixels) {
     endRow();
     this.cursorY += pixels;
+  }
+
+  /**
+   * Starts a region {@code height} pixels tall whose content scrolls (wheel or scroll bar) when it is taller; widgets
+   * outside the region are clipped and cannot be clicked. Ends with {@link #endScroll()}.
+   */
+  public void beginScroll(String id, float height) {
+    endRow();
+    place(height);
+    final var s = new Scroll();
+    s.id = this.panelId + "/" + id;
+    s.x = this.wx;
+    s.y = this.wy;
+    s.w = this.ww;
+    s.h = height;
+    final float content = this.contentHeights.getOrDefault(s.id, 0f);
+    float offset = this.scrollOffsets.getOrDefault(s.id, 0f);
+    if (this.wheel != 0f && inside(s.x, s.y, s.w, s.h)) {
+      offset -= this.wheel * 3f * lineHeight();
+      this.wheel = 0f; // the innermost region under the pointer takes it
+    }
+    s.offset = Math.max(0f, Math.min(offset, content - height));
+    this.scrollOffsets.put(s.id, s.offset);
+    fill(s.x, s.y, s.w, s.h, this.style.panel);
+    pushClip(s.x, s.y, s.w, s.h);
+    // the content is laid out as if the panel were narrower (room for the bar) and shifted up by the offset
+    s.savedWidth = this.panelWidth;
+    this.panelWidth -= this.style.scrollbar + this.style.spacing;
+    this.cursorY = s.y - s.offset;
+    this.scrolls.push(s);
+  }
+
+  public void endScroll() {
+    endRow();
+    final var s = this.scrolls.pop();
+    final float content = this.cursorY + s.offset - s.y - this.style.spacing;
+    this.contentHeights.put(s.id, content);
+    popClip();
+    this.panelWidth = s.savedWidth;
+    this.cursorY = s.y + s.h + this.style.spacing;
+    if (content <= s.h) {
+      return;
+    }
+    // the scroll bar: drag the thumb (or click the track to jump there)
+    final float barX = s.x + s.w - this.style.scrollbar;
+    final float thumbH = Math.max(this.style.scrollbar * 2f, s.h * s.h / content);
+    final float travel = s.h - thumbH;
+    final float thumbY = s.y + travel * s.offset / (content - s.h);
+    final var barId = s.id + "#bar";
+    final boolean over = this.interactive && inside(barX, s.y, this.style.scrollbar, s.h);
+    if (over && this.pressed) {
+      this.active = barId;
+      this.focusClaimed = true;
+      this.grab = this.mouseY >= thumbY && this.mouseY < thumbY + thumbH ? this.mouseY - thumbY : thumbH / 2f;
+    }
+    float offset = s.offset;
+    if (barId.equals(this.active) && this.mouseDown && travel > 0f) {
+      final float t = Math.max(0f, Math.min(1f, (this.mouseY - this.grab - s.y) / travel));
+      offset = t * (content - s.h);
+      this.scrollOffsets.put(s.id, offset);
+    }
+    fill(barX, s.y, this.style.scrollbar, s.h, this.style.widget);
+    fill(barX, s.y + travel * offset / (content - s.h), this.style.scrollbar, thumbH,
+        barId.equals(this.active) ? this.style.accent : over ? this.style.active : this.style.hot);
   }
 
   private void endRow() {
@@ -216,6 +354,32 @@ public class Gui {
     return lineHeight() + 2f * this.style.padding;
   }
 
+  private void pushClip(float x, float y, float w, float h) {
+    float x0 = x;
+    float y0 = y;
+    float x1 = x + w;
+    float y1 = y + h;
+    if (this.clipDepth > 0) {
+      final int o = (this.clipDepth - 1) * 4;
+      x0 = Math.max(x0, this.clips[o]);
+      y0 = Math.max(y0, this.clips[o + 1]);
+      x1 = Math.min(x1, this.clips[o + 2]);
+      y1 = Math.min(y1, this.clips[o + 3]);
+    }
+    final int o = this.clipDepth * 4;
+    this.clips[o] = x0;
+    this.clips[o + 1] = y0;
+    this.clips[o + 2] = x1;
+    this.clips[o + 3] = y1;
+    this.clipDepth++;
+    this.ui.pushClip(x, y, w, h);
+  }
+
+  private void popClip() {
+    this.clipDepth--;
+    this.ui.popClip();
+  }
+
   // ---- widgets -----------------------------------------------------------------------------------------------
 
   public void label(String text) {
@@ -223,25 +387,27 @@ public class Gui {
     text(fit(display(text), this.ww), this.wx, this.wy, this.style.dimText);
   }
 
-  /** @return true in the frame the button was clicked */
+  /** @return true in the frame the button was clicked (or pressed with Enter/Space while focused) */
   public boolean button(String label) {
     final var id = id(label);
     place(widgetHeight());
     final boolean over = interact(id);
-    final boolean clicked = this.released && over && id.equals(this.active);
+    final boolean clicked = this.released && over && id.equals(this.active) || activatedByKey(id);
     fill(this.wx, this.wy, this.ww, this.wh, colour(id, over));
+    focusRing(id);
     final var shown = fit(display(label), this.ww - 2f * this.style.padding);
     text(shown, this.wx + (this.ww - this.ui.textWidth(this.style.font, shown, 1f)) / 2f,
         this.wy + this.style.padding, this.style.text);
     return clicked;
   }
 
-  /** @return the new value (toggled in the frame the box was clicked) */
+  /** @return the new value (toggled in the frame the box was clicked, or Enter/Space pressed while focused) */
   public boolean checkbox(String label, boolean value) {
     final var id = id(label);
     place(widgetHeight());
     final boolean over = interact(id);
-    final boolean result = this.released && over && id.equals(this.active) ? !value : value;
+    final boolean toggle = this.released && over && id.equals(this.active) || activatedByKey(id);
+    final boolean result = toggle != value;
     final float box = this.wh - 2f * this.style.padding;
     final float bx = this.wx;
     final float by = this.wy + this.style.padding;
@@ -250,12 +416,16 @@ public class Gui {
       final float inset = Math.max(2f, box * 0.22f);
       fill(bx + inset, by + inset, box - 2f * inset, box - 2f * inset, this.style.accent);
     }
+    focusRing(id);
     text(fit(display(label), this.ww - box - this.style.padding), bx + box + this.style.padding,
         this.wy + this.style.padding, this.style.text);
     return result;
   }
 
-  /** A horizontal slider; dragging sets the value. @return the new value, within min..max */
+  /**
+   * A horizontal slider; dragging sets the value, and while focused the arrow keys move it by a twentieth of the
+   * range (Home/End: to the ends). @return the new value, within min..max
+   */
   public float slider(String label, float value, float min, float max) {
     final var id = id(label);
     place(widgetHeight());
@@ -265,80 +435,239 @@ public class Gui {
       final float t = Math.max(0f, Math.min(1f, (this.mouseX - this.wx) / this.ww));
       v = min + t * (max - min);
     }
+    if (id.equals(this.focused)) {
+      final float step = (max - min) / 20f;
+      for (int i = 0; i < this.typed.length(); i++) {
+        final char c = this.typed.charAt(i);
+        final char key = c >= InputState.KEY_LEFT + InputState.SHIFT && c <= InputState.KEY_END + InputState.SHIFT
+            ? (char) (c - InputState.SHIFT)
+            : c; // Shift makes no difference here
+        if (key == InputState.KEY_LEFT || key == InputState.KEY_DOWN) {
+          v = Math.max(min, v - step);
+        } else if (key == InputState.KEY_RIGHT || key == InputState.KEY_UP) {
+          v = Math.min(max, v + step);
+        } else if (key == InputState.KEY_HOME) {
+          v = min;
+        } else if (key == InputState.KEY_END) {
+          v = max;
+        }
+      }
+    }
     fill(this.wx, this.wy, this.ww, this.wh, colour(id, over));
     final float t = max > min ? (v - min) / (max - min) : 0f;
     fill(this.wx, this.wy, this.ww * t, this.wh, this.style.title);
     fill(this.wx + this.ww * t - 2f, this.wy, 4f, this.wh, this.style.accent);
+    focusRing(id);
     final var shown = fit(display(label) + ": " + format(v), this.ww - 2f * this.style.padding);
     text(shown, this.wx + (this.ww - this.ui.textWidth(this.style.font, shown, 1f)) / 2f,
         this.wy + this.style.padding, this.style.text);
     return v;
   }
 
-  /**
-   * A single-line text field. Clicking it starts editing; typed text is appended, Backspace deletes, Enter or a click
-   * elsewhere ends editing. @return the (possibly edited) text
-   */
+  /** A single-line text box (see the class comment for the keys). @return the (possibly edited) text */
   public String textField(String label, String value) {
+    return textBox(label, value, false, 1);
+  }
+
+  /** A multi-line text box, {@code lines} lines tall; Enter starts a new line. @return the (possibly edited) text */
+  public String textArea(String label, String value, int lines) {
+    return textBox(label, value, true, Math.max(1, lines));
+  }
+
+  private String textBox(String label, String value, boolean multiLine, int lines) {
     final var id = id(label);
-    place(widgetHeight());
+    final float lh = lineHeight();
+    place(lines * lh + 2f * this.style.padding);
     final boolean over = interact(id);
-    if (this.pressed && over) {
-      this.focused = id;
-      this.focusClaimed = true; // otherwise end() takes the focus away: the click was elsewhere
-    }
-    var text = value;
+    final var prefix = display(label);
+    final float labelWidth = prefix.isEmpty() || multiLine ? 0f
+        : this.ui.textWidth(this.style.font, prefix, 1f) + this.style.padding;
+    final float tx = this.wx + this.style.padding + labelWidth;
+    final float ty = this.wy + this.style.padding;
+    final float innerW = this.ww - 2f * this.style.padding - labelWidth;
+    final float innerH = lines * lh;
+
     final boolean editing = id.equals(this.focused);
+    var text = value;
     if (editing) {
-      text = edit(value, this.typed);
-      if (this.typed.indexOf('\n') >= 0) {
-        this.focused = null;
+      if (!id.equals(this.editId)) {
+        this.edit = new TextEdit(value, multiLine);
+        this.editId = id;
+        if (this.focusFromKeyboard) {
+          this.edit.selectAll();
+        }
+      }
+      final var e = this.edit;
+      e.setText(value);
+      final float[] scroll = scrollFor(e, tx, ty, innerW, innerH, multiLine);
+      if (this.pressed && over) {
+        e.moveTo(indexAt(e.text(), this.mouseX - tx + scroll[0], this.mouseY - ty + scroll[1], multiLine), false);
+      } else if (id.equals(this.active) && this.mouseDown) {
+        e.moveTo(indexAt(e.text(), this.mouseX - tx + scroll[0], this.mouseY - ty + scroll[1], multiLine), true);
+      }
+      e.apply(this.typed);
+      text = e.text();
+      if (!multiLine && this.typed.indexOf('\n') >= 0) {
+        this.focused = null; // Enter ends editing a field
       }
     }
     fill(this.wx, this.wy, this.ww, this.wh, editing ? this.style.active : colour(id, over));
-    final var prefix = display(label);
-    final float labelWidth = prefix.isEmpty() ? 0f
-        : this.ui.textWidth(this.style.font, prefix, 1f) + this.style.padding;
-    if (!prefix.isEmpty()) {
-      text(prefix, this.wx + this.style.padding, this.wy + this.style.padding, this.style.dimText);
+    if (labelWidth > 0f) {
+      text(prefix, this.wx + this.style.padding, ty, this.style.dimText);
     }
-    final boolean caret = editing && (System.nanoTime() / 500_000_000L) % 2 == 0;
-    text(caret ? text + "|" : text, this.wx + this.style.padding + labelWidth, this.wy + this.style.padding,
-        this.style.text);
+    pushClip(tx, ty, innerW, innerH);
+    if (editing && this.edit != null) {
+      final var e = this.edit;
+      final float[] scroll = scrollFor(e, tx, ty, innerW, innerH, multiLine);
+      final float ox = tx - scroll[0];
+      final float oy = ty - scroll[1];
+      if (e.hasSelection()) {
+        drawSelection(e, ox, oy, lh);
+      }
+      text(text, ox, oy, this.style.text);
+      if ((System.nanoTime() / 500_000_000L) % 2 == 0) {
+        final float cx = ox + caretX(e.text(), e.cursor());
+        final float cy = oy + caretLine(e.text(), e.cursor()) * lh;
+        fill(cx, cy, 1.5f, lh, this.style.text);
+      }
+    } else {
+      text(text, tx, ty, this.style.text);
+    }
+    popClip();
+    if (multiLine && !prefix.isEmpty() && !editing && text.isEmpty()) {
+      text(prefix, tx, ty, this.style.dimText); // a placeholder
+    }
+    focusRing(id);
     return text;
+  }
+
+  /** Scroll offsets that keep the cursor in view: {x, y}. */
+  private float[] scrollFor(TextEdit e, float tx, float ty, float w, float h, boolean multiLine) {
+    final float cx = caretX(e.text(), e.cursor());
+    final float cy = caretLine(e.text(), e.cursor()) * lineHeight();
+    final float sx = Math.max(0f, cx - w + 2f);
+    final float sy = multiLine ? Math.max(0f, cy + lineHeight() - h) : 0f;
+    this.scrollPair[0] = sx;
+    this.scrollPair[1] = sy;
+    return this.scrollPair;
+  }
+
+  private final float[] scrollPair = new float[2];
+
+  /** x of the cursor within its line. */
+  private float caretX(String text, int index) {
+    final int start = text.lastIndexOf('\n', index - 1) + 1;
+    return this.ui.textWidth(this.style.font, text.substring(start, index), 1f);
+  }
+
+  private static int caretLine(String text, int index) {
+    int line = 0;
+    for (int i = 0; i < index; i++) {
+      if (text.charAt(i) == '\n') {
+        line++;
+      }
+    }
+    return line;
+  }
+
+  /** The index nearest to a point relative to the text's top left. */
+  private int indexAt(String text, float x, float y, boolean multiLine) {
+    int start = 0;
+    if (multiLine) {
+      int line = Math.max(0, (int) Math.floor(y / lineHeight()));
+      while (line-- > 0) {
+        final int next = text.indexOf('\n', start);
+        if (next < 0) {
+          break;
+        }
+        start = next + 1;
+      }
+    }
+    int end = text.indexOf('\n', start);
+    if (end < 0) {
+      end = text.length();
+    }
+    int best = start;
+    float bestDistance = Math.abs(x);
+    for (int i = start; i < end;) {
+      i = text.offsetByCodePoints(i, 1);
+      final float d = Math.abs(this.ui.textWidth(this.style.font, text.substring(start, i), 1f) - x);
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  private void drawSelection(TextEdit e, float ox, float oy, float lh) {
+    final var text = e.text();
+    final int from = e.selectionStart();
+    final int to = e.selectionEnd();
+    int lineStart = text.lastIndexOf('\n', from - 1) + 1;
+    int line = caretLine(text, from);
+    while (lineStart <= to) {
+      int lineEnd = text.indexOf('\n', lineStart);
+      if (lineEnd < 0) {
+        lineEnd = text.length();
+      }
+      final int a = Math.max(from, lineStart);
+      final int b = Math.min(to, lineEnd);
+      final float x0 = this.ui.textWidth(this.style.font, text.substring(lineStart, a), 1f);
+      final float x1 = this.ui.textWidth(this.style.font, text.substring(lineStart, b), 1f) + (b < to ? 4f : 0f);
+      fill(ox + x0, oy + line * lh, Math.max(1f, x1 - x0), lh, this.style.selection);
+      if (lineEnd >= text.length()) {
+        break;
+      }
+      lineStart = lineEnd + 1;
+      line++;
+    }
   }
 
   /** Applies typed characters: printable ones are appended, {@code '\b'} deletes the last code point. */
   static String edit(String value, String typed) {
-    if (typed.isEmpty()) {
-      return value;
-    }
-    final var sb = new StringBuilder(value);
-    for (int i = 0; i < typed.length(); i++) {
-      final char c = typed.charAt(i);
-      if (c == '\b') {
-        if (sb.length() > 0) {
-          sb.setLength(sb.offsetByCodePoints(sb.length(), -1));
-        }
-      } else if (c != '\n') {
-        sb.append(c);
-      }
-    }
-    return sb.toString();
+    final var e = new TextEdit(value, false);
+    e.apply(typed);
+    return e.text();
   }
 
   // ---- helpers -----------------------------------------------------------------------------------------------
 
-  /** Hover and press handling shared by all widgets; returns whether the pointer is over the widget. */
+  /**
+   * Hover, press and focus handling shared by all widgets; returns whether the pointer is over the widget. Every
+   * interactive widget can take the keyboard focus.
+   */
   private boolean interact(String id) {
+    if (!this.focusOrder.contains(id)) {
+      this.focusOrder.add(id);
+    }
     final boolean over = this.interactive && inside(this.wx, this.wy, this.ww, this.wh);
     if (over) {
       this.hot = id;
       if (this.pressed) {
         this.active = id;
+        this.focused = id;
+        this.focusFromKeyboard = false;
+        this.focusClaimed = true;
       }
     }
     return over;
+  }
+
+  /** Enter or Space while the widget has the focus. */
+  private boolean activatedByKey(String id) {
+    return id.equals(this.focused) && (this.typed.indexOf('\n') >= 0 || this.typed.indexOf(' ') >= 0);
+  }
+
+  /** An outline around the focused widget, when the focus came from the keyboard. */
+  private void focusRing(String id) {
+    if (this.focusFromKeyboard && id.equals(this.focused)) {
+      final float[] c = this.style.accent;
+      fill(this.wx - 2f, this.wy - 2f, this.ww + 4f, 2f, c);
+      fill(this.wx - 2f, this.wy + this.wh, this.ww + 4f, 2f, c);
+      fill(this.wx - 2f, this.wy, 2f, this.wh, c);
+      fill(this.wx + this.ww, this.wy, 2f, this.wh, c);
+    }
   }
 
   private float[] colour(String id, boolean over) {
@@ -348,8 +677,17 @@ public class Gui {
     return over ? this.style.hot : this.style.widget;
   }
 
+  /** Is the pointer in the rectangle, and in the visible (clipped) part of it? */
   private boolean inside(float x, float y, float w, float h) {
-    return this.mouseX >= x && this.mouseX < x + w && this.mouseY >= y && this.mouseY < y + h;
+    if (this.mouseX < x || this.mouseX >= x + w || this.mouseY < y || this.mouseY >= y + h) {
+      return false;
+    }
+    if (this.clipDepth > 0) {
+      final int o = (this.clipDepth - 1) * 4;
+      return this.mouseX >= this.clips[o] && this.mouseX < this.clips[o + 2] && this.mouseY >= this.clips[o + 1]
+          && this.mouseY < this.clips[o + 3];
+    }
+    return true;
   }
 
   private String id(String label) {

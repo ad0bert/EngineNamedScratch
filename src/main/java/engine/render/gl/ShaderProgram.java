@@ -94,6 +94,10 @@ final class ShaderProgram {
     gl.glUniform3f(loc(gl, name), v.x, v.y, v.z);
   }
 
+  void set(GL3 gl, String name, float x, float y) {
+    gl.glUniform2f(loc(gl, name), x, y);
+  }
+
   void set(GL3 gl, String name, float x, float y, float z) {
     gl.glUniform3f(loc(gl, name), x, y, z);
   }

@@ -31,6 +31,22 @@ final class LongSet {
     return true;
   }
 
+  boolean contains(long key) {
+    final int mask = this.keys.length - 1;
+    int i = hash(key) & mask;
+    while (this.stamps[i] == this.stamp) {
+      if (this.keys[i] == key) {
+        return true;
+      }
+      i = (i + 1) & mask;
+    }
+    return false;
+  }
+
+  int size() {
+    return this.size;
+  }
+
   private void grow() {
     final long[] oldKeys = this.keys;
     final int[] oldStamps = this.stamps;
