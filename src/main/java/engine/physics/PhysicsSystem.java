@@ -54,6 +54,8 @@ public class PhysicsSystem implements ISystem {
   private static final float SPECULATIVE_MARGIN = 0.02f;
   /** Spin is capped so a freak impulse cannot make a body rotate faster than a step can resolve. */
   private static final float MAX_ANGULAR_SPEED = 50f;
+  /** Slot of a pair's arrays that holds the manifold centroid (after the up to four contact points). */
+  private static final int CENTER = Narrowphase.Contact.MAX_POINTS;
   /** Stand in for the motion and inertia of a static collider; never written to because its inverse mass is zero. */
   private static final Vector3f NO_VELOCITY = new Vector3f();
   private static final Vector3f NO_SPIN = new Vector3f();
@@ -148,15 +150,26 @@ public class PhysicsSystem implements ISystem {
     private Vector3f wb;
     private final Vector3f t1 = new Vector3f();
     private final Vector3f t2 = new Vector3f();
-    private final Vector3f[] rA = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
-    private final Vector3f[] rB = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
+    // arms from each body's reference point to the manifold points; slot CENTER is the manifold's centroid
+    private final Vector3f[] rA = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
+    private final Vector3f[] rB = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
     private final float[] massN = new float[Narrowphase.Contact.MAX_POINTS];
-    private final float[] massT1 = new float[Narrowphase.Contact.MAX_POINTS];
-    private final float[] massT2 = new float[Narrowphase.Contact.MAX_POINTS];
+    private final float[] massT1 = new float[Narrowphase.Contact.MAX_POINTS + 1];
+    private final float[] massT2 = new float[Narrowphase.Contact.MAX_POINTS + 1];
     private final float[] bias = new float[Narrowphase.Contact.MAX_POINTS];
     private final float[] jn = new float[Narrowphase.Contact.MAX_POINTS];
     private final float[] jt1 = new float[Narrowphase.Contact.MAX_POINTS];
     private final float[] jt2 = new float[Narrowphase.Contact.MAX_POINTS];
+    /** Manifolds of several points take their friction at the centroid: two tangent rows and a twist. */
+    private boolean central;
+    private float centralT1;
+    private float centralT2;
+    private float twist;
+    private float massTwist;
+    private float twistRadius;
+    /** Inverse of the (regularized) coupling matrix of the normal rows, row-major; valid when {@code block}. */
+    private final float[] blockInverse = new float[Narrowphase.Contact.MAX_POINTS * Narrowphase.Contact.MAX_POINTS];
+    private boolean block;
 
     Pair() {
       this.manifold.wantPoints = true;
@@ -278,6 +291,12 @@ public class PhysicsSystem implements ISystem {
       for (int i = 0; i < this.solvable.size(); i++) {
         final var p = this.solvable.get(i);
         if (p.count > 0) {
+          if (p.central) { // cached per point: split evenly, summed again when warm starting
+            for (int k = 0; k < p.count; k++) {
+              p.jt1[k] = p.centralT1 / p.count;
+              p.jt2[k] = p.centralT2 / p.count;
+            }
+          }
           this.contactCache.store(p.key, p.manifold, p.count, p.jn, p.jt1, p.jt2, p.t1, p.t2);
         }
       }
@@ -880,6 +899,178 @@ public class PhysicsSystem implements ISystem {
       p.jt1[k] = 0f;
       p.jt2[k] = 0f;
     }
+    prepareBlock(p, n);
+    prepareCentralFriction(p, n, refA, refB);
+  }
+
+  /**
+   * Friction of a manifold with several points, applied at their centroid (plus a twist about the normal), instead of
+   * point by point: per-point friction rows, solved in turn, tilt a resting box a little every round.
+   */
+  private void prepareCentralFriction(Pair p, Vector3f n, Vector3f refA, Vector3f refB) {
+    p.central = p.count > 1;
+    p.centralT1 = 0f;
+    p.centralT2 = 0f;
+    p.twist = 0f;
+    if (!p.central) {
+      return;
+    }
+    final var c = this.tmpCenter.zero();
+    for (int k = 0; k < p.count; k++) {
+      c.add(p.manifold.point(k));
+    }
+    c.div(p.count);
+    float radius = 0f;
+    for (int k = 0; k < p.count; k++) {
+      radius += p.manifold.point(k).distance(c);
+    }
+    p.twistRadius = radius / p.count;
+    if (refA != null) {
+      p.rA[CENTER].set(c).sub(refA);
+    } else {
+      p.rA[CENTER].zero();
+    }
+    if (refB != null) {
+      p.rB[CENTER].set(c).sub(refB);
+    } else {
+      p.rB[CENTER].zero();
+    }
+    p.massT1[CENTER] = 1f / (p.invA + p.invB + angularTerm(p.ia, p.rA[CENTER], p.t1) + angularTerm(p.ib, p.rB[CENTER],
+        p.t1));
+    p.massT2[CENTER] = 1f / (p.invA + p.invB + angularTerm(p.ia, p.rA[CENTER], p.t2) + angularTerm(p.ib, p.rB[CENTER],
+        p.t2));
+    final float k = p.ia.transform(this.cross.set(n)).dot(n) + p.ib.transform(this.crossB.set(n)).dot(n);
+    p.massTwist = k > 1e-12f ? 1f / k : 0f;
+  }
+
+  private float normalSum(Pair p) {
+    float sum = 0f;
+    for (int k = 0; k < p.count; k++) {
+      sum += p.jn[k];
+    }
+    return sum;
+  }
+
+  /** One round of the centroid friction rows, bounded by the friction cone of the summed normal impulse. */
+  private void solveCentralFriction(Pair p) {
+    final float limit = p.mu * normalSum(p);
+    final var rv = this.relativeVelocity;
+    float dj = -p.massT1[CENTER] * pointVelocity(p, CENTER, rv).dot(p.t1);
+    float total = Math.max(-limit, Math.min(limit, p.centralT1 + dj));
+    dj = total - p.centralT1;
+    p.centralT1 = total;
+    applyImpulse(p, CENTER, p.t1, dj);
+
+    dj = -p.massT2[CENTER] * pointVelocity(p, CENTER, rv).dot(p.t2);
+    total = Math.max(-limit, Math.min(limit, p.centralT2 + dj));
+    dj = total - p.centralT2;
+    p.centralT2 = total;
+    applyImpulse(p, CENTER, p.t2, dj);
+
+    if (p.massTwist > 0f) {
+      final var n = p.manifold.normal();
+      final float spin = this.cross.set(p.wb).sub(p.wa).dot(n);
+      final float twistLimit = limit * p.twistRadius;
+      final float t = Math.max(-twistLimit, Math.min(twistLimit, p.twist - p.massTwist * spin));
+      final float d = t - p.twist;
+      p.twist = t;
+      if (p.invA > 0f) {
+        p.wa.sub(p.ia.transform(this.cross.set(n).mul(d)));
+      }
+      if (p.invB > 0f) {
+        p.wb.add(p.ib.transform(this.cross.set(n).mul(d)));
+      }
+    }
+  }
+
+  /**
+   * Couples the normal rows of a manifold: K[i][j] is how much an impulse at point j changes the approach speed at
+   * point i. Solving them together gives every point its fair share at once; solved one after another (in a fixed
+   * order) the first point always gets too much, and the resulting slight tilt is what made tall stacks creep. Four
+   * points on a face constrain only three degrees of freedom, so K is singular; a small regularization picks the
+   * evenly spread solution.
+   */
+  private void prepareBlock(Pair p, Vector3f n) {
+    final int m = p.count;
+    p.block = m > 1;
+    if (!p.block) {
+      return;
+    }
+    final float[] k = this.blockMatrix;
+    float trace = 0f;
+    for (int i = 0; i < m; i++) {
+      p.rA[i].cross(n, this.blockA[i]);
+      p.rB[i].cross(n, this.blockB[i]);
+    }
+    for (int i = 0; i < m; i++) {
+      p.ia.transform(this.cross.set(this.blockA[i]));
+      p.ib.transform(this.crossB.set(this.blockB[i]));
+      for (int j = 0; j < m; j++) {
+        k[i * m + j] = p.invA + p.invB + this.blockA[j].dot(this.cross) + this.blockB[j].dot(this.crossB);
+      }
+      trace += k[i * m + i];
+    }
+    final float epsilon = 1e-3f * trace / m;
+    for (int i = 0; i < m; i++) {
+      k[i * m + i] += epsilon;
+    }
+    p.block = invert(k, m, p.blockInverse);
+  }
+
+  private final float[] blockMatrix = new float[Narrowphase.Contact.MAX_POINTS * Narrowphase.Contact.MAX_POINTS];
+  private final float[] blockWork = new float[Narrowphase.Contact.MAX_POINTS * Narrowphase.Contact.MAX_POINTS * 2];
+  private final Vector3f[] blockA = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
+  private final Vector3f[] blockB = { new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f() };
+  private final float[] blockRhs = new float[Narrowphase.Contact.MAX_POINTS];
+
+  /** Gauss-Jordan inverse of an m x m matrix (row-major) into {@code out}; false if it is (nearly) singular. */
+  private boolean invert(float[] a, int m, float[] out) {
+    final float[] w = this.blockWork; // [a | I], m rows of 2m
+    final int cols = 2 * m;
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < m; j++) {
+        w[i * cols + j] = a[i * m + j];
+        w[i * cols + m + j] = i == j ? 1f : 0f;
+      }
+    }
+    for (int c = 0; c < m; c++) {
+      int pivot = c;
+      for (int r = c + 1; r < m; r++) {
+        if (Math.abs(w[r * cols + c]) > Math.abs(w[pivot * cols + c])) {
+          pivot = r;
+        }
+      }
+      final float pv = w[pivot * cols + c];
+      if (Math.abs(pv) < 1e-12f) {
+        return false;
+      }
+      if (pivot != c) {
+        for (int j = 0; j < cols; j++) {
+          final float t = w[c * cols + j];
+          w[c * cols + j] = w[pivot * cols + j];
+          w[pivot * cols + j] = t;
+        }
+      }
+      for (int j = 0; j < cols; j++) {
+        w[c * cols + j] /= pv;
+      }
+      for (int r = 0; r < m; r++) {
+        if (r != c) {
+          final float f = w[r * cols + c];
+          if (f != 0f) {
+            for (int j = 0; j < cols; j++) {
+              w[r * cols + j] -= f * w[c * cols + j];
+            }
+          }
+        }
+      }
+    }
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < m; j++) {
+        out[i * m + j] = w[i * cols + m + j];
+      }
+    }
+    return true;
   }
 
   /** Applies the impulses the pair's contacts ended the last step with. */
@@ -889,6 +1080,21 @@ public class PhysicsSystem implements ISystem {
     }
     final var n = p.manifold.normal();
     if (this.contactCache.lookup(p.key, p.manifold, p.jn, this.warmFriction)) {
+      if (p.central) {
+        float f1 = 0f;
+        float f2 = 0f;
+        for (int k = 0; k < p.count; k++) {
+          applyImpulse(p, k, n, p.jn[k]);
+          f1 += this.warmFriction[k].dot(p.t1);
+          f2 += this.warmFriction[k].dot(p.t2);
+        }
+        final float limit = p.mu * normalSum(p);
+        p.centralT1 = Math.max(-limit, Math.min(limit, f1));
+        p.centralT2 = Math.max(-limit, Math.min(limit, f2));
+        applyImpulse(p, CENTER, p.t1, p.centralT1);
+        applyImpulse(p, CENTER, p.t2, p.centralT2);
+        return;
+      }
       for (int k = 0; k < p.count; k++) {
         final float limit = p.mu * p.jn[k];
         p.jt1[k] = Math.max(-limit, Math.min(limit, this.warmFriction[k].dot(p.t1)));
@@ -952,7 +1158,10 @@ public class PhysicsSystem implements ISystem {
   private void solveConstraint(Pair p) {
     final var n = p.manifold.normal();
     final var rv = this.relativeVelocity;
-    for (int k = 0; k < p.count; k++) {
+    if (p.central) {
+      solveCentralFriction(p);
+    }
+    for (int k = 0; k < p.count && !p.central; k++) {
       final float limit = p.mu * p.jn[k];
       float dj = -p.massT1[k] * pointVelocity(p, k, rv).dot(p.t1);
       float total = Math.max(-limit, Math.min(limit, p.jt1[k] + dj));
@@ -966,6 +1175,9 @@ public class PhysicsSystem implements ISystem {
       p.jt2[k] = total;
       applyImpulse(p, k, p.t2, dj);
     }
+    if (p.block && solveBlock(p, n)) {
+      return;
+    }
     for (int k = 0; k < p.count; k++) {
       float dj = p.massN[k] * (p.bias[k] - pointVelocity(p, k, rv).dot(n));
       final float total = Math.max(p.jn[k] + dj, 0f);
@@ -974,6 +1186,36 @@ public class PhysicsSystem implements ISystem {
       applyImpulse(p, k, n, dj);
     }
   }
+
+  /**
+   * All normal rows of a manifold at once: the impulse change that brings every point to its target speed. Used when
+   * it keeps every accumulated impulse pushing; otherwise (a point lifting off) the rows are solved one by one.
+   */
+  private boolean solveBlock(Pair p, Vector3f n) {
+    final int m = p.count;
+    final float[] rhs = this.blockRhs;
+    for (int k = 0; k < m; k++) {
+      rhs[k] = p.bias[k] - pointVelocity(p, k, this.relativeVelocity).dot(n);
+    }
+    final float[] inv = p.blockInverse;
+    for (int i = 0; i < m; i++) {
+      float d = 0f;
+      for (int j = 0; j < m; j++) {
+        d += inv[i * m + j] * rhs[j];
+      }
+      if (p.jn[i] + d < 0f) {
+        return false;
+      }
+      this.blockDelta[i] = d;
+    }
+    for (int i = 0; i < m; i++) {
+      p.jn[i] += this.blockDelta[i];
+      applyImpulse(p, i, n, this.blockDelta[i]);
+    }
+    return true;
+  }
+
+  private final float[] blockDelta = new float[Narrowphase.Contact.MAX_POINTS];
 
   /** The solver moved an entity: later contact tests in this step must see its colliders at the new position. */
   private static void refreshColliders(Entity e) {
