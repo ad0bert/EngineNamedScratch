@@ -76,6 +76,11 @@ public class CapsuleCollider extends Collider {
   }
 
   @Override
+  float cachedInnerRadius() {
+    return this.capsule.r;
+  }
+
+  @Override
   Matrix4f cachedMatrix() {
     return this.matrix;
   }

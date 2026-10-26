@@ -230,6 +230,49 @@ public final class Narrowphase {
     return null;
   }
 
+  /**
+   * A sphere of radius {@code inflate} moving from {@code origin} along {@code dir} (normalized): the ray against the
+   * collider grown by that radius (boxes by their half sizes, which is slightly conservative at the corners). Returns
+   * null if it misses, starts inside, or moves away from the surface.
+   */
+  static RayResult sweepSphere(Collider c, Vector3f origin, Vector3f dir, float maxDistance, float inflate) {
+    RayResult r = null;
+    if (c instanceof BoxCollider bc) {
+      final var b = bc.world();
+      final var grown = new Box(b.c(), b.axes(), new float[] { b.half()[0] + inflate, b.half()[1] + inflate,
+          b.half()[2] + inflate });
+      r = rayBox(grown, origin, dir, maxDistance);
+    } else if (c instanceof SphereCollider sc) {
+      final var s = sc.world();
+      r = raySphere(new Sphere(s.c(), s.r + inflate), origin, dir, maxDistance);
+    } else if (c instanceof CapsuleCollider cc) {
+      final var cap = cc.world();
+      final var grown = new ShapeTests.Capsule();
+      grown.a.set(cap.a);
+      grown.b.set(cap.b);
+      grown.r = cap.r + inflate;
+      r = ShapeTests.rayCapsule(grown, origin, dir, maxDistance);
+    } else if (c instanceof MeshCollider m) {
+      // the centre's ray hits the surface; the sphere touches it earlier, by the radius over the approach angle
+      m.refresh();
+      final float[] hit = m.ray(origin, dir, maxDistance + 4f * inflate);
+      if (hit != null) {
+        final var n = new Vector3f();
+        m.normal((int) hit[1], n);
+        final float cos = Math.abs(n.dot(dir));
+        final float t = hit[0] - inflate / Math.max(cos, 0.25f);
+        if (n.dot(dir) > 0f) {
+          n.negate();
+        }
+        r = t >= 0f && t <= maxDistance ? new RayResult(t, n) : null;
+      }
+    }
+    if (r == null || r.distance() <= 0f || r.normal().dot(dir) >= 0f) {
+      return null;
+    }
+    return r;
+  }
+
   static RayResult raySphere(Sphere s, Vector3f o, Vector3f d, float maxDistance) {
     final var oc = new Vector3f(o).sub(s.c());
     final float b = oc.dot(d);

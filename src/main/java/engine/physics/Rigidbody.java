@@ -40,6 +40,11 @@ public class Rigidbody extends Component {
   public boolean lockRotation;
   /** Set to false for bodies that must never be put to sleep. */
   public boolean allowSleep = true;
+  /**
+   * Always sweep this body along its motion (see {@link PhysicsSystem#continuousCollision}); otherwise only steps
+   * longer than its inscribed radius are swept.
+   */
+  public boolean continuous;
 
   // kinematic velocity estimation (world space)
   final Vector3f lastPosition = new Vector3f();

@@ -159,6 +159,11 @@ public class MeshCollider extends Collider {
   }
 
   @Override
+  float cachedInnerRadius() {
+    return 0f; // a surface has no inside
+  }
+
+  @Override
   Matrix4f cachedMatrix() {
     return this.matrix;
   }

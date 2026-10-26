@@ -55,6 +55,11 @@ public class SphereCollider extends Collider {
   }
 
   @Override
+  float cachedInnerRadius() {
+    return this.sphere.r;
+  }
+
+  @Override
   Matrix4f cachedMatrix() {
     return this.matrix;
   }
