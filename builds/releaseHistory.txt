@@ -1,3 +1,16 @@
+Version 0.7.0
+Engine polish. Contains:
+- Physics: hinge angle limits (with restitution and softness, working with the motor) and ball-joint swing cone and
+  twist limits for ragdolls, solved with the contacts and allocation-free; cylinder and convex hull colliders
+  (quickhull with a vertex cap, solid mass and inertia, GJK/EPA with clipped face manifolds, raycasts, overlap
+  queries, continuous-collision sweeps, mesh contacts, compound bodies)
+- Rendering: sky (procedural gradient with a sun disc, or an equirectangular Radiance .hdr image) with image-based
+  lighting baked once on the GPU (irradiance, GGX-prefiltered reflections, BRDF table); RenderSettings.sky,
+  skyIntensity, skyRotation; HdrLoader
+- UI: copy, cut and paste (Ctrl+C/X/V, Ctrl+Insert, Shift+Delete/Insert) through a Clipboard interface (system
+  clipboard via AWT, in-memory when headless), word-wrapped Gui.paragraph and TextWrap
+- Demo: procedural sky reflected by the PBR spheres (-Ddemo.sky=file.hdr or none), sky light slider
+
 Version 0.6.0
 The remaining known limitations addressed. Contains:
 - Physics: capsule and triangle-mesh colliders (BVH, per-triangle contacts), ball/hinge (with motor)/distance joints
