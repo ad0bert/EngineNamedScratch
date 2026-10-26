@@ -18,6 +18,7 @@ import engine.core.Game;
 import engine.ecs.Entity;
 import engine.ecs.Spinner;
 import engine.input.FirstPersonController;
+import engine.input.Gamepad;
 import engine.messaging.IMessageReceiver;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
@@ -69,6 +70,8 @@ public class DemoGame implements Game {
     final var scene = engine.scene();
     engine.input().bind("spawn", KeyEvent.VK_F);
     engine.input().bind("poke", KeyEvent.VK_E);
+    engine.input().bindGamepad("spawn", Gamepad.BUTTON_RIGHT_BUMPER, Gamepad.BUTTON_X);
+    engine.input().bindGamepad("poke", Gamepad.BUTTON_A);
     this.thud = res.sound("gen:thud", ProceduralSounds.thud());
     this.whoosh = res.sound("gen:whoosh", ProceduralSounds.whoosh());
     this.click = res.sound("gen:click", ProceduralSounds.click());
@@ -388,7 +391,7 @@ public class DemoGame implements Game {
       }
     }, MessageQueue.COLLISION);
 
-    engine.addOverlay(this::drawHud);
+    engine.addOverlay((ui, width, height) -> drawHud(engine, ui, width, height));
 
     // a settings panel while the mouse is free (Esc); clicks on it do not recapture the mouse
     this.gui = new Gui(engine.input());
@@ -491,7 +494,7 @@ public class DemoGame implements Game {
     }
   }
 
-  private void drawHud(UiCanvas ui, int width, int height) {
+  private void drawHud(Engine engine, UiCanvas ui, int width, int height) {
     final float cx = width / 2f;
     final float cy = height / 2f;
     ui.drawRect(cx - 8, cy - 1, 16, 2, 1f, 1f, 1f, 0.8f);
@@ -500,7 +503,8 @@ public class DemoGame implements Game {
       ui.drawText(this.aim, cx + 15f, cy + 9f, 1.25f, 0f, 0f, 0f, 0.8f);
       ui.drawText(this.aim, cx + 14f, cy + 8f, 1.25f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings (Tab to navigate)";
+    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings (Tab to navigate)"
+        + (engine.input().firstGamepad() != null ? "  Pad: sticks, triggers, RB throw, A push" : "");
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);
   }

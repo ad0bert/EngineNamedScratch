@@ -37,8 +37,10 @@ import engine.ecs.Entity;
 import engine.ecs.ISystem;
 import engine.ecs.Scene;
 import engine.input.FirstPersonController;
+import engine.input.GamepadBackend;
 import engine.input.InputListener;
 import engine.input.InputState;
+import engine.input.jinput.JInputGamepads;
 import engine.messaging.IMessageService;
 import engine.messaging.MessageQueue;
 import engine.messaging.MessageService;
@@ -66,7 +68,7 @@ import lombok.extern.slf4j.Slf4j;
  * {@code engine.screenshot=file.png} saves the last frame before exiting (with {@code exitAfterFrames}) or, with
  * {@code engine.screenshotFrame=N}, frame N. A screenshot can also be requested with {@link #saveScreenshot}.
  * {@code engine.audio=false} turns sound off; without a sound device it is off anyway (the engine never fails to
- * start because of sound).
+ * start because of sound). {@code engine.gamepads=false} skips looking for gamepads.
  */
 @Slf4j
 public class Engine {
@@ -92,6 +94,7 @@ public class Engine {
 
   private GLWindow window;
   private Animator animator;
+  private volatile GamepadBackend gamepads = GamepadBackend.NONE;
   @Getter private RenderBackend backend;
   @Getter private ResourceManager resources;
   /** Sound: sources, one-shots, mixer volumes; silent if there is no sound device. */
@@ -124,6 +127,11 @@ public class Engine {
    */
   public void setClickCapturesMouse(BooleanSupplier when) {
     this.clickCaptures = when;
+  }
+
+  /** Looks for newly plugged-in gamepads at the next update (also done whenever the window regains focus). */
+  public void rescanGamepads() {
+    this.gamepads.rescan();
   }
 
   public void addSystem(ISystem system) {
@@ -162,6 +170,11 @@ public class Engine {
       }
     });
     this.window.addWindowListener(new WindowAdapter() {
+      @Override
+      public void windowGainedFocus(WindowEvent e) {
+        Engine.this.gamepads.rescan();
+      }
+
       @Override
       public void windowLostFocus(WindowEvent e) {
         Engine.this.input.releaseAll();
@@ -242,6 +255,7 @@ public class Engine {
       e.transform().snapshot(); // previous state for render interpolation
     }
     this.messages.dispatchPending();
+    this.gamepads.poll(this.input);
     if (this.input.wasActionPressed("release_mouse")) {
       captureMouse(false);
     }
@@ -279,6 +293,10 @@ public class Engine {
       Engine.this.audio = new AudioSystem(sound != null ? sound : new NullAudioBackend());
       Engine.this.resources = new ResourceManager(Engine.this.backend, Engine.this.audio.backend());
 
+      if (Boolean.parseBoolean(System.getProperty("engine.gamepads", "true"))) {
+        final var pads = JInputGamepads.open(Engine.this.input);
+        Engine.this.gamepads = pads != null ? pads : GamepadBackend.NONE;
+      }
       Engine.this.input.bind("release_mouse", KeyEvent.VK_ESCAPE);
       FirstPersonController.bindDefaults(Engine.this.input);
       Engine.this.addSystem(new ComponentUpdateSystem());
@@ -319,6 +337,7 @@ public class Engine {
     @Override
     public void dispose(GLAutoDrawable drawable) {
       Engine.this.game.shutdown(Engine.this);
+      Engine.this.gamepads.dispose();
       Engine.this.resources.dispose();
       Engine.this.backend.dispose();
     }
