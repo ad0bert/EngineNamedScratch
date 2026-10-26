@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 import javax.imageio.ImageIO;
@@ -74,6 +75,7 @@ public class Engine {
   private final FixedTimestep timestep;
   @Getter private final PhysicsSystem physics = new PhysicsSystem(this.messages);
   private final CountDownLatch closed = new CountDownLatch(1);
+  private final AtomicBoolean stopping = new AtomicBoolean();
   private final int exitAfterFrames = Integer.getInteger("engine.exitAfterFrames", 0);
   private volatile BooleanSupplier clickCaptures = () -> true;
   private volatile Path screenshot = System.getProperty("engine.screenshot") != null
@@ -197,9 +199,17 @@ public class Engine {
     }
   }
 
-  /** Requests shutdown; safe to call from any thread. */
+  /**
+   * Requests shutdown; safe to call from any thread, and more than once (only the first call counts). The animator is
+   * stopped before the window is destroyed, so no frame is drawn while the window goes away.
+   */
   public void stop() {
-    new Thread(() -> this.window.destroy(), "engine-stop").start();
+    if (this.stopping.compareAndSet(false, true)) {
+      new Thread(() -> {
+        this.animator.stop();
+        this.window.destroy();
+      }, "engine-stop").start();
+    }
   }
 
   public void captureMouse(boolean capture) {
