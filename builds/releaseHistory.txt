@@ -1,3 +1,19 @@
+Version 0.7.0
+Sound, gamepads, scene files and animation. Contains:
+- Audio: backend-agnostic AudioBackend with an OpenAL (JOAL) implementation and a silent fallback without a device;
+  AudioSource/AudioListener components, Doppler from rigidbody velocities, one-shots, mixer buses (master, music,
+  effects, UI), distance curves, a voice limit with priority/loudness stealing and virtual voices, ImpactSound from
+  collisions, WAV/AIFF/AU and Ogg Vorbis (JOrbis) with streaming music
+- Input: gamepads through JInput (radial stick and trigger dead zones, connect/disconnect, rescan on focus), actions
+  bound to keys, gamepad buttons and gamepad axes together; FirstPersonController takes sticks and triggers
+- Scenes: JSON scene files (entities, hierarchy, components, shared materials, resource keys), opt-in component
+  serializers (reflective FieldSerializer for public fields), prefabs instantiated any number of times
+- Animation: keyframe tracks with easing, slerp and cubic splines for transforms and arbitrary values, Animator
+  layers (cross-fade, weighted blend, tweens), glTF 2.0 loader (.gltf/.glb, PBR materials and textures, skins,
+  animations), GPU skinning in the scene and shadow passes
+- Demo: synthesized impact, throw, click, hum and wind sounds with volume sliders, gamepad controls, lamp-post
+  prefabs, F5 saves the scene, a keyframed cube instead of a Spinner, a pulsing glow, two skinned glTF tubes
+
 Version 0.6.0
 The remaining known limitations addressed. Contains:
 - Physics: capsule and triangle-mesh colliders (BVH, per-triangle contacts), ball/hinge (with motor)/distance joints

@@ -14,6 +14,7 @@ import lombok.Getter;
 public final class AnimationClip {
   @Getter private final String name;
   private final List<Channel> channels = new ArrayList<>();
+  private final List<Channel> view = Collections.unmodifiableList(this.channels); // no wrapper per call
   @Getter private float duration;
 
   public AnimationClip(String name) {
@@ -27,7 +28,7 @@ public final class AnimationClip {
   }
 
   public List<Channel> channels() {
-    return Collections.unmodifiableList(this.channels);
+    return this.view;
   }
 
   /** A clip with one transform channel on the animator's own entity going from {@code from} to {@code to}. */
