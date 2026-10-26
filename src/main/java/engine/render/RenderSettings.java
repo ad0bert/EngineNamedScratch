@@ -38,8 +38,17 @@ public class RenderSettings {
    */
   public boolean orderIndependentTransparency = Boolean
       .parseBoolean(System.getProperty("engine.orderIndependentTransparency", "true"));
-  /** Background colour (sRGB). */
+  /** Background colour (sRGB), where there is no {@link #sky}. */
   public final Vector3f clearColor = new Vector3f(0.53f, 0.7f, 0.9f);
+  /**
+   * The sky behind the scene and the source of image-based lighting (replaces the lights' flat ambient colour), or
+   * null for the plain {@link #clearColor} and flat ambient light.
+   */
+  public Sky sky;
+  /** Brightness multiplier of the sky and its lighting. */
+  public float skyIntensity = floatProperty("engine.skyIntensity", 1f);
+  /** Turns the sky about the vertical axis, degrees. */
+  public float skyRotation;
   /** Tint the shadow cascades (debugging). */
   public boolean debugCascades = Boolean.getBoolean("engine.debugCascades");
 

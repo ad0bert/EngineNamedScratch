@@ -35,6 +35,10 @@ public class InputState {
   public static final char KEY_DELETE = '\uE006';
   public static final char KEY_BACKTAB = '\uE007';
   public static final char KEY_SELECT_ALL = '\uE008';
+  /** Ctrl+C, Ctrl+X, Ctrl+V (also Ctrl+Insert, Shift+Delete, Shift+Insert, and Cmd on macOS). */
+  public static final char KEY_COPY = '\uE009';
+  public static final char KEY_CUT = '\uE00A';
+  public static final char KEY_PASTE = '\uE00B';
   /** Added to an arrow, Home or End key when Shift is held (extends the selection). */
   public static final char SHIFT = '\u0010';
 

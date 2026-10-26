@@ -134,6 +134,12 @@ public final class Narrowphase {
       out.normal.negate();
       return true;
     }
+    if (a instanceof CylinderCollider || a instanceof ConvexHullCollider || b instanceof CylinderCollider
+        || b instanceof ConvexHullCollider) {
+      final var sa = ConvexTests.shapeOf(a, false);
+      final var sb = ConvexTests.shapeOf(b, true);
+      return sa != null && sb != null && ConvexTests.collide(sa, sb, out, margin);
+    }
     if (a instanceof CapsuleCollider ca) {
       if (b instanceof CapsuleCollider cb) {
         return ShapeTests.capsuleCapsule(ca.cachedCapsule(), cb.cachedCapsule(), out, margin);
@@ -196,6 +202,9 @@ public final class Narrowphase {
     if (other instanceof CapsuleCollider c) {
       return ShapeTests.capsuleTriangle(c.cachedCapsule(), mesh, triangle, out, margin);
     }
+    if (other instanceof CylinderCollider || other instanceof ConvexHullCollider) {
+      return ConvexTests.triangle(ConvexTests.shapeOf(other, false), mesh, triangle, out, margin);
+    }
     return false; // mesh against mesh: not supported
   }
 
@@ -213,6 +222,12 @@ public final class Narrowphase {
     }
     if (c instanceof CapsuleCollider cap) {
       return ShapeTests.rayCapsule(cap.world(), origin, dir, maxDistance);
+    }
+    if (c instanceof CylinderCollider cyl) {
+      return CylinderCollider.ray(cyl.world(), origin, dir, maxDistance);
+    }
+    if (c instanceof ConvexHullCollider hull) {
+      return hull.world().ray(origin, dir, maxDistance, 0f);
     }
     if (c instanceof MeshCollider m) {
       m.refresh();
@@ -232,7 +247,8 @@ public final class Narrowphase {
 
   /**
    * A sphere of radius {@code inflate} moving from {@code origin} along {@code dir} (normalized): the ray against the
-   * collider grown by that radius (boxes by their half sizes, which is slightly conservative at the corners). Returns
+   * collider grown by that radius (boxes by their half sizes, cylinders by their radius and length, hulls by moving
+   * their faces out, which is slightly conservative at the corners and edges). Returns
    * null if it misses, starts inside, or moves away from the surface.
    */
   static RayResult sweepSphere(Collider c, Vector3f origin, Vector3f dir, float maxDistance, float inflate) {
@@ -252,6 +268,16 @@ public final class Narrowphase {
       grown.b.set(cap.b);
       grown.r = cap.r + inflate;
       r = ShapeTests.rayCapsule(grown, origin, dir, maxDistance);
+    } else if (c instanceof CylinderCollider cyl) {
+      final var s = cyl.world();
+      final var grown = new CylinderCollider.Shape();
+      grown.c.set(s.c);
+      grown.u.set(s.u);
+      grown.h = s.h + inflate;
+      grown.r = s.r + inflate;
+      r = CylinderCollider.ray(grown, origin, dir, maxDistance);
+    } else if (c instanceof ConvexHullCollider hull) {
+      r = hull.world().ray(origin, dir, maxDistance, inflate); // faces pushed out: conservative at the edges
     } else if (c instanceof MeshCollider m) {
       // the centre's ray hits the surface; the sphere touches it earlier, by the radius over the approach angle
       m.refresh();
@@ -353,6 +379,12 @@ public final class Narrowphase {
     }
     if (c instanceof CapsuleCollider cap) {
       return ShapeTests.sphereCapsule(s, cap.world(), scratch, 0f);
+    }
+    if (c instanceof CylinderCollider cyl) {
+      return ConvexTests.overlapsBall(cyl.world(), s.c(), s.r);
+    }
+    if (c instanceof ConvexHullCollider hull) {
+      return ConvexTests.overlapsBall(hull.world(), s.c(), s.r);
     }
     if (c instanceof MeshCollider m) {
       m.refresh();
@@ -630,8 +662,14 @@ public final class Narrowphase {
 
   /** Copies the candidates into the contact, keeping at most four that span the largest area. */
   static void reduce(Contact out, Scratch sc, int count) {
-    final float[] p = sc.candPos;
-    final float[] d = sc.candDepth;
+    reduce(out, sc.candPos, sc.candDepth, sc.taken, sc.nRef, count);
+  }
+
+  /**
+   * Like {@link #reduce(Contact, Scratch, int)} on any candidate arrays: positions {@code p}, depths {@code d},
+   * {@code taken} as scratch, {@code n} the normal the areas are measured about.
+   */
+  static void reduce(Contact out, float[] p, float[] d, boolean[] taken, Vector3f n, int count) {
     if (count <= Contact.MAX_POINTS) {
       out.count = count;
       for (int i = 0; i < count; i++) {
@@ -640,18 +678,18 @@ public final class Narrowphase {
       }
       return;
     }
-    java.util.Arrays.fill(sc.taken, 0, count, false);
+    java.util.Arrays.fill(taken, 0, count, false);
     int first = 0; // deepest point
     for (int i = 1; i < count; i++) {
       if (d[i] > d[first]) {
         first = i;
       }
     }
-    sc.taken[first] = true;
+    taken[first] = true;
     int second = -1; // farthest from it
     float far = -1f;
     for (int i = 0; i < count; i++) {
-      if (sc.taken[i]) {
+      if (taken[i]) {
         continue;
       }
       final float dx = p[i * 3] - p[first * 3];
@@ -663,9 +701,8 @@ public final class Narrowphase {
         second = i;
       }
     }
-    sc.taken[second] = true;
+    taken[second] = true;
     // the points on either side of that edge that enclose the largest signed areas
-    final var n = sc.nRef;
     final float ex = p[second * 3] - p[first * 3];
     final float ey = p[second * 3 + 1] - p[first * 3 + 1];
     final float ez = p[second * 3 + 2] - p[first * 3 + 2];
@@ -674,7 +711,7 @@ public final class Narrowphase {
     float maxArea = 0f;
     float minArea = 0f;
     for (int i = 0; i < count; i++) {
-      if (sc.taken[i]) {
+      if (taken[i]) {
         continue;
       }
       final float dx = p[i * 3] - p[first * 3];
