@@ -104,6 +104,7 @@ public final class RenderQueue {
   /** Renderers skipped by the last main-pass cull because their cells were occluded. */
   @Getter private int occluded;
   private int framesSinceValidation;
+  private long frame;
 
   public RenderQueue() {
     this(16f);
@@ -135,6 +136,7 @@ public final class RenderQueue {
   /** Refreshes the state of all renderers for this frame ({@code alpha}: interpolation between fixed steps). */
   public void collect(Scene scene, float alpha, Vector3f cameraPosition) {
     this.cameraPos.set(cameraPosition);
+    this.frame++;
     final var all = scene.components(MeshRenderer.class);
     this.candidates = all.size();
     if (all != this.lastAll) { // the scene hands out a new list whenever its renderers change
@@ -164,7 +166,7 @@ public final class RenderQueue {
     for (MeshRenderer r : all) {
       r.reconcileStamp = stamp;
       final boolean inGrid = r.gridId >= 0 && r.gridId < this.gridItems.size() && this.gridItems.get(r.gridId) == r;
-      if (r.isStaticGeometry()) {
+      if (r.isStaticGeometry() && r.skin == null) { // a skinned mesh moves with its joints: never static
         if (!inGrid || !r.stateValid) {
           insertStatic(r);
         }
@@ -250,6 +252,9 @@ public final class RenderQueue {
       finishState(r);
       r.stateValid = false;
     }
+    if (r.skin != null) { // the joints may move while the mesh's own transform stands still
+      r.skin.update(this.frame, alpha, r.model);
+    }
   }
 
   private static void finishState(MeshRenderer r) {
@@ -266,6 +271,10 @@ public final class RenderQueue {
         Math.abs(m.m02()) * hx + Math.abs(m.m12()) * hy + Math.abs(m.m22()) * hz);
     // a cube's sphere is 1.73 times its half size; only clearly longer or flatter shapes gain from a second test
     r.elongated = r.radius > 2f * Math.min(r.boxHalf.x, Math.min(r.boxHalf.y, r.boxHalf.z));
+    if (r.skin != null) { // posed away from the bind pose the mesh can leave its bind-pose bounds: be generous
+      r.radius *= 2f;
+      r.elongated = false;
+    }
   }
 
   /**
@@ -425,9 +434,9 @@ public final class RenderQueue {
     list.sort(FAR_TO_NEAR);
   }
 
-  /** True if both renderers can be drawn by one instanced call. */
+  /** True if both renderers can be drawn by one instanced call (never for skinned ones: each has its own pose). */
   public static boolean sameBatch(MeshRenderer a, MeshRenderer b, boolean byMaterial) {
-    return a.mesh == b.mesh && (!byMaterial || a.material == b.material);
+    return a.mesh == b.mesh && (!byMaterial || a.material == b.material) && a.skin == null && b.skin == null;
   }
 
   /** Writes model + normal matrix of {@code r} at instance slot {@code index} (absolute puts, position unchanged). */

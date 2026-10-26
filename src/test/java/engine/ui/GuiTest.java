@@ -48,7 +48,8 @@ class GuiTest {
   }
 
   private final InputState input = new InputState();
-  private final Gui gui = new Gui(this.input);
+  private final Clipboard clipboard = Clipboard.inMemory();
+  private final Gui gui = new Gui(this.input, this.clipboard);
   private FakeCanvas canvas = new FakeCanvas();
 
   // the panel is at 10,10, 200 wide; title bar 28 high (16 + 2 * 6), first widget at y = 44, widgets are 28 high
@@ -344,5 +345,60 @@ class GuiTest {
     this.input.mouseButton(InputState.BUTTON_LEFT, false);
     frame(ui);
     assertTrue(clicked[5], "scrolled into view and clickable");
+  }
+
+  // ---- clipboard and wrapping --------------------------------------------------------------------------------
+
+  private void type(char... keys) {
+    for (char c : keys) {
+      this.input.typed(c);
+    }
+  }
+
+  @Test
+  void copyFromOneFieldAndPasteIntoAnother() {
+    final String[] text = { "hello world", "" };
+    final Runnable ui = () -> {
+      text[0] = this.gui.textField("A", text[0]);
+      text[1] = this.gui.textField("B", text[1]);
+    };
+    frame(ui);
+    type('\t'); // focus A from the keyboard: everything selected
+    frame(ui);
+    type(InputState.KEY_COPY);
+    frame(ui);
+    assertEquals("hello world", this.clipboard.getText());
+    type('\t', InputState.KEY_PASTE, '!');
+    frame(ui);
+    assertEquals("hello world!", text[1]);
+    type(InputState.KEY_SELECT_ALL, InputState.KEY_CUT);
+    frame(ui);
+    assertEquals("", text[1]);
+    assertEquals("hello world!", this.clipboard.getText());
+  }
+
+  @Test
+  void pastingLinesIntoAFieldJoinsThemAndIntoAnAreaKeepsThem() {
+    final String[] text = { "", "" };
+    final Runnable ui = () -> {
+      text[0] = this.gui.textField("Field", text[0]);
+      text[1] = this.gui.textArea("Area", text[1], 3);
+    };
+    this.clipboard.setText("one\r\ntwo\tthree");
+    frame(ui);
+    type('\t', InputState.KEY_PASTE, '\t', InputState.KEY_PASTE);
+    frame(ui); // the tab before the second paste moves the focus: only that paste reaches the area
+    type(InputState.KEY_BACKTAB, InputState.KEY_PASTE);
+    frame(ui);
+    assertEquals("one two three", text[0]);
+    assertEquals("one\ntwo three", text[1]);
+  }
+
+  @Test
+  void paragraphsWrapAtWordsToThePanelWidth() {
+    // 200 px panel, 6 px padding: 188 px or 23 characters of 8 px per line
+    frame(() -> this.gui.paragraph("the quick brown fox jumps over the lazy dog and keeps on running"));
+    assertEquals(List.of("the quick brown fox", "jumps over the lazy dog", "and keeps on running"),
+        this.canvas.texts.subList(1, this.canvas.texts.size()));
   }
 }

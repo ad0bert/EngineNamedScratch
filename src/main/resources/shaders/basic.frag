@@ -63,6 +63,15 @@ uniform int uDebugCascades;
 // local light shadows: six layers per shadowed point light (+x -x +y -y +z -z), one per spot light
 uniform float uPointShadowTexel;               // 1 / layer size
 
+// image-based lighting from the sky (replaces uAmbient when uSky is 1)
+uniform int uSky;
+uniform samplerCube uIrradianceMap;            // diffuse irradiance / pi
+uniform samplerCube uPrefilteredMap;           // reflections, roughness = mip / uPrefilteredLevels
+uniform sampler2D uBrdfLut;                    // split-sum scale and bias by (n . v, roughness)
+uniform float uSkyIntensity;
+uniform vec2 uSkyRotation;                     // cos, sin of the sky's turn about +y
+uniform float uPrefilteredLevels;
+
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec4 fragWeight;      // transparency pass only
 
@@ -247,6 +256,24 @@ vec3 brdf(vec3 n, vec3 v, vec3 l, vec3 albedo, float metallic, float roughness) 
   return (diffuse + specular * PI) * ndotl;
 }
 
+vec3 toSky(vec3 d) {
+  return vec3(uSkyRotation.x * d.x + uSkyRotation.y * d.z, d.y, -uSkyRotation.y * d.x + uSkyRotation.x * d.z);
+}
+
+vec3 skyIrradiance(vec3 n) {
+  return texture(uIrradianceMap, toSky(n)).rgb * uSkyIntensity;
+}
+
+// Reflected sky light (split sum); reflections that point into the surface are faded out (no sky down there).
+vec3 skySpecular(vec3 n, vec3 v, vec3 geometric, vec3 f0, float roughness) {
+  vec3 r = reflect(-v, n);
+  float ndotv = max(dot(n, v), 1e-4);
+  vec2 ab = texture(uBrdfLut, vec2(ndotv, roughness)).rg;
+  vec3 light = textureLod(uPrefilteredMap, toSky(r), roughness * uPrefilteredLevels).rgb * uSkyIntensity;
+  float horizon = clamp(1.0 + dot(r, geometric), 0.0, 1.0);
+  return light * (f0 * ab.x + ab.y) * horizon * horizon;
+}
+
 void main() {
   vec3 geometric = normalize(vNormal);
   // light both sides so un-culled thin geometry never goes black
@@ -342,10 +369,20 @@ void main() {
   vec3 lit;
   if (uPbr == 1) {
     vec3 f0 = mix(vec3(uReflectance), albedo.rgb, metallic);
-    vec3 ambient = uAmbient * uMaterialAmbient;
-    lit = ambient * (albedo.rgb * (1.0 - metallic) + f0 * (1.0 - roughness) * 0.5) + specular + emissive;
+    if (uSky == 1) {
+      // Fresnel with roughness splits the sky's light between reflection and diffuse
+      float ndotv = max(dot(n, v), 1e-4);
+      vec3 f = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - ndotv, 5.0);
+      vec3 kd = (1.0 - f) * (1.0 - metallic);
+      lit = uMaterialAmbient * (kd * albedo.rgb * skyIrradiance(n) + skySpecular(n, v, geometric, f0, roughness))
+          + specular + emissive;
+    } else {
+      vec3 ambient = uAmbient * uMaterialAmbient;
+      lit = ambient * (albedo.rgb * (1.0 - metallic) + f0 * (1.0 - roughness) * 0.5) + specular + emissive;
+    }
   } else {
-    lit = albedo.rgb * (uAmbient * uMaterialAmbient + diffuse) + specular + emissive;
+    vec3 ambient = uSky == 1 ? skyIrradiance(n) : uAmbient;
+    lit = albedo.rgb * (ambient * uMaterialAmbient + diffuse) + specular + emissive;
   }
   if (uDebugCascades == 1 && uCascadeCount > 0) {
     vec3 tint[4] = vec3[4](vec3(1.0, 0.4, 0.4), vec3(0.4, 1.0, 0.4), vec3(0.4, 0.5, 1.0), vec3(1.0, 1.0, 0.4));

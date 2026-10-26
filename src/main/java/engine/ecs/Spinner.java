@@ -4,7 +4,8 @@ import org.joml.Vector3f;
 
 /** Rotates the entity continuously; driven by the fixed update, not by rendering. */
 public class Spinner extends Component {
-  private final Vector3f degreesPerSecond;
+  /** Turning speed about the local x, y and z axes. */
+  public final Vector3f degreesPerSecond;
 
   public Spinner(float x, float y, float z) {
     this.degreesPerSecond = new Vector3f(x, y, z);

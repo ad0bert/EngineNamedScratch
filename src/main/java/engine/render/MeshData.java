@@ -11,13 +11,25 @@ import org.joml.Vector3f;
  * derive them from the texture coordinates: xyz is the direction of increasing u, w (+1 or -1) the handedness of the
  * uv layout, so mirrored texture halves are lit correctly. A vertex whose triangles have no usable uvs gets a zero
  * tangent, and the shader then falls back to screen-space derivatives.
+ *
+ * <p>
+ * A skinned mesh also carries {@link #skin}: {@link #SKIN_FLOATS_PER_VERTEX} floats per vertex, four joint indices
+ * (whole numbers stored as floats) and their four weights; see {@link #withSkin} and {@link Skin}.
  */
-public record MeshData(float[] vertices, int[] indices, DrawMode drawMode, Vector3f min, Vector3f max) {
+public record MeshData(float[] vertices, int[] indices, DrawMode drawMode, Vector3f min, Vector3f max,
+    float[] skin) {
   public static final int FLOATS_PER_VERTEX = 12;
   public static final int STRIDE_BYTES = FLOATS_PER_VERTEX * Float.BYTES;
   /** Layout of the vertices given to the factory methods: position, normal, uv. */
   public static final int INPUT_FLOATS_PER_VERTEX = 8;
   public static final int TANGENT_OFFSET = 8;
+  /** Joint indices (4) and weights (4) per vertex of a skinned mesh. */
+  public static final int SKIN_FLOATS_PER_VERTEX = 8;
+
+  /** A mesh without skinning data. */
+  public MeshData(float[] vertices, int[] indices, DrawMode drawMode, Vector3f min, Vector3f max) {
+    this(vertices, indices, drawMode, min, max, null);
+  }
 
   public enum DrawMode {
     TRIANGLES, POINTS
@@ -141,6 +153,32 @@ public record MeshData(float[] vertices, int[] indices, DrawMode drawMode, Vecto
       out[o + TANGENT_OFFSET + 3] = w;
     }
     return out;
+  }
+
+  /**
+   * The same mesh with joint indices and weights ({@link #SKIN_FLOATS_PER_VERTEX} per vertex), for GPU skinning.
+   * Weights are normalized to sum to 1.
+   */
+  public MeshData withSkin(float[] skin) {
+    if (skin.length != vertexCount() * SKIN_FLOATS_PER_VERTEX) {
+      throw new IllegalArgumentException("need " + SKIN_FLOATS_PER_VERTEX + " skin floats per vertex");
+    }
+    final float[] s = skin.clone();
+    for (int v = 0; v < s.length; v += SKIN_FLOATS_PER_VERTEX) {
+      final float sum = s[v + 4] + s[v + 5] + s[v + 6] + s[v + 7];
+      if (sum > 0f) {
+        for (int k = 4; k < 8; k++) {
+          s[v + k] /= sum;
+        }
+      } else {
+        s[v + 4] = 1f; // unweighted vertices follow the first joint
+      }
+    }
+    return new MeshData(this.vertices, this.indices, this.drawMode, this.min, this.max, s);
+  }
+
+  public boolean isSkinned() {
+    return this.skin != null;
   }
 
   public int vertexCount() {

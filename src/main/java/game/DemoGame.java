@@ -1,18 +1,33 @@
 package game;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import com.jogamp.newt.event.KeyEvent;
 
+import engine.animation.AnimationClip;
+import engine.animation.AnimationLayer;
+import engine.animation.Animator;
+import engine.animation.Channel;
+import engine.animation.Easing;
+import engine.animation.Track;
+import engine.audio.AudioBus;
+import engine.audio.AudioClip;
+import engine.audio.AudioListener;
+import engine.audio.AudioSource;
+import engine.audio.ImpactSound;
 import engine.core.Engine;
 import engine.core.Game;
 import engine.ecs.Entity;
 import engine.ecs.Spinner;
 import engine.input.FirstPersonController;
+import engine.input.Gamepad;
 import engine.messaging.IMessageReceiver;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
@@ -30,20 +45,31 @@ import engine.render.Light;
 import engine.render.Material;
 import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
+import engine.render.Sky;
 import engine.render.UiCanvas;
+import engine.resources.HdrLoader;
+import engine.serialization.Prefab;
+import engine.serialization.SceneSerializer;
 import engine.ui.Gui;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * Sample scene exercising the engine: cascaded and point-light shadows, normal, height and specular maps, a cut-out
  * grate, instanced crates under physics, a turntable carrying crates, a compound body, an MTL-textured model,
- * transparency, points, a sprite, a jointed chain, a motorised hinge, a mesh-collider dome and a HUD. Press F to
- * throw a crate.
+ * transparency, points, a sprite, a jointed chain, a motorised hinge, a mesh-collider dome, synthesized sounds
+ * (impacts, throws, a humming light, wind) and a HUD. Press F to throw a crate.
  */
 @Slf4j
 public class DemoGame implements Game {
   private GpuMesh crateMesh;
   private Material crateMaterial;
+  private AudioClip thud;
+  private AudioClip whoosh;
+  private AudioClip click;
+  private final SceneSerializer serializer = new SceneSerializer();
+  private Animator dancer;
+  private float danceTime;
+  private boolean bending;
   private Entity player;
   private Entity turntable;
   private float turntableSpeed = 0.6f;
@@ -61,16 +87,24 @@ public class DemoGame implements Game {
     final var scene = engine.scene();
     engine.input().bind("spawn", KeyEvent.VK_F);
     engine.input().bind("poke", KeyEvent.VK_E);
+    engine.input().bind("save_scene", KeyEvent.VK_F5);
+    engine.input().bindGamepad("spawn", Gamepad.BUTTON_RIGHT_BUMPER, Gamepad.BUTTON_X);
+    engine.input().bindGamepad("poke", Gamepad.BUTTON_A);
+    this.thud = res.sound("gen:thud", ProceduralSounds.thud());
+    this.whoosh = res.sound("gen:whoosh", ProceduralSounds.whoosh());
+    this.click = res.sound("gen:click", ProceduralSounds.click());
 
     final var sun = new Entity("sun");
     sun.transform().setEulerDegrees(-50f, -30f, 0f);
     final var sunLight = sun.add(new Light());
     sunLight.shadowDistance = 70f; // three cascades reach 70 m from the camera
     scene.add(sun);
+    setUpSky(engine);
 
     this.player = new Entity("player");
     this.player.transform().position().set(0f, 1.5f, 8f);
     this.player.add(new Camera());
+    this.player.add(new AudioListener());
     final var controller = this.player.add(new FirstPersonController(engine.input()));
     this.controller = controller;
     // -Ddemo.camera=x,y,z,yaw,pitch starts somewhere else (handy for screenshots)
@@ -102,7 +136,15 @@ public class DemoGame implements Game {
 
     final var cube = new Entity("cube");
     cube.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), new Material(res.texture("textures/cubeFace.png"))));
-    cube.add(new Spinner(20f, 35f, 10f));
+    // keyframed instead of a Spinner: it bobs (eased, back and forth) while it turns (slerped rotation keys)
+    final var bob = Track.linear(new float[] { 0f, 1.6f }, new float[] { 0f, 0f, 0f, 0f, 0.6f, 0f }, 3)
+        .withEasing(Easing.SINE_IN_OUT);
+    final var turn = new AnimationClip("turn").add(Channel.transform("", Channel.Property.ROTATION,
+        Track.linear(new float[] { 0f, 2f, 4f, 6f }, turnKeys(), 4)));
+    final var cubeAnimator = cube.add(new Animator());
+    cubeAnimator.play(turn);
+    cubeAnimator.blend(new AnimationClip("bob").add(Channel.transform("", Channel.Property.POSITION, bob)), 1f,
+        AnimationLayer.Loop.PING_PONG);
     cube.add(new BoxCollider(new Vector3f(1f)));
     scene.add(cube);
 
@@ -157,9 +199,30 @@ public class DemoGame implements Game {
     moonMaterial.emissive.set(1f, 0.8f, 0.4f); // glows on its own
     final var moonRenderer = moon.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), moonMaterial));
     moonRenderer.castShadows = false; // the light sits inside it
+    // its glow pulses: a tween of a material colour through a custom channel
+    moon.add(new Animator()).tween(v -> moonMaterial.emissive.set(v[0], v[1], v[2]), new float[] { 1f, 0.8f, 0.4f },
+        new float[] { 3f, 2.2f, 0.9f }, 0.8f, Easing.QUAD_IN_OUT, AnimationLayer.Loop.PING_PONG);
     final var moonLight = moon.add(Light.point(1f, 0.6f, 0.2f, 1.6f, 9f));
     moonLight.castShadows = true; // the spinning cube throws a moving shadow
+    // and it hums: a looping spatial sound that circles the listener (panning, Doppler)
+    final var hum = moon.add(new AudioSource(res.sound("gen:hum", ProceduralSounds.hum())));
+    hum.loop = true;
+    hum.playOnStart = true;
+    hum.volume = 0.35f;
+    hum.minDistance = 1.5f;
+    hum.maxDistance = 30f;
     scene.add(moon);
+
+    // a quiet wind bed on the music bus, not positioned
+    final var ambience = new Entity("ambience");
+    final var wind = ambience.add(new AudioSource(res.sound("gen:wind", ProceduralSounds.wind())));
+    wind.spatial = false;
+    wind.loop = true;
+    wind.bus = AudioBus.MUSIC;
+    wind.volume = 0.4f;
+    wind.priority = 10; // keeps its voice however many crates clatter
+    wind.playOnStart = true;
+    scene.add(ambience);
 
     // a cut-out grate: its holes are discarded in the scene and in the shadow maps
     final var grateMaterial = new Material(res.texture("gen:grate", ProceduralTextures.grate(128, 6)));
@@ -194,7 +257,7 @@ public class DemoGame implements Game {
     scene.add(glass);
 
     // many identical crates: one mesh + one material, so they render as a single instanced draw call
-    this.crateMesh = res.mesh(MeshFactory.cube(0.5f));
+    this.crateMesh = res.shape("cube:0.5"); // a keyed shape, so saved scenes can refer to it
     this.crateMaterial = new Material(res.texture("textures/cubeFace.png"));
     for (int x = -3; x < 3; x++) {
       for (int z = 0; z < 6; z++) {
@@ -326,6 +389,29 @@ public class DemoGame implements Game {
     dome.add(new MeshCollider(domeMesh));
     scene.add(dome);
 
+    // two skinned, animated tubes from a glTF file: one bends, the other cross-fades between twisting and bending
+    // (see update) with a cubic-spline pulse blended in at half weight
+    final var tube = res.gltf("models/tube.glb");
+    final var bender = tube.instantiate(scene);
+    bender.transform().position().set(-2.6f, -1f, 1.2f);
+    bender.get(Animator.class).play("bend", AnimationLayer.Loop.LOOP);
+    final var dancer = tube.instantiate(scene);
+    dancer.transform().position().set(2.6f, -1f, 1.2f);
+    this.dancer = dancer.get(Animator.class);
+    this.dancer.play("twist", AnimationLayer.Loop.LOOP);
+    this.dancer.blend(this.dancer.clip("pulse"), 0.5f, AnimationLayer.Loop.PING_PONG);
+
+    // lamp posts from a prefab file (prefabs/lamp-post.json): three instances sharing their materials
+    try {
+      final var lampPost = Prefab.load("prefabs/lamp-post.json", this.serializer);
+      final var ctx = engine.serialization();
+      lampPost.instantiate(scene, ctx, new Vector3f(-3.5f, -1f, -4f), null);
+      lampPost.instantiate(scene, ctx, new Vector3f(3.5f, -1f, -4f), null);
+      lampPost.instantiate(scene, ctx, new Vector3f(0f, -1f, -9f), null);
+    } catch (IOException | IllegalArgumentException e) {
+      log.warn("Could not create the lamp posts: {}", e.getMessage());
+    }
+
     // static scenery: cached matrices and grid-based culling; only the pillars near the view cost anything
     final var pillarMesh = res.mesh(MeshFactory.cube(0.5f));
     final var stone = new Material().color(0.6f, 0.58f, 0.55f, 1f);
@@ -358,12 +444,35 @@ public class DemoGame implements Game {
       }
     }, MessageQueue.COLLISION);
 
-    engine.addOverlay(this::drawHud);
+    engine.addOverlay((ui, width, height) -> drawHud(engine, ui, width, height));
+    if (System.getProperty("demo.saveScene") != null) { // -Ddemo.saveScene=file.json: what F5 does, at start
+      saveScene(engine, Path.of(System.getProperty("demo.saveScene")));
+    }
 
     // a settings panel while the mouse is free (Esc); clicks on it do not recapture the mouse
     this.gui = new Gui(engine.input());
     engine.setClickCapturesMouse(() -> !this.gui.wantsMouse());
     engine.addOverlay((ui, width, height) -> drawPanel(engine, ui, width));
+  }
+
+  /**
+   * A sky that lights the scene (the metal spheres reflect it): procedural by default, {@code -Ddemo.sky=file.hdr}
+   * for an HDR environment image, {@code -Ddemo.sky=none} for the plain background colour and flat ambient light.
+   */
+  private static void setUpSky(Engine engine) {
+    final var choice = System.getProperty("demo.sky", "procedural");
+    final var settings = engine.backend().settings();
+    if (choice.equals("none")) {
+      return;
+    }
+    settings.sky = Sky.procedural();
+    if (!choice.equals("procedural")) {
+      try (var in = java.nio.file.Files.newInputStream(java.nio.file.Path.of(choice))) {
+        settings.sky = Sky.image(HdrLoader.load(in));
+      } catch (java.io.IOException e) {
+        log.warn("cannot read sky {}: {}; using the procedural sky", choice, e.toString());
+      }
+    }
   }
 
   private void drawPanel(Engine engine, UiCanvas ui, int width) {
@@ -379,9 +488,11 @@ public class DemoGame implements Game {
         final var t = this.player.transform();
         final var forward = t.forward(new Vector3f());
         spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), forward.mul(10f));
+        engine.audio().play2D(this.click, 0.6f, AudioBus.UI);
       }
       if (g.button("Wake all")) {
         engine.scene().components(Rigidbody.class).forEach(Rigidbody::wakeUp);
+        engine.audio().play2D(this.click, 0.6f, AudioBus.UI);
       }
       settings.occlusionCulling = g.checkbox("Occlusion culling", settings.occlusionCulling);
       settings.maxPointShadows = g.checkbox("Point light shadows", settings.maxPointShadows > 0) ? 4 : 0;
@@ -391,9 +502,18 @@ public class DemoGame implements Game {
       settings.orderIndependentTransparency = g.checkbox("OIT", settings.orderIndependentTransparency);
       settings.exposure = g.slider("Exposure", settings.exposure, 0.2f, 3f);
       settings.bloomStrength = g.slider("Bloom", settings.bloomStrength, 0f, 0.5f);
+      settings.skyIntensity = g.slider("Sky light", settings.skyIntensity, 0f, 3f);
       g.space(4f);
+      final var mixer = engine.audio().mixer();
+      g.row(2);
+      mixer.setVolume(AudioBus.MASTER, g.slider("Volume", mixer.volume(AudioBus.MASTER), 0f, 1f));
+      mixer.setVolume(AudioBus.MUSIC, g.slider("Wind", mixer.volume(AudioBus.MUSIC), 0f, 1f));
+      g.row(2);
+      mixer.setVolume(AudioBus.EFFECTS, g.slider("Effects", mixer.volume(AudioBus.EFFECTS), 0f, 1f));
+      mixer.setVolume(AudioBus.UI, g.slider("UI", mixer.volume(AudioBus.UI), 0f, 1f));
+      g.row(2);
       engine.physics().gravity.y = -g.slider("Gravity", -engine.physics().gravity.y, 0f, 20f);
-      this.turntableSpeed = g.slider("Turntable speed", this.turntableSpeed, -3f, 3f);
+      this.turntableSpeed = g.slider("Turntable", this.turntableSpeed, -3f, 3f);
       this.playerName = g.textField("Name", this.playerName);
       this.notes = g.textArea("Notes (Enter for a new line)##notes", this.notes, 2);
       g.label("Player collisions:");
@@ -417,19 +537,57 @@ public class DemoGame implements Game {
     crate.add(new MeshRenderer(this.crateMesh, this.crateMaterial));
     crate.add(new BoxCollider(0.5f, 0.5f, 0.5f));
     final var body = crate.add(new Rigidbody());
+    crate.add(new ImpactSound(this.thud)).volume = 0.8f; // louder for harder hits
     body.velocity.set(velocity);
     body.continuous = velocity.lengthSquared() > 0f; // thrown crates do not tunnel through thin walls
     engine.scene().add(crate);
   }
 
+  /** Quaternions (x, y, z, w) turning a full circle about a tilted axis in three steps. */
+  private static float[] turnKeys() {
+    final var axis = new Vector3f(0.3f, 1f, 0.2f).normalize();
+    final float[] keys = new float[16];
+    final var q = new Quaternionf();
+    for (int i = 0; i < 4; i++) {
+      q.fromAxisAngleRad(axis, (float) (i * 2 * Math.PI / 3));
+      keys[i * 4] = q.x;
+      keys[i * 4 + 1] = q.y;
+      keys[i * 4 + 2] = q.z;
+      keys[i * 4 + 3] = q.w;
+    }
+    return keys;
+  }
+
+  private void saveScene(Engine engine, Path file) {
+    try {
+      this.serializer.save(engine.scene(), engine.serialization(), file);
+      log.info("Saved the scene to {}", file.toAbsolutePath());
+    } catch (IOException e) {
+      log.warn("Could not save the scene: {}", e.getMessage());
+    }
+  }
+
   @Override
   public void update(Engine engine, double dt) {
     this.turntable.transform().rotation().rotateY((float) dt * this.turntableSpeed);
+    this.danceTime += (float) dt;
+    if (this.danceTime > 3f) { // every three seconds the right tube changes its dance, blending over half a second
+      this.danceTime = 0f;
+      this.bending = !this.bending;
+      final var pulse = this.dancer.layers().get(this.dancer.layers().size() - 1);
+      this.dancer.crossFade(this.dancer.clip(this.bending ? "bend" : "twist"), 0.5f, AnimationLayer.Loop.LOOP);
+      this.dancer.remove(pulse); // keep the pulse on top, at its weight
+      this.dancer.blend(this.dancer.clip("pulse"), 0.5f, AnimationLayer.Loop.PING_PONG);
+    }
     this.controller.setEnabled(!this.gui.wantsKeyboard()); // typing a name must not walk around
     final var t = this.player.transform();
     final var forward = t.forward(new Vector3f());
+    if (engine.input().wasActionPressed("save_scene")) { // F5: everything with a serializer, as JSON
+      saveScene(engine, Path.of("demo-scene.json"));
+    }
     if (engine.input().wasActionPressed("spawn")) {
       spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(18f));
+      engine.audio().play(this.whoosh, t.position().fma(0.8f, forward, new Vector3f()), 0.7f, 1f, AudioBus.EFFECTS, 1);
     }
 
     // what is the crosshair pointing at? E pushes it (wakes sleeping bodies)
@@ -449,7 +607,7 @@ public class DemoGame implements Game {
     }
   }
 
-  private void drawHud(UiCanvas ui, int width, int height) {
+  private void drawHud(Engine engine, UiCanvas ui, int width, int height) {
     final float cx = width / 2f;
     final float cy = height / 2f;
     ui.drawRect(cx - 8, cy - 1, 16, 2, 1f, 1f, 1f, 0.8f);
@@ -458,7 +616,8 @@ public class DemoGame implements Game {
       ui.drawText(this.aim, cx + 15f, cy + 9f, 1.25f, 0f, 0f, 0f, 0.8f);
       ui.drawText(this.aim, cx + 14f, cy + 8f, 1.25f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings (Tab to navigate)";
+    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  F5 save scene  Esc settings"
+        + (engine.input().firstGamepad() != null ? "  Pad: sticks, triggers, RB throw, A push" : "");
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);
   }
