@@ -1,5 +1,6 @@
 package engine.physics;
 
+import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
@@ -51,6 +52,25 @@ public class SphereCollider extends Collider {
   @Override
   void cachedCenter(Vector3f dest) {
     dest.set(this.sphere.c());
+  }
+
+  @Override
+  Matrix4f cachedMatrix() {
+    return this.matrix;
+  }
+
+  @Override
+  float cachedVolume() {
+    final float r = this.sphere.r;
+    return 4.18879f * r * r * r;
+  }
+
+  @Override
+  void addCachedInertia(float mass, Matrix3f dest) {
+    final float i = 0.4f * mass * this.sphere.r * this.sphere.r;
+    dest.m00 += i;
+    dest.m11 += i;
+    dest.m22 += i;
   }
 
   @Override

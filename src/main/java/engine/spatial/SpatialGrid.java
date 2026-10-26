@@ -266,6 +266,28 @@ public final class SpatialGrid {
     return this.cells.size();
   }
 
+  /** Integer cell coordinate of a world coordinate. */
+  public int cellCoordinate(float v) {
+    return cell(v);
+  }
+
+  /** Ids registered in a cell (do not modify), or null if the cell is empty. */
+  public IntList cellAt(int cx, int cy, int cz) {
+    return this.cells.get(key(cx, cy, cz));
+  }
+
+  /**
+   * Lowest cell coordinate along an axis (0 x, 1 y, 2 z) of everything inserted since the last clear; together with
+   * {@link #maxCell} it bounds all occupied cells. Meaningless while {@link #occupiedCells()} is 0.
+   */
+  public int minCell(int axis) {
+    return this.boundsMin[axis];
+  }
+
+  public int maxCell(int axis) {
+    return this.boundsMax[axis];
+  }
+
   /**
    * Visits the occupied cells that may overlap the box. When the box covers fewer grid cells than are occupied, only
    * those coordinates are looked up (clamped to the extent of everything ever inserted); otherwise every occupied

@@ -7,10 +7,12 @@ import org.joml.Vector3f;
 import engine.ecs.Component;
 
 /**
- * Makes an entity move under {@link PhysicsSystem}: gravity, damping and collision response, including rotation. A
- * body turns about the centre of its first non-trigger collider, using the inertia of that shape (box or sphere);
- * set {@link #lockRotation} to keep it upright. A {@code kinematic} body is moved by game code (e.g. the player); it
- * pushes dynamic bodies but is never pushed itself and does not carry spin. Entities with a collider and no
+ * Makes an entity move under {@link PhysicsSystem}: gravity, damping and collision response, including rotation. The
+ * mass is spread over all non-trigger colliders of the entity in proportion to their volume, so a body made of
+ * several boxes and spheres turns about their common centre of mass with the matching inertia; set
+ * {@link #lockRotation} to keep it upright. A {@code kinematic} body is moved (and turned) by game code, e.g. the
+ * player or a platform; its velocity and spin are estimated from that motion, so it pushes dynamic bodies, carries
+ * what rests on it and drags it along when it turns, but it is never pushed itself. Entities with a collider and no
  * rigidbody are static.
  *
  * <p>
@@ -41,6 +43,7 @@ public class Rigidbody extends Component {
 
   // kinematic velocity estimation (world space)
   final Vector3f lastPosition = new Vector3f();
+  final Quaternionf lastRotation = new Quaternionf();
   boolean hasLastPosition;
 
   // sleeping
@@ -52,6 +55,7 @@ public class Rigidbody extends Component {
 
   // solver data, refreshed once per step (see PhysicsSystem#prepare)
   final Matrix3f invInertiaWorld = new Matrix3f();
+  final Matrix3f inertiaWorld = new Matrix3f();
   final Vector3f centerOfMass = new Vector3f();
   int preparedStep = -1;
 
