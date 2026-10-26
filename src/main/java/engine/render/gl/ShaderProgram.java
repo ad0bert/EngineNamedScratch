@@ -94,6 +94,10 @@ final class ShaderProgram {
     gl.glUniform3f(loc(gl, name), v.x, v.y, v.z);
   }
 
+  void set(GL3 gl, String name, float x, float y, float z) {
+    gl.glUniform3f(loc(gl, name), x, y, z);
+  }
+
   void set(GL3 gl, String name, Vector4f v) {
     gl.glUniform4f(loc(gl, name), v.x, v.y, v.z, v.w);
   }
@@ -124,6 +128,20 @@ final class ShaderProgram {
     }
     this.bufArray.position(0).limit(count * 16);
     gl.glUniformMatrix4fv(loc(gl, name), count, false, this.bufArray);
+  }
+
+  /** Uploads {@code count} ints to an {@code int name[N]} uniform array. */
+  void setIntArray(GL3 gl, String name, int[] data, int count) {
+    if (count > 0) {
+      gl.glUniform1iv(loc(gl, name), count, data, 0);
+    }
+  }
+
+  /** Uploads {@code count} vec2s to a {@code vec2 name[N]} uniform array. */
+  void setVec2Array(GL3 gl, String name, float[] data, int count) {
+    if (count > 0) {
+      gl.glUniform2fv(loc(gl, name), count, data, 0);
+    }
   }
 
   /** Uploads the first {@code count} floats to a {@code float name[N]} uniform array. */

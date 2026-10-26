@@ -27,10 +27,12 @@ import engine.render.Material;
 import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
 import engine.render.UiCanvas;
+import engine.ui.Gui;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Sample scene exercising the engine: shadows, two light types, instanced crates under physics, an MTL-textured model,
+ * Sample scene exercising the engine: cascaded and point-light shadows, normal, height and specular maps, a cut-out
+ * grate, instanced crates under physics, a turntable carrying crates, a compound body, an MTL-textured model,
  * transparency, points, a sprite and a HUD. Press F to throw a crate.
  */
 @Slf4j
@@ -38,7 +40,12 @@ public class DemoGame implements Game {
   private GpuMesh crateMesh;
   private Material crateMaterial;
   private Entity player;
+  private Entity turntable;
+  private float turntableSpeed = 0.6f;
   private String aim = "";
+  private Gui gui;
+  private FirstPersonController controller;
+  private String playerName = "Player";
 
   @Override
   public void init(Engine engine) {
@@ -56,7 +63,15 @@ public class DemoGame implements Game {
     this.player = new Entity("player");
     this.player.transform().position().set(0f, 1.5f, 8f);
     this.player.add(new Camera());
-    this.player.add(new FirstPersonController(engine.input()));
+    final var controller = this.player.add(new FirstPersonController(engine.input()));
+    this.controller = controller;
+    // -Ddemo.camera=x,y,z,yaw,pitch starts somewhere else (handy for screenshots)
+    final var start = System.getProperty("demo.camera");
+    if (start != null) {
+      final var v = start.split(",");
+      this.player.transform().position().set(Float.parseFloat(v[0]), Float.parseFloat(v[1]), Float.parseFloat(v[2]));
+      controller.setLook(v.length > 3 ? Float.parseFloat(v[3]) : 0f, v.length > 4 ? Float.parseFloat(v[4]) : 0f);
+    }
     this.player.add(new SphereCollider(0.4f));
     final var playerBody = this.player.add(new Rigidbody());
     playerBody.kinematic = true;
@@ -105,11 +120,15 @@ public class DemoGame implements Game {
     box.add(new BoxCollider(boxModel.halfExtents()));
     scene.add(box);
 
-    // a normal-mapped brick wall (generated in code); the orbiting light below sweeps across its relief
+    // a brick wall (generated in code) with normal, height (parallax) and specular maps; the orbiting light below
+    // sweeps across its relief
     final var bricks = ProceduralTextures.bricks(256);
     final var brickMaterial = new Material(res.texture("gen:bricks-albedo", bricks.albedo()));
     brickMaterial.normalMap = res.texture("gen:bricks-normal", bricks.normal());
-    brickMaterial.specular = 0.15f;
+    brickMaterial.heightMap = res.texture("gen:bricks-height", bricks.height());
+    brickMaterial.heightScale = 0.03f;
+    brickMaterial.specularMap = res.texture("gen:bricks-gloss", bricks.specular());
+    brickMaterial.specular = 0.5f;
     final var wall = new Entity("wall");
     wall.transform().position().set(-6f, 0.5f, -2f);
     wall.transform().setEulerDegrees(0f, 90f, 0f); // the quad faces +Z; turn it to face +X, towards the scene
@@ -126,11 +145,22 @@ public class DemoGame implements Game {
     moon.transform().setParent(pivot.transform());
     moon.transform().position().set(3.5f, 0f, 0f);
     moon.transform().scale().set(0.3f);
-    final var moonMaterial = new Material().color(1f, 0.85f, 0.4f, 1f).unlit();
+    final var moonMaterial = new Material().color(1f, 0.85f, 0.4f, 1f);
+    moonMaterial.emissive.set(1f, 0.8f, 0.4f); // glows on its own
     final var moonRenderer = moon.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), moonMaterial));
-    moonRenderer.castShadows = false;
-    moon.add(Light.point(1f, 0.6f, 0.2f, 1.1f, 8f));
+    moonRenderer.castShadows = false; // the light sits inside it
+    final var moonLight = moon.add(Light.point(1f, 0.6f, 0.2f, 1.6f, 9f));
+    moonLight.castShadows = true; // the spinning cube throws a moving shadow
     scene.add(moon);
+
+    // a cut-out grate: its holes are discarded in the scene and in the shadow maps
+    final var grateMaterial = new Material(res.texture("gen:grate", ProceduralTextures.grate(128, 6)));
+    grateMaterial.alphaCutoff = 0.5f;
+    final var grate = new Entity("grate");
+    grate.transform().position().set(6f, 0.5f, 3f);
+    grate.transform().setEulerDegrees(0f, -30f, 0f);
+    grate.add(new MeshRenderer(res.mesh(MeshFactory.quad(3f, 3f)), grateMaterial)).setStaticGeometry(true);
+    scene.add(grate);
 
     final List<Vector3f> ring = new ArrayList<>();
     for (int i = 0; i < 48; i++) {
@@ -167,6 +197,49 @@ public class DemoGame implements Game {
       }
     }
 
+    // a kinematic turntable turned by code (see update): the crates on it ride along
+    this.turntable = new Entity("turntable");
+    this.turntable.transform().position().set(9f, -0.75f, -6f);
+    this.turntable.transform().scale().set(2.5f, 0.25f, 2.5f);
+    this.turntable.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), new Material().color(0.3f, 0.3f, 0.35f, 1f)));
+    this.turntable.add(new BoxCollider(1f, 1f, 1f));
+    this.turntable.add(new Rigidbody()).kinematic = true;
+    scene.add(this.turntable);
+    for (int i = 0; i < 3; i++) {
+      spawnCrate(engine, new Vector3f(9f + 1.6f * (i - 1), 0f, -5f + (i == 1 ? -1.2f : 0f)), new Vector3f());
+    }
+
+    // a compound body: two spheres and a bar on one rigidbody, turning about their common centre of mass
+    final var ballMesh = res.mesh(MeshFactory.sphere(1f, 24, 12));
+    final var steel = new Material().color(0.75f, 0.75f, 0.8f, 1f);
+    steel.specular = 0.8f;
+    steel.shininess = 64f;
+    final var dumbbell = new Entity("dumbbell");
+    dumbbell.transform().position().set(-9f, 3f, 4f);
+    dumbbell.transform().setEulerDegrees(0f, 30f, 20f);
+    final var big = new Entity("dumbbell-big");
+    big.transform().setParent(dumbbell.transform());
+    big.transform().position().set(-1f, 0f, 0f);
+    big.transform().scale().set(0.6f);
+    big.add(new MeshRenderer(ballMesh, steel));
+    final var small = new Entity("dumbbell-small");
+    small.transform().setParent(dumbbell.transform());
+    small.transform().position().set(1f, 0f, 0f);
+    small.transform().scale().set(0.35f);
+    small.add(new MeshRenderer(ballMesh, steel));
+    final var bar = new Entity("dumbbell-bar");
+    bar.transform().setParent(dumbbell.transform());
+    bar.transform().scale().set(1f, 0.08f, 0.08f);
+    bar.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), steel));
+    dumbbell.add(new SphereCollider(0.6f)).offset.set(-1f, 0f, 0f);
+    dumbbell.add(new SphereCollider(0.35f)).offset.set(1f, 0f, 0f);
+    dumbbell.add(new BoxCollider(1f, 0.08f, 0.08f));
+    dumbbell.add(new Rigidbody()).mass = 3f;
+    scene.add(dumbbell);
+    scene.add(big);
+    scene.add(small);
+    scene.add(bar);
+
     // static scenery: cached matrices and grid-based culling; only the pillars near the view cost anything
     final var pillarMesh = res.mesh(MeshFactory.cube(0.5f));
     final var stone = new Material().color(0.6f, 0.58f, 0.55f, 1f);
@@ -195,6 +268,40 @@ public class DemoGame implements Game {
     }, MessageQueue.COLLISION);
 
     engine.addOverlay(this::drawHud);
+
+    // a settings panel while the mouse is free (Esc); clicks on it do not recapture the mouse
+    this.gui = new Gui(engine.input());
+    engine.setClickCapturesMouse(() -> !this.gui.wantsMouse());
+    engine.addOverlay((ui, width, height) -> drawPanel(engine, ui, width));
+  }
+
+  private void drawPanel(Engine engine, UiCanvas ui, int width) {
+    final boolean free = !engine.isMouseCaptured();
+    this.gui.begin(ui, width, 0, free);
+    if (free) {
+      final var settings = engine.backend().settings();
+      final var g = this.gui;
+      g.beginPanel("Demo settings", width - 290f, 10f, 280f);
+      g.label("Grüße, " + this.playerName + "! – Ünïcödé ½ € ✓");
+      g.row(2);
+      if (g.button("Throw crate")) {
+        final var t = this.player.transform();
+        final var forward = t.forward(new Vector3f());
+        spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), forward.mul(10f));
+      }
+      if (g.button("Wake all")) {
+        engine.scene().components(Rigidbody.class).forEach(Rigidbody::wakeUp);
+      }
+      settings.occlusionCulling = g.checkbox("Occlusion culling", settings.occlusionCulling);
+      settings.maxPointShadows = g.checkbox("Point light shadows", settings.maxPointShadows > 0) ? 4 : 0;
+      settings.debugCascades = g.checkbox("Tint shadow cascades", settings.debugCascades);
+      g.space(4f);
+      engine.physics().gravity.y = -g.slider("Gravity", -engine.physics().gravity.y, 0f, 20f);
+      this.turntableSpeed = g.slider("Turntable speed", this.turntableSpeed, -3f, 3f);
+      this.playerName = g.textField("Name", this.playerName);
+      g.endPanel();
+    }
+    this.gui.end();
   }
 
   private void spawnCrate(Engine engine, Vector3f position, Vector3f velocity) {
@@ -210,6 +317,8 @@ public class DemoGame implements Game {
 
   @Override
   public void update(Engine engine, double dt) {
+    this.turntable.transform().rotation().rotateY((float) dt * this.turntableSpeed);
+    this.controller.setEnabled(!this.gui.wantsKeyboard()); // typing a name must not walk around
     final var t = this.player.transform();
     final var forward = t.forward(new Vector3f());
     if (engine.input().wasActionPressed("spawn")) {
@@ -242,7 +351,7 @@ public class DemoGame implements Game {
       ui.drawText(this.aim, cx + 15f, cy + 9f, 1f, 0f, 0f, 0f, 0.8f);
       ui.drawText(this.aim, cx + 14f, cy + 8f, 1f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc free mouse";
+    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings";
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);
   }

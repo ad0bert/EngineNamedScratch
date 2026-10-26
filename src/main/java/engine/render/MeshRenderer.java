@@ -11,9 +11,10 @@ import engine.ecs.Entity;
  * Draws a mesh with a material at the entity's world transform.
  *
  * <p>
- * Mark renderers that never move as {@link #setStaticGeometry static}: the engine then caches their matrices and
- * culls them through a spatial grid instead of testing each one every frame. If a static renderer's entity (or one of
- * its parents) does move, call {@link #invalidate()} afterwards.
+ * Mark renderers that (almost) never move as {@link #setStaticGeometry static}: the engine then caches their matrices
+ * and culls them through a spatial grid instead of testing each one every frame. Moving one anyway is allowed: the
+ * engine notices the change at the next fixed step and re-registers it, so it may lag by a frame; call
+ * {@link #invalidate()} after moving it to apply the change immediately.
  */
 public class MeshRenderer extends Component {
   private static volatile int invalidations;
@@ -28,13 +29,16 @@ public class MeshRenderer extends Component {
   final Matrix3f normal = new Matrix3f();
   final Vector3f center = new Vector3f();
   float radius;
+  /** Half size of the world-space bounding box (centred on {@link #center}). */
+  final Vector3f boxHalf = new Vector3f();
+  /** True if the box is worth testing after the sphere (long or flat shapes). */
+  boolean elongated;
   float distSq;
   boolean stateValid;
   long cacheVersion;
   int gridId = -1;
   int queryStamp;
   int reconcileStamp;
-  boolean warned;
 
   public MeshRenderer(GpuMesh mesh, Material material) {
     this.mesh = mesh;
@@ -45,7 +49,7 @@ public class MeshRenderer extends Component {
     return this.staticGeometry;
   }
 
-  /** Promise that this renderer's world transform will not change (see class comment). */
+  /** Hint that this renderer's world transform will rarely or never change (see class comment). */
   public MeshRenderer setStaticGeometry(boolean value) {
     if (this.staticGeometry != value) {
       this.staticGeometry = value;
@@ -55,7 +59,7 @@ public class MeshRenderer extends Component {
     return this;
   }
 
-  /** Tells the engine that a static renderer has moved, so its cached state and grid cells are rebuilt. */
+  /** Tells the engine that a static renderer has moved, so its cached state and grid cells are rebuilt now. */
   public void invalidate() {
     this.stateValid = false;
     invalidations++;

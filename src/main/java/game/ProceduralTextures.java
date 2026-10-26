@@ -10,8 +10,11 @@ final class ProceduralTextures {
   private ProceduralTextures() {
   }
 
-  /** A brick albedo texture and the matching normal map (4 bricks per row, 8 rows per tile). */
-  record Surface(ImageData albedo, ImageData normal) {
+  /**
+   * A brick albedo texture with matching normal, height and specular maps (4 bricks per row, 8 rows per tile): the
+   * mortar is recessed and dull, the bricks slightly glossy.
+   */
+  record Surface(ImageData albedo, ImageData normal, ImageData height, ImageData specular) {
   }
 
   static Surface bricks(int size) {
@@ -24,6 +27,7 @@ final class ProceduralTextures {
     }
     final float[] heights = new float[size * size];
     final byte[] rgba = new byte[size * size * 4];
+    final byte[] gloss = new byte[size * size * 4];
     for (int y = 0; y < size; y++) {
       final int row = y / brickH;
       final int shift = (row & 1) == 1 ? brickW / 2 : 0; // running bond
@@ -47,9 +51,33 @@ final class ProceduralTextures {
           rgba[o + 2] = (byte) clamp255(52 * shade);
         }
         rgba[o + 3] = (byte) 255;
+        final byte g = (byte) (h <= 0f ? 20 : clamp255(200 * (1f - grain * 3f)));
+        gloss[o] = g;
+        gloss[o + 1] = g;
+        gloss[o + 2] = g;
+        gloss[o + 3] = (byte) 255;
       }
     }
-    return new Surface(new ImageData(size, size, rgba), NormalMaps.fromHeights(heights, size, size, 7f));
+    return new Surface(new ImageData(size, size, rgba), NormalMaps.fromHeights(heights, size, size, 7f),
+        NormalMaps.heightImage(heights, size, size), new ImageData(size, size, gloss));
+  }
+
+  /** A metal grate: square holes (alpha 0) in a grey frame, for a cut-out material. */
+  static ImageData grate(int size, int holes) {
+    final byte[] rgba = new byte[size * size * 4];
+    final int cell = size / holes;
+    final int bar = Math.max(2, cell / 5);
+    for (int y = 0; y < size; y++) {
+      for (int x = 0; x < size; x++) {
+        final boolean solid = x % cell < bar || y % cell < bar;
+        final int o = (y * size + x) * 4;
+        rgba[o] = (byte) 110;
+        rgba[o + 1] = (byte) 115;
+        rgba[o + 2] = (byte) 125;
+        rgba[o + 3] = (byte) (solid ? 255 : 0);
+      }
+    }
+    return new ImageData(size, size, rgba);
   }
 
   /** A soft bumpy normal map (three octaves of value noise) for ground-like surfaces. */

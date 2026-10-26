@@ -53,6 +53,14 @@ public class InputListener implements KeyListener, MouseListener {
       this.state.keyDown(e.getKeySymbol());
       post(MessageQueue.KEYBOARD, e);
     }
+    // text input wants auto-repeat
+    if (e.getKeySymbol() == KeyEvent.VK_BACK_SPACE) {
+      this.state.typed('\b');
+    } else if (e.getKeySymbol() == KeyEvent.VK_ENTER) {
+      this.state.typed('\n');
+    } else if (e.isPrintableKey() && !Character.isISOControl(e.getKeyChar())) {
+      this.state.typed(e.getKeyChar());
+    }
   }
 
   @Override
@@ -65,6 +73,7 @@ public class InputListener implements KeyListener, MouseListener {
 
   @Override
   public void mouseMoved(MouseEvent e) {
+    this.state.mouseMovedTo(e.getX(), e.getY());
     if (this.captured) {
       final int dx = e.getX() - this.centerX;
       final int dy = e.getY() - this.centerY;
@@ -96,16 +105,22 @@ public class InputListener implements KeyListener, MouseListener {
 
   @Override
   public void mousePressed(MouseEvent e) {
+    this.state.mouseMovedTo(e.getX(), e.getY());
+    this.state.mouseButton(e.getButton(), true);
     post(MessageQueue.MOUSE, e);
   }
 
   @Override
   public void mouseReleased(MouseEvent e) {
+    this.state.mouseMovedTo(e.getX(), e.getY());
+    this.state.mouseButton(e.getButton(), false);
     post(MessageQueue.MOUSE, e);
   }
 
   @Override
   public void mouseWheelMoved(MouseEvent e) {
+    final float[] rotation = e.getRotation();
+    this.state.mouseWheel(rotation.length > 1 ? rotation[1] : 0f);
     post(MessageQueue.MOUSE, e);
   }
 }

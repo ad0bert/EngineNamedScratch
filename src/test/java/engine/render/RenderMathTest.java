@@ -90,22 +90,23 @@ class RenderMathTest {
   void fontAtlasGlyphsAndSolidCell() {
     final var atlas = new FontAtlas(16);
     final var uv = new float[4];
-    atlas.glyphUv('A', uv);
+    atlas.glyphUv(atlas.glyph('A'), uv);
     assertTrue(uv[0] >= 0f && uv[2] <= 1f && uv[0] < uv[2]);
     assertTrue(uv[1] > uv[3] && uv[1] <= 1f && uv[3] >= 0f); // top v is larger: rows are bottom-up
-    atlas.glyphUv('é', uv); // unknown characters fall back to '?'
+    atlas.glyphUv(atlas.glyph('é'), uv); // beyond ASCII: a glyph of its own, not '?'
     final var q = new float[4];
-    atlas.glyphUv('?', q);
-    assertEquals(q[0], uv[0], 0f);
+    atlas.glyphUv(atlas.glyph('?'), q);
+    assertTrue(q[0] != uv[0] || q[1] != uv[1]);
 
     atlas.solidUv(uv);
-    final var img = atlas.image();
+    var img = atlas.image();
     final int px = Math.min(img.width() - 1, Math.round(uv[0] * img.width()));
     final int py = Math.min(img.height() - 1, Math.round(uv[1] * img.height()));
     assertEquals((byte) 255, img.rgba()[(py * img.width() + px) * 4 + 3]);
+    img = atlas.image();
 
     // the 'A' cell must contain some inked pixels
-    atlas.glyphUv('A', uv);
+    atlas.glyphUv(atlas.glyph('A'), uv);
     int ink = 0;
     for (int y = Math.round(uv[3] * img.height()); y < Math.round(uv[1] * img.height()); y++) {
       for (int x = Math.round(uv[0] * img.width()); x < Math.round(uv[2] * img.width()); x++) {

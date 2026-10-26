@@ -1,5 +1,6 @@
 package engine.physics;
 
+import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
@@ -64,6 +65,27 @@ public class BoxCollider extends Collider {
   @Override
   void cachedCenter(Vector3f dest) {
     dest.set(this.box.c());
+  }
+
+  @Override
+  Matrix4f cachedMatrix() {
+    return this.matrix;
+  }
+
+  @Override
+  float cachedVolume() {
+    final float[] h = this.box.half();
+    return 8f * h[0] * h[1] * h[2];
+  }
+
+  @Override
+  void addCachedInertia(float mass, Matrix3f dest) {
+    final float[] h = this.box.half();
+    for (int i = 0; i < 3; i++) {
+      final float h1 = h[(i + 1) % 3];
+      final float h2 = h[(i + 2) % 3];
+      PhysicsSystem.addAxisInertia(dest, this.box.axes()[i], mass * (h1 * h1 + h2 * h2) / 3f);
+    }
   }
 
   @Override

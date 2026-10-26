@@ -1,9 +1,14 @@
 package engine.core;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.BooleanSupplier;
+
+import javax.imageio.ImageIO;
 
 import org.joml.Vector3f;
 
@@ -52,7 +57,9 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>
  * System properties: {@code engine.debugGL=true} wraps GL in {@link DebugGL3}; {@code engine.exitAfterFrames=N} closes
- * the window after N rendered frames (smoke tests); {@code engine.captureMouse=false} starts with a free pointer.
+ * the window after N rendered frames (smoke tests); {@code engine.captureMouse=false} starts with a free pointer;
+ * {@code engine.screenshot=file.png} saves the last frame before exiting (with {@code exitAfterFrames}) or, with
+ * {@code engine.screenshotFrame=N}, frame N. A screenshot can also be requested with {@link #saveScreenshot}.
  */
 @Slf4j
 public class Engine {
@@ -68,6 +75,11 @@ public class Engine {
   @Getter private final PhysicsSystem physics = new PhysicsSystem(this.messages);
   private final CountDownLatch closed = new CountDownLatch(1);
   private final int exitAfterFrames = Integer.getInteger("engine.exitAfterFrames", 0);
+  private volatile BooleanSupplier clickCaptures = () -> true;
+  private volatile Path screenshot = System.getProperty("engine.screenshot") != null
+      ? Path.of(System.getProperty("engine.screenshot"))
+      : null;
+  private final long screenshotFrame = Long.getLong("engine.screenshotFrame", 0L);
 
   private GLWindow window;
   private Animator animator;
@@ -92,6 +104,15 @@ public class Engine {
 
   public boolean isMouseCaptured() {
     return this.inputListener.isCaptured();
+  }
+
+  /**
+   * Decides whether a click into the window captures the mouse (the default: always). A game with a user interface
+   * passes something like {@code () -> !gui.wantsMouse()}, so clicks on widgets stay with the widgets. Called on the
+   * window thread.
+   */
+  public void setClickCapturesMouse(BooleanSupplier when) {
+    this.clickCaptures = when;
   }
 
   public void addSystem(ISystem system) {
@@ -124,7 +145,7 @@ public class Engine {
     this.window.addMouseListener(new MouseAdapter() {
       @Override
       public void mousePressed(MouseEvent e) {
-        if (!Engine.this.inputListener.isCaptured()) {
+        if (!Engine.this.inputListener.isCaptured() && Engine.this.clickCaptures.getAsBoolean()) {
           captureMouse(true);
         }
       }
@@ -150,6 +171,30 @@ public class Engine {
     this.window.setVisible(true);
     this.closed.await();
     log.info("Engine stopped after {} frames", this.frameCount);
+  }
+
+  /** Saves the next rendered frame as a PNG; safe to call from any thread. */
+  public void saveScreenshot(Path file) {
+    this.screenshot = file;
+  }
+
+  private void captureIfRequested(int width, int height) {
+    final var file = this.screenshot;
+    if (file == null) {
+      return;
+    }
+    final boolean due = this.screenshotFrame > 0 ? this.frameCount == this.screenshotFrame
+        : this.exitAfterFrames <= 0 || this.frameCount >= this.exitAfterFrames;
+    if (!due) {
+      return;
+    }
+    this.screenshot = null;
+    try {
+      ImageIO.write(this.backend.readPixels(width, height).toBufferedImage(), "png", file.toFile());
+      log.info("Saved screenshot {}", file.toAbsolutePath());
+    } catch (IOException | RuntimeException e) {
+      log.error("Could not save screenshot {}", file, e);
+    }
   }
 
   /** Requests shutdown; safe to call from any thread. */
@@ -223,6 +268,7 @@ public class Engine {
       Engine.this.backend.render(Engine.this.scene, Engine.this.timestep.alpha(), drawable.getSurfaceWidth(),
           drawable.getSurfaceHeight(), Engine.this.overlays);
       Engine.this.frameCount++;
+      captureIfRequested(drawable.getSurfaceWidth(), drawable.getSurfaceHeight());
       trackFps();
       if (Engine.this.exitAfterFrames > 0 && Engine.this.frameCount >= Engine.this.exitAfterFrames) {
         stop();

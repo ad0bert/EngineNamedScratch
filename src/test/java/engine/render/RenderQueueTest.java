@@ -115,7 +115,9 @@ class RenderQueueTest {
     for (int i = 0; i < all.size(); i++) {
       final var c = expectedCenters.get(i);
       final float radius = all.get(i) == big ? CUBE_RADIUS * 80f : CUBE_RADIUS;
-      final boolean visible = f.testSphere(c.x, c.y, c.z, radius);
+      final float half = all.get(i) == big ? 0.5f * 80f : 0.5f;
+      final boolean visible = f.testSphere(c.x, c.y, c.z, radius)
+          && f.testAab(c.x - half, c.y - half, c.z - half, c.x + half, c.y + half, c.z + half);
       expectedVisible += visible ? 1 : 0;
       assertEquals(visible, got.contains(all.get(i)), "object " + i);
     }
@@ -201,6 +203,80 @@ class RenderQueueTest {
     r.invalidate();
     this.queue.collect(this.scene, 0f, new Vector3f());
     assertEquals(1, cull(f, RenderQueue.Pass.MAIN).size());
+  }
+
+  @Test
+  void aMovedStaticObjectIsNoticedAtTheNextStepWithoutInvalidate() {
+    final var r = add(0f, 0f, -10f, true);
+    this.scene.flush();
+    final var f = frustum();
+    this.queue.collect(this.scene, 0f, new Vector3f());
+    assertEquals(1, cull(f, RenderQueue.Pass.MAIN).size());
+
+    r.entity().transform().position().set(0f, 0f, 50f); // behind the camera
+    r.entity().transform().snapshot(); // what the engine does at the start of every fixed step
+    this.queue.collect(this.scene, 0f, new Vector3f());
+    assertEquals(0, cull(f, RenderQueue.Pass.MAIN).size());
+    assertEquals(1, this.queue.staticCount(), "still static, just re-registered");
+  }
+
+  @Test
+  void movingTheParentOfAStaticObjectIsNoticedToo() {
+    final var parent = new Entity("parent");
+    this.scene.add(parent);
+    final var r = add(0f, 0f, -10f, true);
+    r.entity().transform().setParent(parent.transform());
+    this.scene.flush();
+    final var f = frustum();
+    this.queue.collect(this.scene, 0f, new Vector3f());
+    assertEquals(1, cull(f, RenderQueue.Pass.MAIN).size());
+
+    parent.transform().position().set(0f, 0f, 60f);
+    parent.transform().snapshot();
+    this.queue.collect(this.scene, 0f, new Vector3f());
+    assertEquals(0, cull(f, RenderQueue.Pass.MAIN).size());
+  }
+
+  @Test
+  void aLongThinObjectOutsideTheViewIsCulledByItsBox() {
+    // a 40 m long plank lying along x, 3 m above the top of the view: its bounding sphere reaches into the frustum
+    final var r = add(0f, 0f, -10f, false);
+    r.entity().transform().scale().set(40f, 0.1f, 0.1f);
+    r.entity().transform().position().set(0f, 9f, -10f);
+    this.scene.flush();
+    this.queue.collect(this.scene, 0f, new Vector3f());
+    final var f = frustum();
+    assertTrue(f.testSphere(0f, 9f, -10f, 20f), "the sphere test alone would keep it");
+    assertEquals(0, cull(f, RenderQueue.Pass.MAIN).size());
+  }
+
+  @Test
+  void occludedCellsHideOnlyTheirStaticObjects() {
+    final var near = add(4f, 4f, -10f, true); // well inside one 16 m cell each
+    final var far = add(4f, 4f, -40f, true);
+    final var moving = add(4.5f, 4f, -40f, false);
+    this.scene.flush();
+    this.queue.collect(this.scene, 0f, new Vector3f());
+    final var viewProj = new Matrix4f().setPerspective((float) Math.toRadians(60), 1.5f, 0.1f, 300f)
+        .lookAt(0f, 0f, 0f, 0f, 0f, -1f, 0f, 1f, 0f);
+    final List<MeshRenderer> out = new ArrayList<>();
+    this.queue.cull(viewProj, RenderQueue.Pass.MAIN, out, true);
+    assertEquals(3, out.size());
+    final var cells = this.queue.occlusionCandidates();
+    assertEquals(2, cells.size(), "one cell per static object");
+
+    for (var c : cells) { // the backend's queries found the far cell hidden behind the near object
+      c.setOccluded(c.maxZ() < -30f);
+    }
+    this.queue.cull(viewProj, RenderQueue.Pass.MAIN, out, true);
+    assertEquals(Set.of(near, moving), identitySet(out), "dynamic objects are never occlusion culled");
+    assertEquals(1, this.queue.occluded());
+    assertEquals(2, this.queue.occlusionCandidates().size(), "hidden cells are tested again");
+
+    this.queue.cull(viewProj, RenderQueue.Pass.SHADOW, out, true);
+    assertTrue(identitySet(out).contains(far), "hidden objects still cast shadows");
+    this.queue.cull(viewProj, RenderQueue.Pass.MAIN, out, false);
+    assertTrue(identitySet(out).contains(far), "ignored when occlusion culling is off");
   }
 
   @Test

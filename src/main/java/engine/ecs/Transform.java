@@ -24,6 +24,8 @@ public class Transform {
   private final Quaternionf prevRotation = new Quaternionf();
   private final Vector3f prevScale = new Vector3f(1f);
   private long changes;
+  private boolean tracked;
+  private static volatile long trackedChanges;
 
   private static final class Scratch {
     final Vector3f p = new Vector3f();
@@ -54,6 +56,9 @@ public class Transform {
     if (!this.position.equals(this.prevPosition) || !this.rotation.equals(this.prevRotation)
         || !this.scale.equals(this.prevScale)) {
       this.changes++;
+      if (this.tracked) {
+        trackedChanges++;
+      }
     }
     this.prevPosition.set(this.position);
     this.prevRotation.set(this.rotation);
@@ -71,6 +76,23 @@ public class Transform {
       v += t.changes;
     }
     return v;
+  }
+
+  /**
+   * Asks to be told when this transform or one of its ancestors changes: from now on such a change (found by
+   * {@link #snapshot()}, or a re-parenting) increases {@link #trackedChangeCount()}. Used by caches of world-space data
+   * that are rarely invalid, such as static render geometry, so they only need to look for changes when the counter
+   * moved.
+   */
+  public void trackChanges() {
+    for (Transform t = this; t != null && !t.tracked; t = t.parent) {
+      t.tracked = true;
+    }
+  }
+
+  /** Increases whenever a transform marked with {@link #trackChanges()} (or an ancestor of one) changed. */
+  public static long trackedChangeCount() {
+    return trackedChanges;
   }
 
   /**
@@ -123,6 +145,12 @@ public class Transform {
     if (newParent != null) {
       newParent.children.add(this);
     }
+    if (this.tracked) {
+      trackedChanges++;
+      if (newParent != null) {
+        newParent.trackChanges(); // the new ancestors now move this one too
+      }
+    }
   }
 
   public Transform setEulerDegrees(float x, float y, float z) {
@@ -147,6 +175,12 @@ public class Transform {
       pm.mul(dest, dest);
     }
     return dest;
+  }
+
+  /** Rotation part of the world matrix (scale removed). */
+  public Quaternionf worldRotation(Quaternionf dest) {
+    final var s = SCRATCH.get();
+    return world(s.tmp, s, 0).getNormalizedRotation(dest);
   }
 
   public Vector3f worldPosition(Vector3f dest) {

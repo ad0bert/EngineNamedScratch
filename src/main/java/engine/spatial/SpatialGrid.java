@@ -21,6 +21,16 @@ public final class SpatialGrid {
   public static final class IntList {
     private int[] data = new int[4];
     private int size;
+    private int tag;
+
+    /** A value the grid's owner may attach to a cell (e.g. occlusion state); reset when the cell is recycled. */
+    public int tag() {
+      return this.tag;
+    }
+
+    public void setTag(int tag) {
+      this.tag = tag;
+    }
 
     public void add(int v) {
       if (this.size == this.data.length) {
@@ -48,6 +58,7 @@ public final class SpatialGrid {
 
     void clear() {
       this.size = 0;
+      this.tag = 0;
     }
   }
 
@@ -245,6 +256,7 @@ public final class SpatialGrid {
         list.removeValue(id);
         if (list.size() == 0) {
           this.cells.remove(key);
+          list.clear();
           this.pool.add(list);
         }
       }
@@ -264,6 +276,28 @@ public final class SpatialGrid {
 
   public int occupiedCells() {
     return this.cells.size();
+  }
+
+  /** Integer cell coordinate of a world coordinate. */
+  public int cellCoordinate(float v) {
+    return cell(v);
+  }
+
+  /** Ids registered in a cell (do not modify), or null if the cell is empty. */
+  public IntList cellAt(int cx, int cy, int cz) {
+    return this.cells.get(key(cx, cy, cz));
+  }
+
+  /**
+   * Lowest cell coordinate along an axis (0 x, 1 y, 2 z) of everything inserted since the last clear; together with
+   * {@link #maxCell} it bounds all occupied cells. Meaningless while {@link #occupiedCells()} is 0.
+   */
+  public int minCell(int axis) {
+    return this.boundsMin[axis];
+  }
+
+  public int maxCell(int axis) {
+    return this.boundsMax[axis];
   }
 
   /**

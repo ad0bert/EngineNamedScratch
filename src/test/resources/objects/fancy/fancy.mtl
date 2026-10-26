@@ -1,0 +1,12 @@
+# every map the loader understands
+newmtl leaves
+Kd 1 1 1
+Ks 0.5 0.5 0.5
+illum 2
+map_Kd diffuse.png
+map_d mask.png
+bump -bm 2 height.png
+map_Ks gloss.png
+Ke 0 0 0
+map_Ke glow.png
+disp height.png

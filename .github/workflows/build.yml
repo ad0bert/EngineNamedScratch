@@ -11,3 +11,22 @@ jobs:
           java-version: 25
           cache: maven
       - run: mvn -B verify
+      # Runs the demo on Linux with Mesa's software OpenGL in a virtual X server: GL errors throw (debugGL), and the
+      # last frame is kept as an artifact to look at.
+      - name: Smoke-run the demo (Xvfb + Mesa)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb libgl1-mesa-dri
+          mvn -B -q dependency:build-classpath -Dmdep.outputFile=cp.txt
+          timeout 300 xvfb-run -a -s "-screen 0 1280x800x24" java -Dengine.debugGL=true \
+            -Dengine.exitAfterFrames=120 -Dengine.captureMouse=false -Dengine.screenshot=smoke.png \
+            -cp "target/classes:$(cat cp.txt)" game.Main 2>&1 | tee smoke.log
+          grep -q "Saved screenshot" smoke.log
+          ! grep -E "Exception|GLException|ERROR" smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-run
+          path: |
+            smoke.png
+            smoke.log

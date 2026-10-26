@@ -18,6 +18,20 @@ public record ImageData(int width, int height, byte[] rgba) {
     return new ImageData(1, 1, new byte[] { (byte) r, (byte) g, (byte) b, (byte) a });
   }
 
+  /** The pixels as a Java2D image (top row first), e.g. to save with ImageIO. */
+  public BufferedImage toBufferedImage() {
+    final var img = new BufferedImage(this.width, this.height, BufferedImage.TYPE_INT_ARGB);
+    for (int y = 0; y < this.height; y++) {
+      for (int x = 0; x < this.width; x++) {
+        final int o = (y * this.width + x) * 4;
+        final int argb = (this.rgba[o + 3] & 0xFF) << 24 | (this.rgba[o] & 0xFF) << 16 | (this.rgba[o + 1] & 0xFF) << 8
+            | this.rgba[o + 2] & 0xFF;
+        img.setRGB(x, this.height - 1 - y, argb);
+      }
+    }
+    return img;
+  }
+
   public static ImageData fromBufferedImage(BufferedImage img) {
     final int w = img.getWidth();
     final int h = img.getHeight();
