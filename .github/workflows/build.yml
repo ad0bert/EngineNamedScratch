@@ -17,10 +17,9 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q xvfb libgl1-mesa-dri
-          mvn -B -q dependency:build-classpath -Dmdep.outputFile=cp.txt
           timeout 300 xvfb-run -a -s "-screen 0 1280x800x24" java -Dengine.debugGL=true \
             -Dengine.exitAfterFrames=120 -Dengine.captureMouse=false -Dengine.screenshot=smoke.png \
-            -cp "target/classes:$(cat cp.txt)" game.Main 2>&1 | tee smoke.log
+            -jar demo/target/demo.jar 2>&1 | tee smoke.log
           grep -q "Saved screenshot" smoke.log
           ! grep -E "Exception|GLException|ERROR" smoke.log
       - uses: actions/upload-artifact@v4

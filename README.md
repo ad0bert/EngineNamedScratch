@@ -4,15 +4,21 @@ A small, general-purpose Java game engine on OpenGL 3.3 core (JOGL), OpenAL (JOA
 SLF4J/Logback for logging. It makes no assumptions about the kind of game: entities, components, systems, a scene,
 rendering, physics, sound, animation, input and UI are building blocks you combine.
 
+## Project layout
+
+| Module | What it is |
+|---|---|
+| `engine/` | The engine library, published as `io.github.ad0bert:engine-named-scratch` (jar, sources, javadoc). It holds only `engine.*` and its shaders. |
+| `demo/` | The demo game (`game.*` and its assets). It shows how to use the engine and is the CI smoke test. It is not published. |
+
 ## Run
 
 Requires JDK 25 and Maven.
 
 ```bash
 mvn test                      # unit tests (no GPU needed)
-mvn -q package                # build
-mvn -q dependency:build-classpath -Dmdep.outputFile=cp.txt
-java -cp "target/classes:$(cat cp.txt)" game.Main     # use ';' instead of ':' on Windows
+mvn -q package                # build the engine jar and demo/target/demo.jar (+ demo/target/lib)
+java -jar demo/target/demo.jar
 ```
 
 Demo controls: mouse look, `WASD`/arrows move, `Space`/`Shift` up/down, `F` throws a crate, `E` pushes the body
@@ -48,8 +54,46 @@ keeps the last frame as an artifact:
 
 ```bash
 xvfb-run -a -s "-screen 0 1280x800x24" java -Dengine.debugGL=true -Dengine.exitAfterFrames=120 \
-  -Dengine.captureMouse=false -Dengine.screenshot=smoke.png -cp "target/classes:$(cat cp.txt)" game.Main
+  -Dengine.captureMouse=false -Dengine.screenshot=smoke.png -jar demo/target/demo.jar
 ```
+
+## Using the engine in a game
+
+Keep the game in its own project and depend on the engine. A release is published when a tag like `v0.8.0` is
+pushed (`.github/workflows/release.yml`): the jars go to GitHub Packages and are attached to a GitHub release, along
+with a zip of the runnable demo.
+
+```xml
+<repositories>
+  <repository>
+    <id>github</id>
+    <url>https://maven.pkg.github.com/ad0bert/EngineNamedScratch</url>
+  </repository>
+</repositories>
+
+<dependencies>
+  <dependency>
+    <groupId>io.github.ad0bert</groupId>
+    <artifactId>engine-named-scratch</artifactId>
+    <version>0.8.0</version>
+  </dependency>
+  <!-- the engine logs through SLF4J only; pick a backend -->
+  <dependency>
+    <groupId>ch.qos.logback</groupId>
+    <artifactId>logback-classic</artifactId>
+    <version>1.5.18</version>
+    <scope>runtime</scope>
+  </dependency>
+</dependencies>
+```
+
+GitHub Packages needs credentials even for public packages: add a `github` server with your user name and a token
+with `read:packages` to `~/.m2/settings.xml`. While changing the engine and a game together, run `mvn install` here and
+depend on the `-SNAPSHOT` version instead. That needs no repository or credentials.
+
+The game supplies its own `application.properties` (or whatever it passes to `EngineConfig.load`), its assets on the
+classpath, and a `main` that calls `new Engine(config, game).run()`. `demo/pom.xml` shows a runnable jar with its
+dependencies in `lib/`. The JOGL, JOAL and JInput natives come with the Maven dependencies.
 
 ## Features
 
@@ -186,7 +230,7 @@ How it works:
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `PhysicsSystem` (+ raycasts) |
 | `engine.debug` | `DebugOverlay` |
-| `game` | Demo scene (`DemoGame`, `Main`) |
+| `game` (demo module) | Demo scene (`DemoGame`, `Main`) |
 
 Everything — fixed-step update, message dispatch, rendering — runs on the GL thread, so scene state needs no locks.
 Only window events cross threads, via `InputState` and `IMessageService.post`.

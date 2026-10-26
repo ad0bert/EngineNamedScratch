@@ -1,0 +1,41 @@
+name: release
+# Push a tag like v0.8.0 to publish the engine at that version: the jar (with sources and javadoc) goes to GitHub
+# Packages as io.github.ad0bert:engine-named-scratch, and a GitHub release gets the jars and the runnable demo.
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+  packages: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+      - name: Set the version from the tag
+        run: mvn -B -q versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
+      - name: Test and deploy to GitHub Packages
+        run: mvn -B deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          (cd demo/target && zip -q -r "../../demo-$version.zip" demo.jar lib)
+          notes=$(awk -v v="Version $version" '$0 == v {found = 1; next} found && /^Version / {exit} found' \
+            builds/releaseHistory.txt)
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "${notes:-Release $version}" \
+            engine/target/engine-named-scratch-$version.jar \
+            engine/target/engine-named-scratch-$version-sources.jar \
+            engine/target/engine-named-scratch-$version-javadoc.jar \
+            "demo-$version.zip"
