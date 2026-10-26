@@ -176,4 +176,14 @@ public class MeshCollider extends Collider {
   @Override
   void addCachedInertia(float mass, Matrix3f dest) {
   }
+
+  /** The local vertex positions (xyz per vertex) the collider was made from; do not modify. */
+  public float[] positions() {
+    return this.local;
+  }
+
+  /** Three vertex indices per triangle; do not modify. */
+  public int[] indices() {
+    return this.indices;
+  }
 }

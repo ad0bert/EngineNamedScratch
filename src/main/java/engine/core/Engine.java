@@ -50,6 +50,7 @@ import engine.render.Overlay;
 import engine.render.RenderBackend;
 import engine.render.gl.GlBackend;
 import engine.resources.ResourceManager;
+import engine.serialization.SerializationContext;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -127,6 +128,11 @@ public class Engine {
    */
   public void setClickCapturesMouse(BooleanSupplier when) {
     this.clickCaptures = when;
+  }
+
+  /** A context for saving or loading scenes and prefabs with this engine's resources and input. */
+  public SerializationContext serialization() {
+    return new SerializationContext(this.resources, this.input);
   }
 
   /** Looks for newly plugged-in gamepads at the next update (also done whenever the window regains focus). */

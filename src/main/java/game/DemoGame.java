@@ -1,5 +1,7 @@
 package game;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -37,6 +39,8 @@ import engine.render.Material;
 import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
 import engine.render.UiCanvas;
+import engine.serialization.Prefab;
+import engine.serialization.SceneSerializer;
 import engine.ui.Gui;
 import lombok.extern.slf4j.Slf4j;
 
@@ -53,6 +57,7 @@ public class DemoGame implements Game {
   private AudioClip thud;
   private AudioClip whoosh;
   private AudioClip click;
+  private final SceneSerializer serializer = new SceneSerializer();
   private Entity player;
   private Entity turntable;
   private float turntableSpeed = 0.6f;
@@ -70,6 +75,7 @@ public class DemoGame implements Game {
     final var scene = engine.scene();
     engine.input().bind("spawn", KeyEvent.VK_F);
     engine.input().bind("poke", KeyEvent.VK_E);
+    engine.input().bind("save_scene", KeyEvent.VK_F5);
     engine.input().bindGamepad("spawn", Gamepad.BUTTON_RIGHT_BUMPER, Gamepad.BUTTON_X);
     engine.input().bindGamepad("poke", Gamepad.BUTTON_A);
     this.thud = res.sound("gen:thud", ProceduralSounds.thud());
@@ -227,7 +233,7 @@ public class DemoGame implements Game {
     scene.add(glass);
 
     // many identical crates: one mesh + one material, so they render as a single instanced draw call
-    this.crateMesh = res.mesh(MeshFactory.cube(0.5f));
+    this.crateMesh = res.shape("cube:0.5"); // a keyed shape, so saved scenes can refer to it
     this.crateMaterial = new Material(res.texture("textures/cubeFace.png"));
     for (int x = -3; x < 3; x++) {
       for (int z = 0; z < 6; z++) {
@@ -359,6 +365,17 @@ public class DemoGame implements Game {
     dome.add(new MeshCollider(domeMesh));
     scene.add(dome);
 
+    // lamp posts from a prefab file (prefabs/lamp-post.json): three instances sharing their materials
+    try {
+      final var lampPost = Prefab.load("prefabs/lamp-post.json", this.serializer);
+      final var ctx = engine.serialization();
+      lampPost.instantiate(scene, ctx, new Vector3f(-3.5f, -1f, -4f), null);
+      lampPost.instantiate(scene, ctx, new Vector3f(3.5f, -1f, -4f), null);
+      lampPost.instantiate(scene, ctx, new Vector3f(0f, -1f, -9f), null);
+    } catch (IOException | IllegalArgumentException e) {
+      log.warn("Could not create the lamp posts: {}", e.getMessage());
+    }
+
     // static scenery: cached matrices and grid-based culling; only the pillars near the view cost anything
     final var pillarMesh = res.mesh(MeshFactory.cube(0.5f));
     final var stone = new Material().color(0.6f, 0.58f, 0.55f, 1f);
@@ -392,6 +409,9 @@ public class DemoGame implements Game {
     }, MessageQueue.COLLISION);
 
     engine.addOverlay((ui, width, height) -> drawHud(engine, ui, width, height));
+    if (System.getProperty("demo.saveScene") != null) { // -Ddemo.saveScene=file.json: what F5 does, at start
+      saveScene(engine, Path.of(System.getProperty("demo.saveScene")));
+    }
 
     // a settings panel while the mouse is free (Esc); clicks on it do not recapture the mouse
     this.gui = new Gui(engine.input());
@@ -466,12 +486,24 @@ public class DemoGame implements Game {
     engine.scene().add(crate);
   }
 
+  private void saveScene(Engine engine, Path file) {
+    try {
+      this.serializer.save(engine.scene(), engine.serialization(), file);
+      log.info("Saved the scene to {}", file.toAbsolutePath());
+    } catch (IOException e) {
+      log.warn("Could not save the scene: {}", e.getMessage());
+    }
+  }
+
   @Override
   public void update(Engine engine, double dt) {
     this.turntable.transform().rotation().rotateY((float) dt * this.turntableSpeed);
     this.controller.setEnabled(!this.gui.wantsKeyboard()); // typing a name must not walk around
     final var t = this.player.transform();
     final var forward = t.forward(new Vector3f());
+    if (engine.input().wasActionPressed("save_scene")) { // F5: everything with a serializer, as JSON
+      saveScene(engine, Path.of("demo-scene.json"));
+    }
     if (engine.input().wasActionPressed("spawn")) {
       spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(18f));
       engine.audio().play(this.whoosh, t.position().fma(0.8f, forward, new Vector3f()), 0.7f, 1f, AudioBus.EFFECTS, 1);
@@ -503,7 +535,7 @@ public class DemoGame implements Game {
       ui.drawText(this.aim, cx + 15f, cy + 9f, 1.25f, 0f, 0f, 0f, 0.8f);
       ui.drawText(this.aim, cx + 14f, cy + 8f, 1.25f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings (Tab to navigate)"
+    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  F5 save scene  Esc settings"
         + (engine.input().firstGamepad() != null ? "  Pad: sticks, triggers, RB throw, A push" : "");
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);
