@@ -75,6 +75,7 @@ final class GlSceneRenderer {
   private ShaderProgram depth;
   private ShaderProgram cutout;
   private ShaderProgram box;
+  private final GlSkinning skinning = new GlSkinning();
   private ShadowMapArray shadowMap;
   private ShadowMapArray localShadowMap;
   private GlTexture white;
@@ -151,6 +152,7 @@ final class GlSceneRenderer {
     this.depth = new ShaderProgram(gl, "shaders/depth.vert", "shaders/depth.frag");
     this.cutout = new ShaderProgram(gl, "shaders/cutout.vert", "shaders/cutout.frag");
     this.box = new ShaderProgram(gl, "shaders/box.vert", "shaders/box.frag");
+    this.skinning.init(gl, this.basic, this.depth, this.cutout);
     this.post.init(gl);
     this.sky.init(gl);
     // placeholders until a light needs them; the samplers must always have a texture of their type bound
@@ -550,7 +552,7 @@ final class GlSceneRenderer {
         j++;
       }
       applyMaterial(gl, first.material);
-      drawInstances(gl, list, i, j);
+      drawInstances(gl, this.basic, list, i, j);
       i = j;
     }
   }
@@ -567,7 +569,7 @@ final class GlSceneRenderer {
     while (i < n) {
       final var first = list.get(i);
       int j = i + 1;
-      while (j < n && first.mesh == list.get(j).mesh
+      while (j < n && RenderQueue.sameBatch(first, list.get(j), false)
           && shadowMaterialKey(first) == shadowMaterialKey(list.get(j))) {
         j++;
       }
@@ -584,7 +586,7 @@ final class GlSceneRenderer {
         this.cutout.set(gl, "uAlpha", m.color.w);
         this.cutout.set(gl, "uAlphaCutoff", m.alphaCutoff);
       }
-      drawInstances(gl, list, i, j);
+      drawInstances(gl, current, list, i, j);
       i = j;
     }
   }
@@ -593,8 +595,12 @@ final class GlSceneRenderer {
     return r.material.alphaCutoff > 0f ? r.material.sortKey : 0;
   }
 
-  /** One instanced draw of {@code list[from, to)}, which all share the first renderer's mesh. */
-  private void drawInstances(GL3 gl, List<MeshRenderer> list, int from, int to) {
+  /**
+   * One instanced draw of {@code list[from, to)}, which all share the first renderer's mesh (and skin, for a skinned
+   * one, which is always alone), with {@code program} bound.
+   */
+  private void drawInstances(GL3 gl, ShaderProgram program, List<MeshRenderer> list, int from, int to) {
+    this.skinning.apply(gl, program, list.get(from).skin);
     final int count = to - from;
     final int floats = count * RenderQueue.FLOATS_PER_INSTANCE;
     if (this.instanceBuffer.capacity() < floats) {
@@ -736,6 +742,7 @@ final class GlSceneRenderer {
       this.depth.dispose(gl);
       this.cutout.dispose(gl);
       this.box.dispose(gl);
+      this.skinning.dispose(gl);
       this.shadowMap.dispose(gl);
       this.localShadowMap.dispose(gl);
       this.post.dispose(gl);

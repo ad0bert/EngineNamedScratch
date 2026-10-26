@@ -1,0 +1,45 @@
+{
+  "format": "engine-scene",
+  "version": 1,
+  "materials": [
+    {
+      "color": [0.22, 0.22, 0.25, 1],
+      "pbr": true,
+      "metallic": 0.9,
+      "roughness": 0.35
+    },
+    {
+      "color": [1, 0.95, 0.85, 1],
+      "emissive": [3, 2.6, 2],
+      "specular": 0
+    }
+  ],
+  "entities": [
+    {
+      "name": "lamp-post",
+      "parent": null,
+      "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] }
+    },
+    {
+      "name": "lamp-pole",
+      "parent": 0,
+      "transform": { "position": [0, 1.2, 0], "rotation": [0, 0, 0, 1], "scale": [0.12, 2.4, 0.12] },
+      "components": [
+        { "type": "MeshRenderer", "properties": { "mesh": "cube:1", "material": 0, "staticGeometry": true } },
+        { "type": "BoxCollider", "properties": { "halfExtents": [0.5, 0.5, 0.5] } }
+      ]
+    },
+    {
+      "name": "lamp-head",
+      "parent": 0,
+      "transform": { "position": [0, 2.55, 0], "rotation": [0, 0, 0, 1], "scale": [0.22, 0.22, 0.22] },
+      "components": [
+        { "type": "MeshRenderer", "properties": { "mesh": "sphere:1,16,8", "material": 1, "castShadows": false } },
+        {
+          "type": "Light",
+          "properties": { "type": "POINT", "color": [1, 0.85, 0.6], "intensity": 1.2, "range": 6, "castShadows": false }
+        }
+      ]
+    }
+  ]
+}

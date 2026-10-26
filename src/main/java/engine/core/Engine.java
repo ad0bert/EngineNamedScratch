@@ -28,15 +28,22 @@ import com.jogamp.opengl.GLEventListener;
 import com.jogamp.opengl.GLProfile;
 import com.jogamp.opengl.util.Animator;
 
+import engine.animation.AnimationSystem;
+import engine.audio.AudioSystem;
+import engine.audio.NullAudioBackend;
+import engine.audio.al.AlAudioBackend;
 import engine.debug.DebugOverlay;
 import engine.ecs.ComponentUpdateSystem;
 import engine.ecs.Entity;
 import engine.ecs.ISystem;
 import engine.ecs.Scene;
 import engine.input.FirstPersonController;
+import engine.input.GamepadBackend;
 import engine.input.InputListener;
 import engine.input.InputState;
+import engine.input.jinput.JInputGamepads;
 import engine.messaging.IMessageService;
+import engine.messaging.MessageQueue;
 import engine.messaging.MessageService;
 import engine.physics.PhysicsSystem;
 import engine.physics.RayHit;
@@ -44,6 +51,7 @@ import engine.render.Overlay;
 import engine.render.RenderBackend;
 import engine.render.gl.GlBackend;
 import engine.resources.ResourceManager;
+import engine.serialization.SerializationContext;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -61,6 +69,8 @@ import lombok.extern.slf4j.Slf4j;
  * the window after N rendered frames (smoke tests); {@code engine.captureMouse=false} starts with a free pointer;
  * {@code engine.screenshot=file.png} saves the last frame before exiting (with {@code exitAfterFrames}) or, with
  * {@code engine.screenshotFrame=N}, frame N. A screenshot can also be requested with {@link #saveScreenshot}.
+ * {@code engine.audio=false} turns sound off; without a sound device it is off anyway (the engine never fails to
+ * start because of sound). {@code engine.gamepads=false} skips looking for gamepads.
  */
 @Slf4j
 public class Engine {
@@ -76,6 +86,7 @@ public class Engine {
   @Getter private final PhysicsSystem physics = new PhysicsSystem(this.messages);
   private final CountDownLatch closed = new CountDownLatch(1);
   private final AtomicBoolean stopping = new AtomicBoolean();
+  private final AtomicBoolean audioClosed = new AtomicBoolean();
   private final int exitAfterFrames = Integer.getInteger("engine.exitAfterFrames", 0);
   private volatile BooleanSupplier clickCaptures = () -> true;
   private volatile Path screenshot = System.getProperty("engine.screenshot") != null
@@ -85,8 +96,11 @@ public class Engine {
 
   private GLWindow window;
   private Animator animator;
+  private volatile GamepadBackend gamepads = GamepadBackend.NONE;
   @Getter private RenderBackend backend;
   @Getter private ResourceManager resources;
+  /** Sound: sources, one-shots, mixer volumes; silent if there is no sound device. */
+  @Getter private AudioSystem audio;
 
   @Getter private volatile double fps;
   private long frameCount;
@@ -115,6 +129,16 @@ public class Engine {
    */
   public void setClickCapturesMouse(BooleanSupplier when) {
     this.clickCaptures = when;
+  }
+
+  /** A context for saving or loading scenes and prefabs with this engine's resources and input. */
+  public SerializationContext serialization() {
+    return new SerializationContext(this.resources, this.input);
+  }
+
+  /** Looks for newly plugged-in gamepads at the next update (also done whenever the window regains focus). */
+  public void rescanGamepads() {
+    this.gamepads.rescan();
   }
 
   public void addSystem(ISystem system) {
@@ -154,6 +178,11 @@ public class Engine {
     });
     this.window.addWindowListener(new WindowAdapter() {
       @Override
+      public void windowGainedFocus(WindowEvent e) {
+        Engine.this.gamepads.rescan();
+      }
+
+      @Override
       public void windowLostFocus(WindowEvent e) {
         Engine.this.input.releaseAll();
         captureMouse(false);
@@ -172,6 +201,7 @@ public class Engine {
     this.animator.start();
     this.window.setVisible(true);
     this.closed.await();
+    closeAudio(); // the window may have been closed by the user rather than by stop()
     log.info("Engine stopped after {} frames", this.frameCount);
   }
 
@@ -201,14 +231,22 @@ public class Engine {
 
   /**
    * Requests shutdown; safe to call from any thread, and more than once (only the first call counts). The animator is
-   * stopped before the window is destroyed, so no frame is drawn while the window goes away.
+   * stopped before the window is destroyed, so no frame is drawn while the window goes away; the sound device is
+   * closed last, after the window's dispose has released the clips.
    */
   public void stop() {
     if (this.stopping.compareAndSet(false, true)) {
       new Thread(() -> {
         this.animator.stop();
         this.window.destroy();
+        closeAudio();
       }, "engine-stop").start();
+    }
+  }
+
+  private void closeAudio() {
+    if (this.audio != null && this.audioClosed.compareAndSet(false, true)) {
+      this.audio.dispose();
     }
   }
 
@@ -224,6 +262,7 @@ public class Engine {
       e.transform().snapshot(); // previous state for render interpolation
     }
     this.messages.dispatchPending();
+    this.gamepads.poll(this.input);
     if (this.input.wasActionPressed("release_mouse")) {
       captureMouse(false);
     }
@@ -256,12 +295,22 @@ public class Engine {
       log.info("OpenGL {} on {}", gl.glGetString(GL3.GL_VERSION), gl.glGetString(GL3.GL_RENDERER));
       Engine.this.backend = new GlBackend(() -> Engine.this.window.getGL().getGL3());
       Engine.this.backend.init();
-      Engine.this.resources = new ResourceManager(Engine.this.backend);
+      final var sound = Boolean.parseBoolean(System.getProperty("engine.audio", "true")) ? AlAudioBackend.open(32)
+          : null;
+      Engine.this.audio = new AudioSystem(sound != null ? sound : new NullAudioBackend());
+      Engine.this.resources = new ResourceManager(Engine.this.backend, Engine.this.audio.backend());
 
+      if (Boolean.parseBoolean(System.getProperty("engine.gamepads", "true"))) {
+        final var pads = JInputGamepads.open(Engine.this.input);
+        Engine.this.gamepads = pads != null ? pads : GamepadBackend.NONE;
+      }
       Engine.this.input.bind("release_mouse", KeyEvent.VK_ESCAPE);
       FirstPersonController.bindDefaults(Engine.this.input);
       Engine.this.addSystem(new ComponentUpdateSystem());
+      Engine.this.addSystem(new AnimationSystem()); // before physics: animated kinematic bodies push others
       Engine.this.addSystem(Engine.this.physics);
+      Engine.this.addSystem(Engine.this.audio); // after physics: sounds follow the bodies' new positions
+      Engine.this.messages.register(Engine.this.audio, MessageQueue.COLLISION);
       final var debug = new DebugOverlay(Engine.this);
       Engine.this.addSystem(debug);
       Engine.this.addOverlay(debug);
@@ -296,6 +345,7 @@ public class Engine {
     @Override
     public void dispose(GLAutoDrawable drawable) {
       Engine.this.game.shutdown(Engine.this);
+      Engine.this.gamepads.dispose();
       Engine.this.resources.dispose();
       Engine.this.backend.dispose();
     }

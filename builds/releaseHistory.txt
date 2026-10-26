@@ -1,5 +1,16 @@
 Version 0.7.0
-Engine polish. Contains:
+Sound, gamepads, scene files, animation, sky lighting and engine polish. Contains:
+- Audio: backend-agnostic AudioBackend with an OpenAL (JOAL) implementation and a silent fallback without a device;
+  AudioSource/AudioListener components, Doppler from rigidbody velocities, one-shots, mixer buses (master, music,
+  effects, UI), distance curves, a voice limit with priority/loudness stealing and virtual voices, ImpactSound from
+  collisions, WAV/AIFF/AU and Ogg Vorbis (JOrbis) with streaming music
+- Input: gamepads through JInput (radial stick and trigger dead zones, connect/disconnect, rescan on focus), actions
+  bound to keys, gamepad buttons and gamepad axes together; FirstPersonController takes sticks and triggers
+- Scenes: JSON scene files (entities, hierarchy, components, shared materials, resource keys), opt-in component
+  serializers (reflective FieldSerializer for public fields), prefabs instantiated any number of times
+- Animation: keyframe tracks with easing, slerp and cubic splines for transforms and arbitrary values, Animator
+  layers (cross-fade, weighted blend, tweens), glTF 2.0 loader (.gltf/.glb, PBR materials and textures, skins,
+  animations), GPU skinning in the scene and shadow passes
 - Physics: hinge angle limits (with restitution and softness, working with the motor) and ball-joint swing cone and
   twist limits for ragdolls, solved with the contacts and allocation-free; cylinder and convex hull colliders
   (quickhull with a vertex cap, solid mass and inertia, GJK/EPA with clipped face manifolds, raycasts, overlap
@@ -9,7 +20,9 @@ Engine polish. Contains:
   skyIntensity, skyRotation; HdrLoader
 - UI: copy, cut and paste (Ctrl+C/X/V, Ctrl+Insert, Shift+Delete/Insert) through a Clipboard interface (system
   clipboard via AWT, in-memory when headless), word-wrapped Gui.paragraph and TextWrap
-- Demo: procedural sky reflected by the PBR spheres (-Ddemo.sky=file.hdr or none), sky light slider
+- Demo: procedural sky reflected by the PBR spheres (-Ddemo.sky=file.hdr or none), sky light slider,
+  synthesized impact, throw, click, hum and wind sounds with volume sliders, gamepad controls, lamp-post
+  prefabs, F5 saves the scene, a keyframed cube instead of a Spinner, a pulsing glow, two skinned glTF tubes
 
 Version 0.6.0
 The remaining known limitations addressed. Contains:

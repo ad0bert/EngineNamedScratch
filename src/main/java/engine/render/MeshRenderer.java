@@ -22,6 +22,12 @@ public class MeshRenderer extends Component {
   public final GpuMesh mesh;
   public final Material material;
   public boolean castShadows = true;
+  /**
+   * Makes this a skinned renderer: the mesh (which needs {@link MeshData#skin} weights) is deformed by the skin's
+   * joints on the GPU. Skinned renderers are always treated as moving and are drawn one at a time (not instanced).
+   * Set it before the renderer is added to a scene.
+   */
+  public Skin skin;
   private boolean staticGeometry;
 
   // render state, owned by RenderQueue

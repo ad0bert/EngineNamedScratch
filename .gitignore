@@ -29,3 +29,6 @@ target/
 
 # intellij files
 .idea/
+
+# scenes saved by the demo (F5)
+demo-scene.json

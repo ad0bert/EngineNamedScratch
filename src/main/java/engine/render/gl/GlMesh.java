@@ -13,8 +13,9 @@ import engine.render.RenderQueue;
 import lombok.Getter;
 
 /**
- * VAO with static vertex/index buffers (position 0, normal 1, uv 2, tangent 10) plus a dynamic per-instance buffer
- * holding a model and a normal matrix per instance (attribute locations 3-9), so every draw is an instanced draw.
+ * VAO with static vertex/index buffers (position 0, normal 1, uv 2, tangent 10; joints 11 and weights 12 for skinned
+ * meshes) plus a dynamic per-instance buffer holding a model and a normal matrix per instance (attribute locations
+ * 3-9), so every draw is an instanced draw.
  */
 final class GlMesh implements GpuMesh {
   private static final int INSTANCE_STRIDE = RenderQueue.FLOATS_PER_INSTANCE * Float.BYTES;
@@ -26,6 +27,7 @@ final class GlMesh implements GpuMesh {
   private final int vao;
   private final int vbo;
   private final int ebo;
+  private final int skinVbo;
   private final int instanceVbo;
   private final int mode;
 
@@ -54,6 +56,21 @@ final class GlMesh implements GpuMesh {
     gl.glVertexAttribPointer(2, 2, GL3.GL_FLOAT, false, stride, 6L * Float.BYTES);
     gl.glEnableVertexAttribArray(10);
     gl.glVertexAttribPointer(10, 4, GL3.GL_FLOAT, false, stride, (long) MeshData.TANGENT_OFFSET * Float.BYTES);
+
+    if (data.skin() != null) {
+      gl.glGenBuffers(1, ids, 0);
+      this.skinVbo = ids[0];
+      gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, this.skinVbo);
+      gl.glBufferData(GL3.GL_ARRAY_BUFFER, (long) data.skin().length * Float.BYTES,
+          Buffers.newDirectFloatBuffer(data.skin()), GL3.GL_STATIC_DRAW);
+      final int skinStride = MeshData.SKIN_FLOATS_PER_VERTEX * Float.BYTES;
+      gl.glEnableVertexAttribArray(11);
+      gl.glVertexAttribPointer(11, 4, GL3.GL_FLOAT, false, skinStride, 0L);
+      gl.glEnableVertexAttribArray(12);
+      gl.glVertexAttribPointer(12, 4, GL3.GL_FLOAT, false, skinStride, 4L * Float.BYTES);
+    } else {
+      this.skinVbo = 0;
+    }
 
     if (data.indices() != null) {
       gl.glGenBuffers(1, ids, 0);
@@ -106,6 +123,9 @@ final class GlMesh implements GpuMesh {
     gl.glDeleteBuffers(1, new int[] { this.instanceVbo }, 0);
     if (this.ebo != 0) {
       gl.glDeleteBuffers(1, new int[] { this.ebo }, 0);
+    }
+    if (this.skinVbo != 0) {
+      gl.glDeleteBuffers(1, new int[] { this.skinVbo }, 0);
     }
   }
 }
