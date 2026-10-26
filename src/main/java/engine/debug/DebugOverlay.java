@@ -13,6 +13,7 @@ import engine.physics.PhysicsStats;
 import engine.render.Overlay;
 import engine.render.RenderStats;
 import engine.render.UiCanvas;
+import engine.render.UiFont;
 
 /** On-screen debug text: FPS, entities, draw statistics and camera position. Toggle with F3. */
 public class DebugOverlay implements ISystem, Overlay {
@@ -59,8 +60,9 @@ public class DebugOverlay implements ISystem, Overlay {
       return;
     }
     final float pad = 6f;
-    ui.drawRect(pad, pad, ui.textWidth(this.text, 1f) + 2 * pad, ui.lineHeight(1f) * this.lines + 2 * pad, 0f, 0f, 0f,
-        0.55f);
-    ui.drawText(this.text, 2 * pad, 2 * pad, 1f, 1f, 1f, 1f, 1f);
+    final var font = UiFont.MONOSPACED; // numbers keep their place while they change
+    ui.drawRect(pad, pad, ui.textWidth(font, this.text, 1f) + 2 * pad, ui.lineHeight(font, 1f) * this.lines + 2 * pad,
+        0f, 0f, 0f, 0.55f);
+    ui.drawText(font, this.text, 2 * pad, 2 * pad, 1f, 1f, 1f, 1f, 1f);
   }
 }

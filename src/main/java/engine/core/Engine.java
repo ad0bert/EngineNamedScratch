@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.BooleanSupplier;
 
 import javax.imageio.ImageIO;
 
@@ -74,6 +75,7 @@ public class Engine {
   @Getter private final PhysicsSystem physics = new PhysicsSystem(this.messages);
   private final CountDownLatch closed = new CountDownLatch(1);
   private final int exitAfterFrames = Integer.getInteger("engine.exitAfterFrames", 0);
+  private volatile BooleanSupplier clickCaptures = () -> true;
   private volatile Path screenshot = System.getProperty("engine.screenshot") != null
       ? Path.of(System.getProperty("engine.screenshot"))
       : null;
@@ -102,6 +104,15 @@ public class Engine {
 
   public boolean isMouseCaptured() {
     return this.inputListener.isCaptured();
+  }
+
+  /**
+   * Decides whether a click into the window captures the mouse (the default: always). A game with a user interface
+   * passes something like {@code () -> !gui.wantsMouse()}, so clicks on widgets stay with the widgets. Called on the
+   * window thread.
+   */
+  public void setClickCapturesMouse(BooleanSupplier when) {
+    this.clickCaptures = when;
   }
 
   public void addSystem(ISystem system) {
@@ -134,7 +145,7 @@ public class Engine {
     this.window.addMouseListener(new MouseAdapter() {
       @Override
       public void mousePressed(MouseEvent e) {
-        if (!Engine.this.inputListener.isCaptured()) {
+        if (!Engine.this.inputListener.isCaptured() && Engine.this.clickCaptures.getAsBoolean()) {
           captureMouse(true);
         }
       }

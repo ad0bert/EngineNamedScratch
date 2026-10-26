@@ -18,15 +18,20 @@ final class GlTexture implements GpuTexture {
     final int[] ids = new int[1];
     gl.glGenTextures(1, ids, 0);
     this.id = ids[0];
+    upload(gl, image);
+    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR_MIPMAP_LINEAR);
+    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
+    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT);
+    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_T, GL3.GL_REPEAT);
+  }
+
+  /** Replaces the pixels (the size may change), e.g. after a font atlas gained glyphs. */
+  void upload(GL3 gl, ImageData image) {
     gl.glBindTexture(GL3.GL_TEXTURE_2D, this.id);
     gl.glPixelStorei(GL3.GL_UNPACK_ALIGNMENT, 1);
     gl.glTexImage2D(GL3.GL_TEXTURE_2D, 0, GL3.GL_RGBA8, image.width(), image.height(), 0, GL3.GL_RGBA,
         GL3.GL_UNSIGNED_BYTE, ByteBuffer.wrap(image.rgba()));
     gl.glGenerateMipmap(GL3.GL_TEXTURE_2D);
-    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR_MIPMAP_LINEAR);
-    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
-    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT);
-    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_T, GL3.GL_REPEAT);
   }
 
   void bind(GL3 gl, int unit) {

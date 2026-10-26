@@ -27,6 +27,7 @@ import engine.render.Material;
 import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
 import engine.render.UiCanvas;
+import engine.ui.Gui;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -40,7 +41,10 @@ public class DemoGame implements Game {
   private Material crateMaterial;
   private Entity player;
   private Entity turntable;
+  private float turntableSpeed = 0.6f;
   private String aim = "";
+  private Gui gui;
+  private String playerName = "Player";
 
   @Override
   public void init(Engine engine) {
@@ -262,6 +266,40 @@ public class DemoGame implements Game {
     }, MessageQueue.COLLISION);
 
     engine.addOverlay(this::drawHud);
+
+    // a settings panel while the mouse is free (Esc); clicks on it do not recapture the mouse
+    this.gui = new Gui(engine.input());
+    engine.setClickCapturesMouse(() -> !this.gui.wantsMouse());
+    engine.addOverlay((ui, width, height) -> drawPanel(engine, ui, width));
+  }
+
+  private void drawPanel(Engine engine, UiCanvas ui, int width) {
+    final boolean free = !engine.isMouseCaptured();
+    this.gui.begin(ui, width, 0, free);
+    if (free) {
+      final var settings = engine.backend().settings();
+      final var g = this.gui;
+      g.beginPanel("Demo settings", width - 290f, 10f, 280f);
+      g.label("Grüße, " + this.playerName + "! – Ünïcödé ½ € ✓");
+      g.row(2);
+      if (g.button("Throw crate")) {
+        final var t = this.player.transform();
+        final var forward = t.forward(new Vector3f());
+        spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), forward.mul(10f));
+      }
+      if (g.button("Wake all")) {
+        engine.scene().components(Rigidbody.class).forEach(Rigidbody::wakeUp);
+      }
+      settings.occlusionCulling = g.checkbox("Occlusion culling", settings.occlusionCulling);
+      settings.maxPointShadows = g.checkbox("Point light shadows", settings.maxPointShadows > 0) ? 4 : 0;
+      settings.debugCascades = g.checkbox("Tint shadow cascades", settings.debugCascades);
+      g.space(4f);
+      engine.physics().gravity.y = -g.slider("Gravity", -engine.physics().gravity.y, 0f, 20f);
+      this.turntableSpeed = g.slider("Turntable speed", this.turntableSpeed, -3f, 3f);
+      this.playerName = g.textField("Name", this.playerName);
+      g.endPanel();
+    }
+    this.gui.end();
   }
 
   private void spawnCrate(Engine engine, Vector3f position, Vector3f velocity) {
@@ -277,7 +315,7 @@ public class DemoGame implements Game {
 
   @Override
   public void update(Engine engine, double dt) {
-    this.turntable.transform().rotation().rotateY((float) dt * 0.6f);
+    this.turntable.transform().rotation().rotateY((float) dt * this.turntableSpeed);
     final var t = this.player.transform();
     final var forward = t.forward(new Vector3f());
     if (engine.input().wasActionPressed("spawn")) {
@@ -310,7 +348,7 @@ public class DemoGame implements Game {
       ui.drawText(this.aim, cx + 15f, cy + 9f, 1f, 0f, 0f, 0f, 0.8f);
       ui.drawText(this.aim, cx + 14f, cy + 8f, 1f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc free mouse";
+    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  Esc settings";
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);
   }

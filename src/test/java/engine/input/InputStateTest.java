@@ -62,4 +62,40 @@ class InputStateTest {
     c.update(0.01);
     assertEquals(89f, c.pitch(), 1e-4);
   }
+
+  @Test
+  void mouseButtonsCountPressesAndReleases() {
+    final var s = new InputState();
+    s.mouseMovedTo(120, 45);
+    assertEquals(120, s.mouseX());
+    assertEquals(45, s.mouseY());
+    s.mouseButton(InputState.BUTTON_LEFT, true);
+    s.mouseButton(InputState.BUTTON_LEFT, true); // repeated "down" is one press
+    assertTrue(s.isMouseDown(InputState.BUTTON_LEFT));
+    s.mouseButton(InputState.BUTTON_LEFT, false);
+    assertFalse(s.isMouseDown(InputState.BUTTON_LEFT));
+    assertEquals(1, s.mousePresses(InputState.BUTTON_LEFT));
+    assertEquals(1, s.mouseReleases(InputState.BUTTON_LEFT));
+    assertEquals(0, s.mousePresses(InputState.BUTTON_RIGHT));
+    s.mouseButton(99, true); // out of range: ignored
+    assertFalse(s.isMouseDown(99));
+
+    s.mouseButton(InputState.BUTTON_RIGHT, true);
+    s.releaseAll();
+    assertFalse(s.isMouseDown(InputState.BUTTON_RIGHT));
+    assertEquals(1, s.mouseReleases(InputState.BUTTON_RIGHT));
+  }
+
+  @Test
+  void wheelAndTypedTextAreConsumed() {
+    final var s = new InputState();
+    s.mouseWheel(1f);
+    s.mouseWheel(0.5f);
+    assertEquals(1.5f, s.consumeWheel(), 1e-6f);
+    assertEquals(0f, s.consumeWheel(), 0f);
+    s.typed('h');
+    s.typed('ï');
+    assertEquals("hï", s.consumeTypedText());
+    assertEquals("", s.consumeTypedText());
+  }
 }
