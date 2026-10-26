@@ -1,6 +1,7 @@
 """Generates a small skinned glTF test/demo asset: a striped tube with a four-bone chain and three animations.
 Usage (from the repository root):
-  python3 tools/gen_tube.py src/main/resources/models/tube.glb src/test/resources/gltf/tube.gltf
+  python3 tools/gen_tube.py demo/src/main/resources/models/tube.glb engine/src/test/resources/gltf/tube.gltf
+  cp demo/src/main/resources/models/tube.glb engine/src/test/resources/models/tube.glb
 The output is public domain (CC0), like this script.
 """
 import base64, json, math, struct, sys, zlib

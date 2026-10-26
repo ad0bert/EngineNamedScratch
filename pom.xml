@@ -4,9 +4,34 @@
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>EngineTest</groupId>
-  <artifactId>EngineTest</artifactId>
+  <groupId>io.github.ad0bert</groupId>
+  <artifactId>engine-named-scratch-parent</artifactId>
   <version>0.7.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <name>EngineNamedScratch (parent)</name>
+  <description>A small, general-purpose Java game engine on OpenGL 3.3 core (JOGL) and OpenAL (JOAL).</description>
+  <url>https://github.com/ad0bert/EngineNamedScratch</url>
+
+  <modules>
+    <!-- the library a game depends on -->
+    <module>engine</module>
+    <!-- the demo game: an example of using the engine and the CI smoke test; not published -->
+    <module>demo</module>
+  </modules>
+
+  <scm>
+    <url>https://github.com/ad0bert/EngineNamedScratch</url>
+    <connection>scm:git:https://github.com/ad0bert/EngineNamedScratch.git</connection>
+  </scm>
+
+  <!-- the release workflow (.github/workflows/release.yml) deploys here; the server id matches its settings.xml -->
+  <distributionManagement>
+    <repository>
+      <id>github</id>
+      <url>https://maven.pkg.github.com/ad0bert/EngineNamedScratch</url>
+    </repository>
+  </distributionManagement>
 
   <properties>
     <java.version>25</java.version>
@@ -23,88 +48,74 @@
     <logback.version>1.5.18</logback.version>
   </properties>
 
-  <dependencies>
-    <dependency>
-      <groupId>org.jogamp.jogl</groupId>
-      <artifactId>jogl-all-main</artifactId>
-      <version>${jogamp.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.jogamp.gluegen</groupId>
-      <artifactId>gluegen-rt-main</artifactId>
-      <version>${jogamp.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.jogamp.joal</groupId>
-      <artifactId>joal-main</artifactId>
-      <version>${jogamp.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>net.java.jinput</groupId>
-      <artifactId>jinput</artifactId>
-      <version>${jinput.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>net.java.jinput</groupId>
-      <artifactId>jinput</artifactId>
-      <version>${jinput.version}</version>
-      <classifier>natives-all</classifier>
-    </dependency>
-    <dependency>
-      <groupId>org.jcraft</groupId>
-      <artifactId>jorbis</artifactId>
-      <version>${jorbis.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.joml</groupId>
-      <artifactId>joml</artifactId>
-      <version>${joml.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.projectlombok</groupId>
-      <artifactId>lombok</artifactId>
-      <version>${lombok.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-api</artifactId>
-      <version>${slf4j.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>ch.qos.logback</groupId>
-      <artifactId>logback-classic</artifactId>
-      <version>${logback.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter</artifactId>
-      <version>${junit.version}</version>
-      <scope>test</scope>
-    </dependency>
-  </dependencies>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.github.ad0bert</groupId>
+        <artifactId>engine-named-scratch</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ch.qos.logback</groupId>
+        <artifactId>logback-classic</artifactId>
+        <version>${logback.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
 
   <build>
-    <plugins>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.15.0</version>
-        <configuration>
-          <annotationProcessorPaths>
-            <path>
-              <groupId>org.projectlombok</groupId>
-              <artifactId>lombok</artifactId>
-              <version>${lombok.version}</version>
-            </path>
-          </annotationProcessorPaths>
-        </configuration>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.6.0</version>
-      </plugin>
-    </plugins>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.15.0</version>
+          <configuration>
+            <annotationProcessorPaths>
+              <path>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+                <version>${lombok.version}</version>
+              </path>
+            </annotationProcessorPaths>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.6.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>3.4.2</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-source-plugin</artifactId>
+          <version>3.3.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>3.11.2</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-dependency-plugin</artifactId>
+          <version>3.8.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-install-plugin</artifactId>
+          <version>3.1.4</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-deploy-plugin</artifactId>
+          <version>3.1.4</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
   </build>
 </project>
