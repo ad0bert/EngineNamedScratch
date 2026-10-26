@@ -2,6 +2,7 @@ package engine.physics;
 
 import org.joml.Matrix3f;
 import org.joml.Matrix4f;
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import engine.ecs.Component;
@@ -36,6 +37,8 @@ public abstract class Joint extends Component {
 
   /** Fraction of the position error removed per position round. */
   static final float CORRECTION = 0.8f;
+  /** Angle limits are left this far violated by the position rounds (rad), so a resting limit does not jitter. */
+  static final float ANGULAR_SLOP = 0.003f;
   private static final Vector3f NO_MOTION = new Vector3f();
   private static final Matrix3f NO_INERTIA = new Matrix3f().zero();
 
@@ -57,6 +60,8 @@ public abstract class Joint extends Component {
   private final Matrix4f matrix = new Matrix4f();
   final Vector3f tmp = new Vector3f();
   final Vector3f tmp2 = new Vector3f();
+  final Quaternionf rotationA = new Quaternionf();
+  final Quaternionf rotationB = new Quaternionf();
   float stepImpulse;
 
   /** Sets both anchors so they meet at {@code worldPoint} with the bodies where they are now (ball, hinge). */
@@ -129,6 +134,11 @@ public abstract class Joint extends Component {
   /** One round of the solver. */
   abstract void solve();
 
+  /** True if a motor would turn the bodies now; wakes them when they sleep. */
+  boolean drives() {
+    return false;
+  }
+
   /** One position round: moves the bodies (split by inverse mass) to undo drift. */
   void correctPositions(PhysicsSystem physics) {
     if (!isEnabled() || !anchors()) {
@@ -170,6 +180,30 @@ public abstract class Joint extends Component {
   final void finish() {
     if (this.stepImpulse > this.breakImpulse) {
       setEnabled(false);
+    }
+  }
+
+  /** World rotations of A and B into {@link #rotationA}/{@link #rotationB} (identity for the world). */
+  final void rotations() {
+    entity().transform().worldRotation(this.rotationA);
+    if (this.connected != null) {
+      this.connected.transform().worldRotation(this.rotationB);
+    } else {
+      this.rotationB.identity();
+    }
+  }
+
+  /**
+   * Position round of an angle limit: turns B by {@code angle} about {@code axis} relative to A, split between the
+   * bodies by inverse mass (the share of the error given by {@code fraction}).
+   */
+  final void turnApart(PhysicsSystem physics, Vector3f axis, float angle, float fraction) {
+    final float total = this.invA + this.invB;
+    if (this.invA > 0f) {
+      physics.twist(this.bodyA, this.tmp2.set(axis).mul(-angle * fraction * this.invA / total));
+    }
+    if (this.invB > 0f) {
+      physics.twist(this.bodyB, this.tmp2.set(axis).mul(angle * fraction * this.invB / total));
     }
   }
 
@@ -241,6 +275,64 @@ public abstract class Joint extends Component {
       inertia.transform(this.tmp);
       r.cross(this.tmp, this.tmp2);
       dest.setColumn(i, dest.getColumn(i, this.tmp).add(this.tmp2));
+    }
+  }
+
+  /**
+   * A one-sided angular limit row: keeps the spin of B relative to A along {@link #axis} at or above a bound (the
+   * impulse only pushes away from the limit). Speculative like the contacts: while the limit is still {@code c}
+   * radians away the bodies may approach by that much in this step, so a body reaches the limit without bouncing off
+   * early; once there it bounces with the given restitution or, when soft, keeps a fraction of its approach speed.
+   */
+  static final class AngularLimit {
+    /** Approach speeds below this (rad/s) do not bounce. */
+    private static final float REST_SPEED = 0.5f;
+    /** The row is set up when the limit is this close (rad) after this step's motion. */
+    private static final float MARGIN = 0.05f;
+
+    final Vector3f axis = new Vector3f();
+    private float mass;
+    private float bound;
+    float impulse;
+    boolean active;
+
+    /**
+     * Sets up the row for a limit {@code c} radians away (negative: violated) along {@code dir} (the direction in
+     * which the relative spin moves away from the limit) and applies the impulse kept from the last step.
+     */
+    void prepare(Joint j, Vector3f dir, float c, float dt, float restitution, float softness) {
+      this.axis.set(dir);
+      final float speed = j.tmp.set(j.wb).sub(j.wa).dot(this.axis);
+      if (c + Math.min(speed, 0f) * dt > MARGIN) {
+        this.active = false;
+        this.impulse = 0f;
+        return;
+      }
+      if (!this.active) {
+        this.impulse = 0f;
+      }
+      this.active = true;
+      this.mass = j.angularMass(this.axis);
+      if (restitution > 0f && speed < -REST_SPEED && c + speed * dt < 0f) {
+        this.bound = -restitution * speed;
+        this.impulse = 0f; // a bounce starts fresh
+      } else {
+        this.bound = c > 0f ? -c / dt : 0f;
+        if (softness > 0f && speed < 0f) {
+          this.bound = Math.min(this.bound, softness * speed);
+        }
+      }
+      j.applyAngular(this.axis, this.impulse);
+    }
+
+    void solve(Joint j) {
+      if (!this.active) {
+        return;
+      }
+      final float speed = j.tmp2.set(j.wb).sub(j.wa).dot(this.axis);
+      final float total = Math.max(0f, this.impulse + this.mass * (this.bound - speed));
+      j.applyAngular(this.axis, total - this.impulse);
+      this.impulse = total;
     }
   }
 }

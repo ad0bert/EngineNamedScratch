@@ -275,6 +275,15 @@ public class PhysicsSystem implements ISystem {
         ja.wakeUp();
         jb.wakeUp();
       }
+      final boolean asleep = ja != null && ja.sleeping || jb != null && jb.sleeping;
+      if (asleep && j.isEnabled() && j.drives()) { // e.g. a motor told to turn away from the limit it rests on
+        if (ja != null && !ja.kinematic) {
+          ja.wakeUp();
+        }
+        if (jb != null && !jb.kinematic) {
+          jb.wakeUp();
+        }
+      }
     }
     for (int i = 0; i < bodies.size(); i++) {
       final var b = bodies.get(i);
