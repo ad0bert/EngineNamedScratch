@@ -8,8 +8,10 @@ public class RenderStats {
   public int culled;
   public int shadowCasters;
   public int shadowCascades;
-  /** Point lights that rendered a shadow cube this frame. */
+  /** Point and spot lights with shadow maps this frame. */
   public int pointShadows;
+  /** Point/spot shadow maps kept from the last frame because nothing in them moved. */
+  public int cachedShadowMaps;
   public int lights;
   /** Static renderers skipped because their grid cells were hidden behind other geometry. */
   public int occluded;
@@ -18,6 +20,7 @@ public class RenderStats {
 
   public void reset() {
     this.pointShadows = 0;
+    this.cachedShadowMaps = 0;
     this.occluded = 0;
     this.occlusionQueries = 0;
     this.drawCalls = 0;

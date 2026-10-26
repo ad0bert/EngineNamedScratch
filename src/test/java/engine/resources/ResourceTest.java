@@ -32,6 +32,8 @@ class ResourceTest {
   static class FakeBackend implements RenderBackend {
     final List<MeshData> meshes = new ArrayList<>();
     final List<ImageData> images = new ArrayList<>();
+    final List<ImageData> colorImages = new ArrayList<>();
+    final List<ImageData> dataImages = new ArrayList<>();
     final GpuTexture white = () -> {
     };
     int disposed;
@@ -67,8 +69,9 @@ class ResourceTest {
     }
 
     @Override
-    public GpuTexture createTexture(ImageData image) {
+    public GpuTexture createTexture(ImageData image, boolean srgb) {
       this.images.add(image);
+      (srgb ? this.colorImages : this.dataImages).add(image);
       return () -> this.disposed++;
     }
 

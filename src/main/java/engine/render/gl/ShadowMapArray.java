@@ -64,9 +64,8 @@ final class ShadowMapArray {
     gl.glClear(GL3.GL_DEPTH_BUFFER_BIT);
   }
 
-  void end(GL3 gl, int viewportWidth, int viewportHeight) {
-    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, gl.getContext().getDefaultDrawFramebuffer());
-    gl.glViewport(0, 0, viewportWidth, viewportHeight);
+  /** Leaves the framebuffer bound; the caller binds its own target next. */
+  void end(GL3 gl) {
   }
 
   void bindTexture(GL3 gl, int unit) {

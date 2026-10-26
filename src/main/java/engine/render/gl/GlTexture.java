@@ -12,8 +12,12 @@ final class GlTexture implements GpuTexture {
   private final Supplier<GL3> glSupplier;
   private final int id;
 
-  GlTexture(Supplier<GL3> glSupplier, ImageData image) {
+  private final boolean srgb;
+
+  /** @param srgb decode from sRGB when sampled (colour images) */
+  GlTexture(Supplier<GL3> glSupplier, ImageData image, boolean srgb) {
     this.glSupplier = glSupplier;
+    this.srgb = srgb;
     final var gl = glSupplier.get();
     final int[] ids = new int[1];
     gl.glGenTextures(1, ids, 0);
@@ -29,7 +33,8 @@ final class GlTexture implements GpuTexture {
   void upload(GL3 gl, ImageData image) {
     gl.glBindTexture(GL3.GL_TEXTURE_2D, this.id);
     gl.glPixelStorei(GL3.GL_UNPACK_ALIGNMENT, 1);
-    gl.glTexImage2D(GL3.GL_TEXTURE_2D, 0, GL3.GL_RGBA8, image.width(), image.height(), 0, GL3.GL_RGBA,
+    gl.glTexImage2D(GL3.GL_TEXTURE_2D, 0, this.srgb ? GL3.GL_SRGB8_ALPHA8 : GL3.GL_RGBA8, image.width(),
+        image.height(), 0, GL3.GL_RGBA,
         GL3.GL_UNSIGNED_BYTE, ByteBuffer.wrap(image.rgba()));
     gl.glGenerateMipmap(GL3.GL_TEXTURE_2D);
   }

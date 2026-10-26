@@ -34,8 +34,8 @@ public final class GlBackend implements RenderBackend {
   @Override
   public void init() {
     final var gl = this.glSupplier.get();
-    this.white = new GlTexture(this.glSupplier, ImageData.solid(255, 255, 255, 255));
-    this.flatNormal = new GlTexture(this.glSupplier, ImageData.solid(128, 128, 255, 255));
+    this.white = new GlTexture(this.glSupplier, ImageData.solid(255, 255, 255, 255), false);
+    this.flatNormal = new GlTexture(this.glSupplier, ImageData.solid(128, 128, 255, 255), false);
     this.scene.init(gl, this.white, this.flatNormal);
     this.ui.init(gl, this.glSupplier);
   }
@@ -51,8 +51,8 @@ public final class GlBackend implements RenderBackend {
   }
 
   @Override
-  public GpuTexture createTexture(ImageData image) {
-    return new GlTexture(this.glSupplier, image);
+  public GpuTexture createTexture(ImageData image, boolean srgb) {
+    return new GlTexture(this.glSupplier, image, srgb);
   }
 
   @Override

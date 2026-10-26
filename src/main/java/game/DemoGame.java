@@ -82,7 +82,7 @@ public class DemoGame implements Game {
     ground.transform().position().set(0f, -1f, 0f);
     final var grass = new Material().color(0.35f, 0.55f, 0.3f, 1f);
     grass.specular = 0f;
-    grass.normalMap = res.texture("gen:ground-bumps", ProceduralTextures.bumps(256, 5f, 4L));
+    grass.normalMap = res.dataTexture("gen:ground-bumps", ProceduralTextures.bumps(256, 5f, 4L));
     grass.normalScale = 0.8f;
     ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(60f, 60f, 24f, 24f)), grass)).setStaticGeometry(true);
     scene.add(ground);
@@ -124,10 +124,10 @@ public class DemoGame implements Game {
     // sweeps across its relief
     final var bricks = ProceduralTextures.bricks(256);
     final var brickMaterial = new Material(res.texture("gen:bricks-albedo", bricks.albedo()));
-    brickMaterial.normalMap = res.texture("gen:bricks-normal", bricks.normal());
-    brickMaterial.heightMap = res.texture("gen:bricks-height", bricks.height());
+    brickMaterial.normalMap = res.dataTexture("gen:bricks-normal", bricks.normal());
+    brickMaterial.heightMap = res.dataTexture("gen:bricks-height", bricks.height());
     brickMaterial.heightScale = 0.03f;
-    brickMaterial.specularMap = res.texture("gen:bricks-gloss", bricks.specular());
+    brickMaterial.specularMap = res.dataTexture("gen:bricks-gloss", bricks.specular());
     brickMaterial.specular = 0.5f;
     final var wall = new Entity("wall");
     wall.transform().position().set(-6f, 0.5f, -2f);
@@ -195,6 +195,41 @@ public class DemoGame implements Game {
               new Vector3f());
         }
       }
+    }
+
+    // physically based materials: rougher from left to right, the back row metallic (gold)
+    final var sphereMesh = res.mesh(MeshFactory.sphere(0.35f, 32, 16));
+    for (int i = 0; i < 5; i++) {
+      for (int row = 0; row < 2; row++) {
+        final var m = new Material();
+        if (row == 0) {
+          m.color(0.75f, 0.1f, 0.1f, 1f).pbr(0f, 0.1f + 0.2f * i);
+        } else {
+          m.color(1f, 0.78f, 0.34f, 1f).pbr(1f, 0.1f + 0.2f * i);
+        }
+        final var ball = new Entity("pbr-sphere");
+        ball.transform().position().set(-2f + i, -0.6f, 4.5f - row);
+        ball.add(new MeshRenderer(sphereMesh, m)).setStaticGeometry(true);
+        scene.add(ball);
+      }
+    }
+
+    // a spot light on a post, aimed at the wall; it casts its own shadows
+    final var lamp = new Entity("spot");
+    lamp.transform().position().set(-2.5f, 3.5f, 2f);
+    lamp.transform().rotation().lookAlong(new Vector3f(-1f, -1.2f, -1.1f), new Vector3f(0f, 1f, 0f)).conjugate();
+    lamp.add(Light.spot(1f, 0.85f, 0.6f, 4f, 14f, 28f));
+    scene.add(lamp);
+
+    // two transparent panes crossing each other: order-independent transparency blends them correctly
+    final var paneMesh = res.mesh(MeshFactory.quad(2f, 1.6f));
+    for (int i = 0; i < 2; i++) {
+      final var pane = new Entity("pane");
+      pane.transform().position().set(5f, 0f, 6f);
+      pane.transform().setEulerDegrees(0f, i == 0 ? 35f : -35f, 0f);
+      final var m = new Material().color(i == 0 ? 1f : 0.2f, i == 0 ? 0.3f : 0.9f, 0.3f, 0.45f);
+      pane.add(new MeshRenderer(paneMesh, m)).castShadows = false;
+      scene.add(pane);
     }
 
     // a kinematic turntable turned by code (see update): the crates on it ride along
@@ -295,6 +330,11 @@ public class DemoGame implements Game {
       settings.occlusionCulling = g.checkbox("Occlusion culling", settings.occlusionCulling);
       settings.maxPointShadows = g.checkbox("Point light shadows", settings.maxPointShadows > 0) ? 4 : 0;
       settings.debugCascades = g.checkbox("Tint shadow cascades", settings.debugCascades);
+      g.row(2);
+      settings.antiAliasing = g.checkbox("FXAA", settings.antiAliasing);
+      settings.orderIndependentTransparency = g.checkbox("OIT", settings.orderIndependentTransparency);
+      settings.exposure = g.slider("Exposure", settings.exposure, 0.2f, 3f);
+      settings.bloomStrength = g.slider("Bloom", settings.bloomStrength, 0f, 0.5f);
       g.space(4f);
       engine.physics().gravity.y = -g.slider("Gravity", -engine.physics().gravity.y, 0f, 20f);
       this.turntableSpeed = g.slider("Turntable speed", this.turntableSpeed, -3f, 3f);

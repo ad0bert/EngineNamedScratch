@@ -77,7 +77,7 @@ final class GlUi implements UiCanvas {
     var f = this.faces.get(font);
     if (f == null) {
       final var atlas = new FontAtlas(font);
-      f = new Face(atlas, new GlTexture(this.glSupplier, atlas.image()));
+      f = new Face(atlas, new GlTexture(this.glSupplier, atlas.image(), false)); // the UI draws after tone mapping
       this.faces.put(font, f);
     }
     return f;

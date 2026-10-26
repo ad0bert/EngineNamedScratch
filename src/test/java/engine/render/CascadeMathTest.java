@@ -172,4 +172,18 @@ class CascadeMathTest {
       assertTrue(lookup[1] >= 0f && lookup[1] <= 1f && lookup[2] >= 0f && lookup[2] <= 1f, "on the chosen face");
     }
   }
+
+  @Test
+  void aSpotShadowMapCoversTheWholeCone() {
+    final var pos = new Vector3f(1f, 5f, 0f);
+    final var dir = new Vector3f(0.3f, -1f, 0.2f).normalize();
+    final var m = ShadowMath.spotViewProj(pos, dir, 30f, 0.1f, 20f, new Matrix4f());
+    // a point on the cone's edge, 10 m out: inside the map
+    final var side = new Vector3f(dir).cross(0f, 0f, 1f).normalize();
+    final var edge = new Quaternionf().rotateAxis((float) Math.toRadians(30f), side).transform(new Vector3f(dir));
+    final var p = m.transform(new Vector4f(pos.x + edge.x * 10f, pos.y + edge.y * 10f, pos.z + edge.z * 10f, 1f));
+    assertTrue(Math.abs(p.x / p.w) < 1f && Math.abs(p.y / p.w) < 1f, "the cone's edge is in view");
+    final var behind = m.transform(new Vector4f(pos.x - dir.x, pos.y - dir.y, pos.z - dir.z, 1f));
+    assertTrue(behind.w < 0f, "behind the light is not");
+  }
 }

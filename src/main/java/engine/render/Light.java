@@ -7,7 +7,8 @@ import engine.ecs.Component;
 
 /**
  * A light. {@link Type#DIRECTIONAL} lights shine along the entity's forward (-Z) axis; {@link Type#POINT} lights
- * radiate from the entity position and fade out at {@link #range}. At most {@link #MAX_LIGHTS} lights are used per
+ * radiate from the entity position and fade out at {@link #range}; {@link Type#SPOT} lights are point lights limited
+ * to a cone around the forward axis. At most {@link #MAX_LIGHTS} lights are used per
  * frame; the first shadow-casting directional light gets cascaded shadow maps, and shadow-casting point lights (up to
  * {@link RenderSettings#maxPointShadows}) get cube shadow maps reaching to their range.
  */
@@ -16,14 +17,18 @@ public class Light extends Component {
   public static final int MAX_CASCADES = 4;
 
   public enum Type {
-    DIRECTIONAL, POINT
+    DIRECTIONAL, POINT, SPOT
   }
 
   public Type type = Type.DIRECTIONAL;
   public final Vector3f color = new Vector3f(1f, 1f, 1f);
   public float intensity = 1f;
-  /** Point lights only: distance at which the light has faded to zero. */
+  /** Point and spot lights: distance at which the light has faded to zero. */
   public float range = 15f;
+  /** Spot lights: half the opening angle of the cone, in degrees. */
+  public float spotAngle = 30f;
+  /** Spot lights: the part of the cone (0..1, from the edge inwards) over which the light fades out. */
+  public float spotSoftness = 0.25f;
   /** Ambient term (applied once, taken from the first light). */
   public final Vector3f ambient = new Vector3f(0.25f, 0.25f, 0.28f);
   /**
@@ -51,6 +56,15 @@ public class Light extends Component {
     l.intensity = intensity;
     l.range = range;
     l.castShadows = false;
+    return l;
+  }
+
+  /** A spot light at the entity, shining along its forward axis; casts shadows. */
+  public static Light spot(float r, float g, float b, float intensity, float range, float angleDegrees) {
+    final var l = point(r, g, b, intensity, range);
+    l.type = Type.SPOT;
+    l.spotAngle = angleDegrees;
+    l.castShadows = true;
     return l;
   }
 

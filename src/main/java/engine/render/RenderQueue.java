@@ -436,6 +436,16 @@ public final class RenderQueue {
     r.normal.get(index * FLOATS_PER_INSTANCE + 16, buf);
   }
 
+  /** False while the renderer is moving (interpolated between steps); its cached state is valid otherwise. */
+  public static boolean isSettled(MeshRenderer r) {
+    return r.stateValid;
+  }
+
+  /** Changes whenever a settled renderer's transform (or an ancestor's) changed. */
+  public static long version(MeshRenderer r) {
+    return r.cacheVersion;
+  }
+
   public static Matrix4f modelMatrix(MeshRenderer r) {
     return r.model;
   }

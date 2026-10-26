@@ -35,16 +35,29 @@ public class ResourceManager {
     return this.backend.whiteTexture();
   }
 
-  /** Returns the cached texture, or the white texture (with a logged error) if loading fails. */
+  /**
+   * A colour texture (sRGB: albedo, emissive); returns the cached texture, or the white texture (with a logged
+   * error) if loading fails.
+   */
   public GpuTexture texture(String path) {
-    final var cached = this.textures.get(path);
+    return load(path, true);
+  }
+
+  /** A data texture (used as stored: normal, height, specular, roughness maps); see {@link #texture(String)}. */
+  public GpuTexture dataTexture(String path) {
+    return load(path, false);
+  }
+
+  private GpuTexture load(String path, boolean srgb) {
+    final var key = srgb ? path : path + "|linear";
+    final var cached = this.textures.get(key);
     if (cached != null) {
       return cached;
     }
     GpuTexture t;
     try (InputStream in = open(path)) {
-      t = this.backend.createTexture(ImageLoader.load(in, path));
-      this.textures.put(path, t);
+      t = this.backend.createTexture(ImageLoader.load(in, path), srgb);
+      this.textures.put(key, t);
     } catch (IOException | RuntimeException e) {
       log.error("Could not load texture {}", path, e);
       t = white();
@@ -57,7 +70,12 @@ public class ResourceManager {
    * again with the same key returns the cached texture. The manager disposes it on shutdown.
    */
   public GpuTexture texture(String key, ImageData image) {
-    return this.textures.computeIfAbsent(key, k -> this.backend.createTexture(image));
+    return this.textures.computeIfAbsent(key, k -> this.backend.createTexture(image, true));
+  }
+
+  /** Like {@link #texture(String, ImageData)} for data (normal maps, height maps...), which is used as stored. */
+  public GpuTexture dataTexture(String key, ImageData image) {
+    return this.textures.computeIfAbsent(key, k -> this.backend.createTexture(image, false));
   }
 
   /** A single mesh from an OBJ file; materials are ignored. */
@@ -130,7 +148,7 @@ public class ResourceManager {
       out.normalScale = m.normalScale();
     }
     if (m.specularMap() != null) {
-      out.specularMap = texture(dir + m.specularMap());
+      out.specularMap = dataTexture(dir + m.specularMap());
     }
     out.emissive.set(m.ke()[0], m.ke()[1], m.ke()[2]);
     if (m.emissiveMap() != null) {
@@ -140,7 +158,7 @@ public class ResourceManager {
       }
     }
     if (m.heightMap() != null) {
-      out.heightMap = texture(dir + m.heightMap());
+      out.heightMap = dataTexture(dir + m.heightMap());
     }
     return out;
   }
@@ -162,7 +180,7 @@ public class ResourceManager {
     final var normals = NormalMaps.looksLikeHeightMap(image)
         ? NormalMaps.fromHeights(NormalMaps.heights(image), image.width(), image.height(), 3f * bumpScale)
         : image;
-    return texture(key, normals);
+    return dataTexture(key, normals);
   }
 
   /** The diffuse texture (or white) with its alpha replaced by the brightness of a mask image (map_d). */
