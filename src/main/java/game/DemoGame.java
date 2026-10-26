@@ -16,8 +16,12 @@ import engine.input.FirstPersonController;
 import engine.messaging.IMessageReceiver;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
+import engine.physics.BallJoint;
 import engine.physics.BoxCollider;
+import engine.physics.CapsuleCollider;
 import engine.physics.CollisionEvent;
+import engine.physics.HingeJoint;
+import engine.physics.MeshCollider;
 import engine.physics.Rigidbody;
 import engine.physics.SphereCollider;
 import engine.render.Camera;
@@ -33,7 +37,8 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Sample scene exercising the engine: cascaded and point-light shadows, normal, height and specular maps, a cut-out
  * grate, instanced crates under physics, a turntable carrying crates, a compound body, an MTL-textured model,
- * transparency, points, a sprite and a HUD. Press F to throw a crate.
+ * transparency, points, a sprite, a jointed chain, a motorised hinge, a mesh-collider dome and a HUD. Press F to
+ * throw a crate.
  */
 @Slf4j
 public class DemoGame implements Game {
@@ -278,6 +283,49 @@ public class DemoGame implements Game {
     scene.add(small);
     scene.add(bar);
 
+    // a chain of capsules hanging from a fixed point by ball joints; push it with E
+    final var linkMesh = res.mesh(MeshFactory.cube(1f));
+    final var linkMaterial = new Material().color(0.85f, 0.85f, 0.9f, 1f).pbr(1f, 0.3f);
+    Entity previous = null;
+    for (int i = 0; i < 6; i++) {
+      final var link = new Entity("chain-link");
+      link.transform().position().set(-9f + 0.25f + i * 0.5f, 4.6f, -1f); // laid out level: it swings down
+      link.transform().setEulerDegrees(0f, 0f, 90f);
+      link.transform().scale().set(0.12f, 0.5f, 0.12f);
+      link.add(new MeshRenderer(linkMesh, linkMaterial));
+      link.add(new CapsuleCollider(0.5f, 0.5f));
+      link.add(new Rigidbody()).linearDamping = 0.3f;
+      scene.add(link);
+      final var joint = link.add(new BallJoint());
+      joint.connected = previous;
+      joint.setWorldAnchor(new Vector3f(-9f + i * 0.5f, 4.6f, -1f));
+      previous = link;
+    }
+
+    // a paddle turned by a hinge motor: it sweeps whatever lies in its way
+    final var paddle = new Entity("paddle");
+    paddle.transform().position().set(9f, -0.3f, 2f);
+    paddle.transform().scale().set(2.4f, 0.5f, 0.15f);
+    paddle.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), new Material().color(0.9f, 0.6f, 0.1f, 1f)));
+    paddle.add(new BoxCollider(0.5f, 0.5f, 0.5f));
+    paddle.add(new Rigidbody()).mass = 4f;
+    scene.add(paddle);
+    final var hinge = paddle.add(new HingeJoint());
+    hinge.setWorldAnchor(new Vector3f(9f, -0.3f, 2f));
+    hinge.setWorldAxis(new Vector3f(0f, 1f, 0f));
+    hinge.motor = true;
+    hinge.motorSpeed = 1.2f;
+    hinge.maxMotorTorque = 60f;
+
+    // a dome with a triangle-mesh collider: thrown crates roll and slide off its faceted surface
+    final var domeMesh = MeshFactory.sphere(3f, 20, 10);
+    final var dome = new Entity("dome");
+    dome.transform().position().set(10f, -2.4f, 9f);
+    dome.add(new MeshRenderer(res.mesh(domeMesh), new Material().color(0.45f, 0.5f, 0.6f, 1f).pbr(0f, 0.6f)))
+        .setStaticGeometry(true);
+    dome.add(new MeshCollider(domeMesh));
+    scene.add(dome);
+
     // static scenery: cached matrices and grid-based culling; only the pillars near the view cost anything
     final var pillarMesh = res.mesh(MeshFactory.cube(0.5f));
     final var stone = new Material().color(0.6f, 0.58f, 0.55f, 1f);
@@ -370,6 +418,7 @@ public class DemoGame implements Game {
     crate.add(new BoxCollider(0.5f, 0.5f, 0.5f));
     final var body = crate.add(new Rigidbody());
     body.velocity.set(velocity);
+    body.continuous = velocity.lengthSquared() > 0f; // thrown crates do not tunnel through thin walls
     engine.scene().add(crate);
   }
 
@@ -380,7 +429,7 @@ public class DemoGame implements Game {
     final var t = this.player.transform();
     final var forward = t.forward(new Vector3f());
     if (engine.input().wasActionPressed("spawn")) {
-      spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(10f));
+      spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(18f));
     }
 
     // what is the crosshair pointing at? E pushes it (wakes sleeping bodies)

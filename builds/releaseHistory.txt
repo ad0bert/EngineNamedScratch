@@ -1,3 +1,17 @@
+Version 0.6.0
+The remaining known limitations addressed. Contains:
+- Physics: capsule and triangle-mesh colliders (BVH, per-triangle contacts), ball/hinge (with motor)/distance joints
+  that can break, continuous collision for fast bodies, syncQueries, block-solved contact manifolds with central
+  friction (tall stacks no longer creep, awake steps a third faster)
+- Rendering: HDR target with bloom, ACES tone mapping and FXAA, linear (sRGB-correct) lighting, physically based
+  materials (GGX, metallic/roughness maps), spot lights with shadows, cached point/spot shadow maps, weighted blended
+  order-independent transparency
+- MTL: Ka, Tr, Ni, the PBR extension (Pr, Pm, map_Pr, map_Pm), texture options -s, -o and -clamp
+- UI: clipping, scroll regions, Tab focus navigation, text editing with cursor and selection, multi-line text areas,
+  glyphs rasterized at the drawn size (sharp scaled text)
+- Demo: PBR spheres, spot lamp, crossing glass panes, swinging chain, motorised paddle, mesh-collider dome, fast throws
+  with continuous collision, notes area and collision log in the settings panel
+
 Version 0.5.0
 Known limitations addressed. Contains:
 - Physics: warm-started contact impulses and speculative contacts (12-crate stacks stand without sleeping, 20 with),
