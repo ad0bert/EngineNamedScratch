@@ -28,6 +28,7 @@ import com.jogamp.opengl.GLEventListener;
 import com.jogamp.opengl.GLProfile;
 import com.jogamp.opengl.util.Animator;
 
+import engine.animation.AnimationSystem;
 import engine.audio.AudioSystem;
 import engine.audio.NullAudioBackend;
 import engine.audio.al.AlAudioBackend;
@@ -306,6 +307,7 @@ public class Engine {
       Engine.this.input.bind("release_mouse", KeyEvent.VK_ESCAPE);
       FirstPersonController.bindDefaults(Engine.this.input);
       Engine.this.addSystem(new ComponentUpdateSystem());
+      Engine.this.addSystem(new AnimationSystem()); // before physics: animated kinematic bodies push others
       Engine.this.addSystem(Engine.this.physics);
       Engine.this.addSystem(Engine.this.audio); // after physics: sounds follow the bodies' new positions
       Engine.this.messages.register(Engine.this.audio, MessageQueue.COLLISION);

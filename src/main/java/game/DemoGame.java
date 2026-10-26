@@ -6,10 +6,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import com.jogamp.newt.event.KeyEvent;
 
+import engine.animation.AnimationClip;
+import engine.animation.AnimationLayer;
+import engine.animation.Animator;
+import engine.animation.Channel;
+import engine.animation.Easing;
+import engine.animation.Track;
 import engine.audio.AudioBus;
 import engine.audio.AudioClip;
 import engine.audio.AudioListener;
@@ -123,7 +130,15 @@ public class DemoGame implements Game {
 
     final var cube = new Entity("cube");
     cube.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), new Material(res.texture("textures/cubeFace.png"))));
-    cube.add(new Spinner(20f, 35f, 10f));
+    // keyframed instead of a Spinner: it bobs (eased, back and forth) while it turns (slerped rotation keys)
+    final var bob = Track.linear(new float[] { 0f, 1.6f }, new float[] { 0f, 0f, 0f, 0f, 0.6f, 0f }, 3)
+        .withEasing(Easing.SINE_IN_OUT);
+    final var turn = new AnimationClip("turn").add(Channel.transform("", Channel.Property.ROTATION,
+        Track.linear(new float[] { 0f, 2f, 4f, 6f }, turnKeys(), 4)));
+    final var cubeAnimator = cube.add(new Animator());
+    cubeAnimator.play(turn);
+    cubeAnimator.blend(new AnimationClip("bob").add(Channel.transform("", Channel.Property.POSITION, bob)), 1f,
+        AnimationLayer.Loop.PING_PONG);
     cube.add(new BoxCollider(new Vector3f(1f)));
     scene.add(cube);
 
@@ -178,6 +193,9 @@ public class DemoGame implements Game {
     moonMaterial.emissive.set(1f, 0.8f, 0.4f); // glows on its own
     final var moonRenderer = moon.add(new MeshRenderer(res.mesh(MeshFactory.cube(1f)), moonMaterial));
     moonRenderer.castShadows = false; // the light sits inside it
+    // its glow pulses: a tween of a material colour through a custom channel
+    moon.add(new Animator()).tween(v -> moonMaterial.emissive.set(v[0], v[1], v[2]), new float[] { 1f, 0.8f, 0.4f },
+        new float[] { 3f, 2.2f, 0.9f }, 0.8f, Easing.QUAD_IN_OUT, AnimationLayer.Loop.PING_PONG);
     final var moonLight = moon.add(Light.point(1f, 0.6f, 0.2f, 1.6f, 9f));
     moonLight.castShadows = true; // the spinning cube throws a moving shadow
     // and it hums: a looping spatial sound that circles the listener (panning, Doppler)
@@ -484,6 +502,21 @@ public class DemoGame implements Game {
     body.velocity.set(velocity);
     body.continuous = velocity.lengthSquared() > 0f; // thrown crates do not tunnel through thin walls
     engine.scene().add(crate);
+  }
+
+  /** Quaternions (x, y, z, w) turning a full circle about a tilted axis in three steps. */
+  private static float[] turnKeys() {
+    final var axis = new Vector3f(0.3f, 1f, 0.2f).normalize();
+    final float[] keys = new float[16];
+    final var q = new Quaternionf();
+    for (int i = 0; i < 4; i++) {
+      q.fromAxisAngleRad(axis, (float) (i * 2 * Math.PI / 3));
+      keys[i * 4] = q.x;
+      keys[i * 4 + 1] = q.y;
+      keys[i * 4 + 2] = q.z;
+      keys[i * 4 + 3] = q.w;
+    }
+    return keys;
   }
 
   private void saveScene(Engine engine, Path file) {
