@@ -43,6 +43,7 @@ public class ResourceManager {
   private final Map<String, AudioClip> sounds = new HashMap<>();
   private final Map<Object, String> keys = new IdentityHashMap<>();
   private final Map<String, GpuMesh> keyedMeshes = new HashMap<>();
+  private final Map<String, GltfModel> gltfs = new HashMap<>();
 
   /** Without sound: clips are created on a silent backend. */
   public ResourceManager(RenderBackend backend) {
@@ -163,6 +164,34 @@ public class ResourceManager {
     return mesh(spec, data);
   }
 
+  /**
+   * A glTF 2.0 asset ({@code .gltf} or {@code .glb}; external buffers and images are resolved relative to it), with
+   * its meshes, textures and materials uploaded; cached.
+   *
+   * @throws IllegalStateException if it cannot be read
+   */
+  public GltfModel gltf(String path) {
+    final var cached = this.gltfs.get(path);
+    if (cached != null) {
+      return cached;
+    }
+    final var dir = path.substring(0, path.lastIndexOf('/') + 1);
+    try (InputStream in = open(path)) {
+      final var asset = GltfLoader.load(in.readAllBytes(), path, uri -> {
+        try (InputStream other = open(dir + uri)) {
+          return other.readAllBytes();
+        } catch (IOException e) {
+          return null;
+        }
+      });
+      final var model = new GltfModel(asset, path, this);
+      this.gltfs.put(path, model);
+      return model;
+    } catch (IOException | RuntimeException e) {
+      throw new IllegalStateException("Could not load glTF " + path, e);
+    }
+  }
+
   /** The key a cached mesh, texture or sound can be found again by, or null if it was not created through here. */
   public String keyOf(Object resource) {
     return resource == null ? null : this.keys.get(resource);
@@ -175,6 +204,11 @@ public class ResourceManager {
       return cached;
     }
     final int hash = key.lastIndexOf('#');
+    final var lower = key.toLowerCase(Locale.ROOT);
+    if (hash > 0 && (lower.startsWith(".gltf#", hash - 5) || lower.startsWith(".glb#", hash - 4))) {
+      gltf(key.substring(0, hash)); // registers its meshes under their keys
+      return this.keyedMeshes.get(key);
+    }
     if (hash > 0) {
       final var parts = model(key.substring(0, hash)).parts();
       final int index = Integer.parseInt(key.substring(hash + 1));
@@ -494,5 +528,6 @@ public class ResourceManager {
     this.models.clear();
     this.keys.clear();
     this.keyedMeshes.clear();
+    this.gltfs.clear();
   }
 }

@@ -65,6 +65,9 @@ public class DemoGame implements Game {
   private AudioClip whoosh;
   private AudioClip click;
   private final SceneSerializer serializer = new SceneSerializer();
+  private Animator dancer;
+  private float danceTime;
+  private boolean bending;
   private Entity player;
   private Entity turntable;
   private float turntableSpeed = 0.6f;
@@ -383,6 +386,18 @@ public class DemoGame implements Game {
     dome.add(new MeshCollider(domeMesh));
     scene.add(dome);
 
+    // two skinned, animated tubes from a glTF file: one bends, the other cross-fades between twisting and bending
+    // (see update) with a cubic-spline pulse blended in at half weight
+    final var tube = res.gltf("models/tube.glb");
+    final var bender = tube.instantiate(scene);
+    bender.transform().position().set(-2.6f, -1f, 1.2f);
+    bender.get(Animator.class).play("bend", AnimationLayer.Loop.LOOP);
+    final var dancer = tube.instantiate(scene);
+    dancer.transform().position().set(2.6f, -1f, 1.2f);
+    this.dancer = dancer.get(Animator.class);
+    this.dancer.play("twist", AnimationLayer.Loop.LOOP);
+    this.dancer.blend(this.dancer.clip("pulse"), 0.5f, AnimationLayer.Loop.PING_PONG);
+
     // lamp posts from a prefab file (prefabs/lamp-post.json): three instances sharing their materials
     try {
       final var lampPost = Prefab.load("prefabs/lamp-post.json", this.serializer);
@@ -531,6 +546,15 @@ public class DemoGame implements Game {
   @Override
   public void update(Engine engine, double dt) {
     this.turntable.transform().rotation().rotateY((float) dt * this.turntableSpeed);
+    this.danceTime += (float) dt;
+    if (this.danceTime > 3f) { // every three seconds the right tube changes its dance, blending over half a second
+      this.danceTime = 0f;
+      this.bending = !this.bending;
+      final var pulse = this.dancer.layers().get(this.dancer.layers().size() - 1);
+      this.dancer.crossFade(this.dancer.clip(this.bending ? "bend" : "twist"), 0.5f, AnimationLayer.Loop.LOOP);
+      this.dancer.remove(pulse); // keep the pulse on top, at its weight
+      this.dancer.blend(this.dancer.clip("pulse"), 0.5f, AnimationLayer.Loop.PING_PONG);
+    }
     this.controller.setEnabled(!this.gui.wantsKeyboard()); // typing a name must not walk around
     final var t = this.player.transform();
     final var forward = t.forward(new Vector3f());
