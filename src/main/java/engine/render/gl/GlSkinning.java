@@ -14,8 +14,8 @@ import engine.render.Skin;
  * waits) and switches the shader's {@code uSkinned} flag.
  */
 final class GlSkinning {
-  /** Kept away from the material and shadow units. */
-  static final int UNIT = 15;
+  /** Kept away from the material and shadow units (0-7) and the sky units (13-15). */
+  static final int UNIT = 12;
 
   private int buffer;
   private int texture;
