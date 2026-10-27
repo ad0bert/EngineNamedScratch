@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.ad0bert</groupId>
     <artifactId>engine-named-scratch-parent</artifactId>
-    <version>0.8.1-SNAPSHOT</version>
+    <version>0.8.2-SNAPSHOT</version>
   </parent>
 
   <artifactId>engine-named-scratch-demo</artifactId>
