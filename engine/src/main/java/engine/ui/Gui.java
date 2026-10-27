@@ -132,6 +132,9 @@ public class Gui {
   public Gui(InputState input, Clipboard clipboard) {
     this.input = input;
     this.clipboard = clipboard;
+    // clicks made before this Gui existed (in a game, or the one that opened a menu) are not clicks in its first frame
+    this.seenPresses = input.mousePresses(InputState.BUTTON_LEFT);
+    this.seenReleases = input.mouseReleases(InputState.BUTTON_LEFT);
   }
 
   public Clipboard clipboard() {

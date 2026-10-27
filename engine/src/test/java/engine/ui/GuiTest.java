@@ -70,6 +70,36 @@ class GuiTest {
   }
 
   @Test
+  void clicksFromBeforeTheGuiExistedDoNotClickAnything() {
+    // clicks elsewhere first (firing in a game, the click that opened a menu) ...
+    for (int i = 0; i < 3; i++) {
+      this.input.mouseButton(InputState.BUTTON_LEFT, true);
+      this.input.mouseButton(InputState.BUTTON_LEFT, false);
+    }
+    // ... then a new menu opens with the pointer over a button
+    final var menu = new Gui(this.input, this.clipboard);
+    pointAt(50f, FIRST_Y + 10f);
+    final boolean[] clicked = new boolean[1];
+    this.canvas = new FakeCanvas();
+    menu.begin(this.canvas, 800, 600, true);
+    menu.beginPanel("Panel", 10f, 10f, 200f);
+    clicked[0] = menu.button("Go");
+    menu.endPanel();
+    menu.end();
+    assertFalse(clicked[0], "an old click is not a click in the first frame");
+
+    // a real click still works
+    this.input.mouseButton(InputState.BUTTON_LEFT, true);
+    this.input.mouseButton(InputState.BUTTON_LEFT, false);
+    menu.begin(this.canvas, 800, 600, true);
+    menu.beginPanel("Panel", 10f, 10f, 200f);
+    clicked[0] = menu.button("Go");
+    menu.endPanel();
+    menu.end();
+    assertTrue(clicked[0]);
+  }
+
+  @Test
   void aButtonClicksOnReleaseOverIt() {
     final boolean[] clicked = new boolean[1];
     final Runnable ui = () -> clicked[0] = this.gui.button("Go");
