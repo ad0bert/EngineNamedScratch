@@ -77,7 +77,8 @@ import lombok.extern.slf4j.Slf4j;
  * {@code engine.screenshotFrame=N}, frame N. A screenshot can also be requested with {@link #saveScreenshot}.
  * {@code engine.audio=false} turns sound off; without a sound device it is off anyway (the engine never fails to
  * start because of sound). {@code engine.gamepads=false} skips looking for gamepads. {@code engine.fullscreen} and
- * {@code engine.vsync} override the config.
+ * {@code engine.vsync} override the config. {@code engine.debugOverlay=false} starts with the debug text (F3)
+ * hidden.
  *
  * <p>
  * A game either builds everything in {@link Game#init}, or pushes {@link GameState}s (title screen, levels, pause
@@ -107,6 +108,7 @@ public class Engine {
   /** Per-user directories for settings and saves, named after {@link EngineConfig#id()}. */
   @Getter private final UserDirs userDirs;
   private volatile boolean paused;
+  private volatile boolean debugOverlay = Boolean.parseBoolean(System.getProperty("engine.debugOverlay", "true"));
   private volatile boolean vsync;
   private volatile boolean fullscreen;
   private volatile int startWidth;
@@ -213,6 +215,19 @@ public class Engine {
     final List<Overlay> list = new ArrayList<>(this.overlays);
     list.add(this.statesOverlay);
     this.drawn = List.copyOf(list);
+  }
+
+  /**
+   * Shows or hides the debug text (FPS, entities, draw statistics; F3 toggles it). Visible by default, unless
+   * {@code -Dengine.debugOverlay=false}; a game for players usually hides it in {@link Game#init}. Safe to call from
+   * any thread, also before {@link #run}.
+   */
+  public void setDebugOverlayVisible(boolean value) {
+    this.debugOverlay = value;
+  }
+
+  public boolean isDebugOverlayVisible() {
+    return this.debugOverlay;
   }
 
   /**

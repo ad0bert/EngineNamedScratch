@@ -1,3 +1,9 @@
+Version 0.8.1
+A small update for games built on the engine. Contains:
+- Engine.setDebugOverlayVisible / isDebugOverlayVisible, and -Dengine.debugOverlay=false: a game can start with the
+  debug text (F3) hidden
+- Build: GitHub Actions moved to actions/checkout v7, actions/setup-java v6 and actions/upload-artifact v7 (Node 24)
+
 Version 0.8.0
 The engine as a library, and what a game needs around its levels. Contains:
 - Build: Maven modules engine (the library, io.github.ad0bert:engine-named-scratch, with sources and javadoc) and
