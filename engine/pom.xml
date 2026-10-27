@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.ad0bert</groupId>
     <artifactId>engine-named-scratch-parent</artifactId>
-    <version>0.7.0-SNAPSHOT</version>
+    <version>0.8.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>engine-named-scratch</artifactId>
@@ -76,6 +76,16 @@
   </dependencies>
 
   <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- text files with ${project.version} and the like; kept apart so binary resources are never filtered -->
+      <resource>
+        <directory>src/main/resources-filtered</directory>
+        <filtering>true</filtering>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -84,6 +94,18 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <!-- a stable name for games that run on the module path -->
+              <Automatic-Module-Name>io.github.ad0bert.engine</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
+        </configuration>
       </plugin>
       <!-- sources and javadoc next to the jar, so a game's IDE shows engine code and docs -->
       <plugin>
@@ -104,6 +126,8 @@
         <configuration>
           <doclint>none</doclint>
           <quiet>true</quiet>
+          <!-- the backends are internal (see their package-info) -->
+          <excludePackageNames>engine.render.gl:engine.audio.al:engine.input.jinput</excludePackageNames>
         </configuration>
         <executions>
           <execution>

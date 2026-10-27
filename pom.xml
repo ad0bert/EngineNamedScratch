@@ -6,7 +6,7 @@
 
   <groupId>io.github.ad0bert</groupId>
   <artifactId>engine-named-scratch-parent</artifactId>
-  <version>0.7.0-SNAPSHOT</version>
+  <version>0.8.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <name>EngineNamedScratch (parent)</name>

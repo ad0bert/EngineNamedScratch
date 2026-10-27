@@ -1,3 +1,19 @@
+Version 0.8.0
+The engine as a library, and what a game needs around its levels. Contains:
+- Build: Maven modules engine (the library, io.github.ad0bert:engine-named-scratch, with sources and javadoc) and
+  demo; a tag v* publishes the engine to GitHub Packages and makes a GitHub release with the jars and the demo (as a
+  runnable jar, and per platform with its own Java runtime through jpackage); CI tests on Linux, macOS and Windows
+- Game states: a stack of GameStates (title, levels, pause menu) whose changes take effect at the next fixed step;
+  the top state can pause the simulation (ISystem.runsWhilePaused for systems that keep going), all states draw;
+  LevelState fills the scene on enter and clears it on exit; Engine.setPaused
+- Resources: scopes (ResourceManager.openScope) that dispose what a level loaded; Scene.clear(); Assets looks paths
+  up in added directories (mods, user content) before the classpath, also for prefabs
+- Window: fullscreen (borderless), vsync, window size and monitor resolutions at run time; app.fullscreen,
+  app.vsync and app.id in the config (engine.fullscreen, engine.vsync override them)
+- User files: UserDirs (per-user config and data directories by platform), Settings (a properties file of player
+  settings, written safely); Engine.VERSION
+- Demo: P / Start pauses, F11 fullscreen, fullscreen and vsync in the settings panel, settings saved between runs
+
 Version 0.7.0
 Sound, gamepads, scene files, animation, sky lighting and engine polish. Contains:
 - Audio: backend-agnostic AudioBackend with an OpenAL (JOAL) implementation and a silent fallback without a device;

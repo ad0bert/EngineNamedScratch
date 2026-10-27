@@ -24,6 +24,7 @@ import engine.audio.AudioSource;
 import engine.audio.ImpactSound;
 import engine.core.Engine;
 import engine.core.Game;
+import engine.core.Settings;
 import engine.ecs.Entity;
 import engine.ecs.Spinner;
 import engine.input.FirstPersonController;
@@ -80,6 +81,8 @@ public class DemoGame implements Game {
   private String notes = "";
   /** Recent collision events of the player, newest last (shown in a scrolling list). */
   private final java.util.ArrayDeque<String> events = new java.util.ArrayDeque<>();
+  /** Window and volume choices, kept in the user's config directory between runs. */
+  private Settings settings;
 
   @Override
   public void init(Engine engine) {
@@ -88,6 +91,9 @@ public class DemoGame implements Game {
     engine.input().bind("spawn", KeyEvent.VK_F);
     engine.input().bind("poke", KeyEvent.VK_E);
     engine.input().bind("save_scene", KeyEvent.VK_F5);
+    engine.input().bind("pause", KeyEvent.VK_P);
+    engine.input().bind("fullscreen", KeyEvent.VK_F11);
+    engine.input().bindGamepad("pause", Gamepad.BUTTON_START);
     engine.input().bindGamepad("spawn", Gamepad.BUTTON_RIGHT_BUMPER, Gamepad.BUTTON_X);
     engine.input().bindGamepad("poke", Gamepad.BUTTON_A);
     this.thud = res.sound("gen:thud", ProceduralSounds.thud());
@@ -449,10 +455,46 @@ public class DemoGame implements Game {
       saveScene(engine, Path.of(System.getProperty("demo.saveScene")));
     }
 
+    loadSettings(engine);
+    if (Boolean.getBoolean("demo.paused")) { // -Ddemo.paused=true: start in the pause menu (screenshots)
+      engine.states().push(new PauseState());
+    }
+
     // a settings panel while the mouse is free (Esc); clicks on it do not recapture the mouse
     this.gui = new Gui(engine.input());
     engine.setClickCapturesMouse(() -> !this.gui.wantsMouse());
     engine.addOverlay((ui, width, height) -> drawPanel(engine, ui, width));
+  }
+
+  private void loadSettings(Engine engine) {
+    try {
+      this.settings = Settings.load(engine.userDirs().config().resolve("settings.properties"));
+    } catch (IOException e) {
+      log.warn("No settings directory: {}", e.getMessage());
+      this.settings = Settings.load(Path.of("demo-settings.properties"));
+    }
+    engine.setVsync(this.settings.getBoolean("video.vsync", engine.isVsync()));
+    if (this.settings.getBoolean("video.fullscreen", engine.isFullscreen()) != engine.isFullscreen()) {
+      engine.setFullscreen(!engine.isFullscreen());
+    }
+    final var mixer = engine.audio().mixer();
+    for (AudioBus bus : AudioBus.values()) {
+      mixer.setVolume(bus, this.settings.getFloat("audio." + bus.name().toLowerCase(Locale.ROOT), mixer.volume(bus)));
+    }
+  }
+
+  @Override
+  public void shutdown(Engine engine) {
+    this.settings.set("video.vsync", engine.isVsync()).set("video.fullscreen", engine.isFullscreen());
+    final var mixer = engine.audio().mixer();
+    for (AudioBus bus : AudioBus.values()) {
+      this.settings.set("audio." + bus.name().toLowerCase(Locale.ROOT), mixer.volume(bus));
+    }
+    try {
+      this.settings.save();
+    } catch (IOException e) {
+      log.warn("Could not save the settings to {}: {}", this.settings.file(), e.getMessage());
+    }
   }
 
   /**
@@ -500,6 +542,11 @@ public class DemoGame implements Game {
       g.row(2);
       settings.antiAliasing = g.checkbox("FXAA", settings.antiAliasing);
       settings.orderIndependentTransparency = g.checkbox("OIT", settings.orderIndependentTransparency);
+      g.row(2);
+      if (g.checkbox("Fullscreen", engine.isFullscreen()) != engine.isFullscreen()) {
+        engine.setFullscreen(!engine.isFullscreen());
+      }
+      engine.setVsync(g.checkbox("VSync", engine.isVsync()));
       settings.exposure = g.slider("Exposure", settings.exposure, 0.2f, 3f);
       settings.bloomStrength = g.slider("Bloom", settings.bloomStrength, 0f, 0.5f);
       settings.skyIntensity = g.slider("Sky light", settings.skyIntensity, 0f, 3f);
@@ -569,6 +616,16 @@ public class DemoGame implements Game {
 
   @Override
   public void update(Engine engine, double dt) {
+    if (engine.input().wasActionPressed("fullscreen")) {
+      engine.setFullscreen(!engine.isFullscreen());
+    }
+    if (engine.isPaused()) {
+      return; // the pause state handles its own input; nothing in the world moves
+    }
+    if (engine.input().wasActionPressed("pause")) {
+      engine.states().push(new PauseState());
+      return;
+    }
     this.turntable.transform().rotation().rotateY((float) dt * this.turntableSpeed);
     this.danceTime += (float) dt;
     if (this.danceTime > 3f) { // every three seconds the right tube changes its dance, blending over half a second
@@ -616,7 +673,7 @@ public class DemoGame implements Game {
       ui.drawText(this.aim, cx + 15f, cy + 9f, 1.25f, 0f, 0f, 0f, 0.8f);
       ui.drawText(this.aim, cx + 14f, cy + 8f, 1.25f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  F5 save scene  Esc settings"
+    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  F5 save scene  P pause  F11 fullscreen  Esc settings"
         + (engine.input().firstGamepad() != null ? "  Pad: sticks, triggers, RB throw, A push" : "");
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);

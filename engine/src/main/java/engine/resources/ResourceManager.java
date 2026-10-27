@@ -2,12 +2,16 @@ package engine.resources;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import engine.audio.AudioBackend;
 import engine.audio.AudioClip;
@@ -20,11 +24,17 @@ import engine.render.Material;
 import engine.render.MeshData;
 import engine.render.MeshFactory;
 import engine.render.RenderBackend;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Loads and caches GPU resources and sounds from the classpath (so it also works from inside a JAR). Must be used on
- * the graphics thread. Paths are classpath-relative, e.g. {@code objects/box.obj}.
+ * Loads and caches GPU resources and sounds through {@link Assets}: from asset directories, then the classpath (so it
+ * also works from inside a JAR). Must be used on the graphics thread. Paths are relative, e.g.
+ * {@code objects/box.obj}.
+ *
+ * <p>
+ * Resources stay cached until {@link #dispose()}, or until the {@link #openScope() scope} they were first created in
+ * is closed: a game opens a scope per level and closes it when the level ends.
  *
  * <p>
  * Every cached resource has a key ({@link #keyOf}) from which {@code ...ByKey} gets it back, which is how scene files
@@ -44,6 +54,9 @@ public class ResourceManager {
   private final Map<Object, String> keys = new IdentityHashMap<>();
   private final Map<String, GpuMesh> keyedMeshes = new HashMap<>();
   private final Map<String, GltfModel> gltfs = new HashMap<>();
+  private final Deque<Scope> scopes = new ArrayDeque<>();
+  /** Where paths are looked up; add directories to it to load files from disk. */
+  @Getter private final Assets assets;
 
   /** Without sound: clips are created on a silent backend. */
   public ResourceManager(RenderBackend backend) {
@@ -51,8 +64,13 @@ public class ResourceManager {
   }
 
   public ResourceManager(RenderBackend backend, AudioBackend audio) {
+    this(backend, audio, new Assets());
+  }
+
+  public ResourceManager(RenderBackend backend, AudioBackend audio, Assets assets) {
     this.backend = backend;
     this.audio = audio;
+    this.assets = assets;
   }
 
   public GpuTexture white() {
@@ -498,8 +516,8 @@ public class ResourceManager {
     }
   }
 
-  /** Decoded pixels of a classpath image, or null (with a logged error). */
-  private static ImageData image(String path) {
+  /** Decoded pixels of an image, or null (with a logged error). */
+  private ImageData image(String path) {
     try (InputStream in = open(path)) {
       return ImageLoader.load(in, path);
     } catch (IOException | RuntimeException e) {
@@ -508,12 +526,91 @@ public class ResourceManager {
     }
   }
 
-  private static InputStream open(String path) throws IOException {
-    final var in = ResourceManager.class.getClassLoader().getResourceAsStream(path);
-    if (in == null) {
-      throw new IOException("Resource not found: " + path);
+  private InputStream open(String path) throws IOException {
+    return this.assets.open(path);
+  }
+
+  /**
+   * Starts a scope: every resource created from now on, and not cached before, belongs to it and is disposed when it
+   * is {@link Scope#close() closed}. Scopes nest; closing one also closes the scopes opened inside it. Load what
+   * several levels share (fonts, UI textures, common sounds) before opening a level's scope, and remove the level's
+   * entities before closing it (see {@code Scene.clear()}).
+   */
+  public Scope openScope() {
+    final var scope = new Scope();
+    this.scopes.push(scope);
+    return scope;
+  }
+
+  /** Disposes what was created since the scope opened and forgets it, so asking for it again loads it again. */
+  private void release(Scope scope) {
+    final Set<Object> keep = scope.existing;
+    final List<Object> gone = new ArrayList<>();
+    this.textures.values().removeIf(t -> drop(t, keep, gone));
+    this.meshes.values().removeIf(m -> drop(m, keep, gone));
+    this.ownedMeshes.removeIf(m -> drop(m, keep, gone));
+    this.sounds.values().removeIf(c -> drop(c, keep, gone));
+    this.keyedMeshes.values().removeIf(m -> !keep.contains(m));
+    this.models.values().removeIf(m -> !keep.contains(m));
+    this.gltfs.values().removeIf(g -> !keep.contains(g));
+    this.keys.keySet().removeIf(r -> !keep.contains(r));
+    for (Object r : gone) {
+      switch (r) {
+      case GpuTexture t -> t.dispose();
+      case GpuMesh m -> m.dispose();
+      case AudioClip c -> c.dispose();
+      default -> throw new IllegalStateException();
+      }
     }
-    return in;
+    log.debug("Closed resource scope: released {} resources", gone.size());
+  }
+
+  private static boolean drop(Object resource, Set<Object> keep, List<Object> gone) {
+    if (keep.contains(resource)) {
+      return false;
+    }
+    gone.add(resource);
+    return true;
+  }
+
+  private Set<Object> everything() {
+    final Set<Object> all = Collections.newSetFromMap(new IdentityHashMap<>());
+    all.addAll(this.textures.values());
+    all.addAll(this.meshes.values());
+    all.addAll(this.ownedMeshes);
+    all.addAll(this.sounds.values());
+    all.addAll(this.models.values());
+    all.addAll(this.gltfs.values());
+    return all;
+  }
+
+  /** The resources created while it is open; see {@link #openScope()}. */
+  public final class Scope implements AutoCloseable {
+    private final Set<Object> existing = everything();
+    private boolean closed;
+
+    private Scope() {
+    }
+
+    public boolean isOpen() {
+      return !this.closed;
+    }
+
+    /** Disposes the resources created since this scope opened (and closes inner scopes); a second call does nothing. */
+    @Override
+    public void close() {
+      if (this.closed) {
+        return;
+      }
+      while (!ResourceManager.this.scopes.isEmpty()) {
+        final var top = ResourceManager.this.scopes.pop();
+        top.closed = true;
+        if (top == this) {
+          break;
+        }
+      }
+      release(this);
+    }
   }
 
   public void dispose() {

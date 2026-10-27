@@ -1,8 +1,6 @@
 package engine.serialization;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -13,6 +11,7 @@ import org.joml.Vector3f;
 import engine.ecs.Entity;
 import engine.ecs.Scene;
 import engine.render.Material;
+import engine.resources.Assets;
 
 /**
  * A saved entity hierarchy used as a template: every {@link #instantiate} creates new entities from it. The instances
@@ -40,12 +39,12 @@ public final class Prefab {
 
   /** A prefab file from the classpath, e.g. {@code prefabs/lamp.json}. */
   public static Prefab load(String path, SceneSerializer serializer) throws IOException {
-    try (InputStream in = Prefab.class.getClassLoader().getResourceAsStream(path)) {
-      if (in == null) {
-        throw new IOException("Resource not found: " + path);
-      }
-      return parse(new String(in.readAllBytes(), StandardCharsets.UTF_8), serializer);
-    }
+    return load(path, new Assets(), serializer);
+  }
+
+  /** A prefab file looked up through {@code assets} (asset directories, then the classpath). */
+  public static Prefab load(String path, Assets assets, SceneSerializer serializer) throws IOException {
+    return parse(assets.readString(path), serializer);
   }
 
   /** Captures an entity and its descendants as they are now. */

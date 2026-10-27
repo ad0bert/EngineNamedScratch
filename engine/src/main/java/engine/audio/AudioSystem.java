@@ -156,6 +156,15 @@ public class AudioSystem implements ISystem, IMessageReceiver {
     }
   }
 
+  /**
+   * Keeps running while the simulation is paused: the scene stands still but sounds go on (a pause menu's clicks and
+   * music play). To silence the game while paused, {@link AudioMixer#setMuted mute} the mixer or turn buses down.
+   */
+  @Override
+  public boolean runsWhilePaused() {
+    return true;
+  }
+
   @Override
   public void update(Scene scene, double dtD) {
     final float dt = (float) dtD;
