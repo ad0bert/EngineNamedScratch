@@ -46,6 +46,7 @@ System properties:
 | `engine.audio=false` | no sound (also automatic without a sound device) |
 | `engine.gamepads=false` | do not look for gamepads |
 | `engine.fullscreen=true`, `engine.vsync=false` | override the config's `app.fullscreen` / `app.vsync` |
+| `engine.debugOverlay=false` | start with the debug text (`F3`) hidden; games can also call `engine.setDebugOverlayVisible(false)` |
 | `engine.userDir=dir` | keep settings and saves under `dir/<app id>` instead of the platform's user directories |
 | `demo.camera=x,y,z,yaw,pitch` | demo only: start somewhere else |
 | `demo.sky=file.hdr` or `demo.sky=none` | demo only: an HDR environment image instead of the procedural sky, or no sky |

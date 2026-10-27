@@ -15,10 +15,12 @@ import engine.render.RenderStats;
 import engine.render.UiCanvas;
 import engine.render.UiFont;
 
-/** On-screen debug text: FPS, entities, draw statistics and camera position. Toggle with F3. */
+/**
+ * On-screen debug text: FPS, entities, draw statistics and camera position. Toggle with F3; whether it shows is
+ * {@link Engine#setDebugOverlayVisible} (start hidden with {@code -Dengine.debugOverlay=false}).
+ */
 public class DebugOverlay implements ISystem, Overlay {
   private final Engine engine;
-  private boolean visible = true;
   private String text = "";
   private int lines = 1;
   private double sinceUpdate = 1;
@@ -36,7 +38,7 @@ public class DebugOverlay implements ISystem, Overlay {
   @Override
   public void update(Scene scene, double dt) {
     if (this.engine.input().wasActionPressed("toggle_debug")) {
-      this.visible = !this.visible;
+      this.engine.setDebugOverlayVisible(!this.engine.isDebugOverlayVisible());
     }
     this.sinceUpdate += dt;
     if (this.sinceUpdate < 0.25) {
@@ -64,7 +66,7 @@ public class DebugOverlay implements ISystem, Overlay {
 
   @Override
   public void draw(UiCanvas ui, int width, int height) {
-    if (!this.visible) {
+    if (!this.engine.isDebugOverlayVisible()) {
       return;
     }
     final float pad = 6f;
