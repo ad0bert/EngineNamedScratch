@@ -17,15 +17,17 @@ Requires JDK 25 and Maven.
 
 ```bash
 mvn test                      # unit tests (no GPU needed)
-mvn -q package                # build the engine jar and demo/target/demo.jar (+ demo/target/lib)
-java -jar demo/target/demo.jar
+mvn -q package                # build the engine jar and demo/target/dist/demo.jar (+ dist/lib)
+java -jar demo/target/dist/demo.jar
+mvn -q package -Pjpackage     # also: demo/target/jpackage, the demo with its own Java runtime
 ```
 
 Demo controls: mouse look, `WASD`/arrows move, `Space`/`Shift` up/down, `F` throws a crate, `E` pushes the body
 under the crosshair, `F3` toggles the on-screen debug text, `F5` saves the scene to `demo-scene.json`, `Esc` frees
 the mouse and shows a settings panel with volume sliders (click outside it to look around again, `Tab` moves between
-its widgets). With a gamepad: left stick moves, right stick looks, triggers fly up and down, `RB`/`X` throws, `A`
-pushes.
+its widgets), `P` pauses, `F11` switches to fullscreen. With a gamepad: left stick moves, right stick looks,
+triggers fly up and down, `RB`/`X` throws, `A` pushes, `Start` pauses. Volumes, fullscreen and vsync are saved in the
+user's config directory (`~/.config/enginenamedscratch-demo` on Linux).
 
 System properties:
 
@@ -43,9 +45,12 @@ System properties:
 | `engine.skyIntensity=1` | brightness of the sky and its lighting |
 | `engine.audio=false` | no sound (also automatic without a sound device) |
 | `engine.gamepads=false` | do not look for gamepads |
+| `engine.fullscreen=true`, `engine.vsync=false` | override the config's `app.fullscreen` / `app.vsync` |
+| `engine.userDir=dir` | keep settings and saves under `dir/<app id>` instead of the platform's user directories |
 | `demo.camera=x,y,z,yaw,pitch` | demo only: start somewhere else |
 | `demo.sky=file.hdr` or `demo.sky=none` | demo only: an HDR environment image instead of the procedural sky, or no sky |
 | `demo.saveScene=file.json` | demo only: save the scene at start (what `F5` does) |
+| `demo.paused=true` | demo only: start in the pause menu |
 
 The render settings can also be changed at run time through `engine.backend().settings()`.
 
@@ -54,7 +59,7 @@ keeps the last frame as an artifact:
 
 ```bash
 xvfb-run -a -s "-screen 0 1280x800x24" java -Dengine.debugGL=true -Dengine.exitAfterFrames=120 \
-  -Dengine.captureMouse=false -Dengine.screenshot=smoke.png -jar demo/target/demo.jar
+  -Dengine.captureMouse=false -Dengine.screenshot=smoke.png -jar demo/target/dist/demo.jar
 ```
 
 ## Using the engine in a game
@@ -92,8 +97,62 @@ with `read:packages` to `~/.m2/settings.xml`. While changing the engine and a ga
 depend on the `-SNAPSHOT` version instead. That needs no repository or credentials.
 
 The game supplies its own `application.properties` (or whatever it passes to `EngineConfig.load`), its assets on the
-classpath, and a `main` that calls `new Engine(config, game).run()`. `demo/pom.xml` shows a runnable jar with its
-dependencies in `lib/`. The JOGL, JOAL and JInput natives come with the Maven dependencies.
+classpath, and a `main` that calls `new Engine(config, game).run()`. The JOGL, JOAL and JInput natives come with the
+Maven dependencies. `demo/pom.xml` shows the packaging:
+
+- `target/dist/`: a runnable `demo.jar` with its dependencies in `lib/` (needs Java 25 installed);
+- `-Pjpackage`: the same with its own trimmed Java runtime, as a folder (`jpackage.type=app-image`) or an installer
+  (`deb`, `rpm`, `dmg`, `pkg`, `msi`, `exe`). jpackage builds for the system it runs on; the release workflow builds
+  the demo on Linux, macOS and Windows. The macOS build is not signed, so Gatekeeper asks before the first start.
+
+The packages `engine.render.gl`, `engine.audio.al` and `engine.input.jinput` are the backends' internals; everything
+else is the API. The jar's module name is `io.github.ad0bert.engine`.
+
+### Structuring a game
+
+```java
+public final class Main {
+  public static void main(String[] args) throws InterruptedException {
+    final var config = EngineConfig.load("application.properties");   // app.id, title, size, fullscreen, vsync
+    final var engine = new Engine(config, e -> e.states().push(new TitleScreen()));
+    engine.assets().addRoot(Path.of("mods"));                          // files here override assets in the jar
+    engine.run();
+  }
+}
+
+class Level1 extends LevelState {                                     // a level owns the scene while it runs
+  @Override
+  protected void build(Engine engine) {
+    engine.scene().add(new Entity("floor").add(...));                 // resources loaded here are the level's
+  }
+
+  @Override
+  public void update(Engine engine, double dt) {
+    if (won) engine.states().replace(new Level2());                   // clears the scene, frees Level1's resources
+    if (engine.input().wasActionPressed("pause")) engine.states().push(new PauseMenu());
+  }
+}
+
+class PauseMenu implements GameState {
+  @Override public boolean simulates() { return false; }              // physics, animation and components stop
+  @Override public void draw(Engine engine, UiCanvas ui, int w, int h) { ... }
+}
+```
+
+- **States** (`engine.states()`): `push`, `pop`, `replace` and `clear` take effect at the start of the next fixed
+  step. The top state gets `update`; all states `draw`, bottom first.
+- **Levels** (`LevelState`): `enter` opens a resource scope and calls `build`; `exit` clears the scene and closes the
+  scope, which disposes the meshes, textures and sounds first loaded during the level. Without states, the same is
+  `engine.scene().clear()` and `engine.resources().openScope()` / `scope.close()`.
+- **Pause:** `engine.setPaused(true)`, or a top state whose `simulates()` is false. Physics, animation and component
+  updates stop; sound keeps playing (`engine.audio().mixer().setMuted(true)` silences it). Systems that should keep
+  going return true from `ISystem.runsWhilePaused`.
+- **Window:** `engine.setFullscreen`, `setVsync`, `setWindowSize`, `monitorResolutions()` for a settings menu.
+- **Assets and user files:** `engine.assets()` looks in added directories, then on the classpath;
+  `engine.userDirs().config()` / `.data()` are the platform's per-user directories; `Settings.load(file)` reads and
+  safely writes a properties file of player settings.
+- **Versions:** `Engine.VERSION` is the engine's version. The demo gets its own `app.version` from Maven by filtering
+  `src/main/resources-filtered/application.properties`.
 
 ## Features
 
@@ -214,7 +273,7 @@ How it works:
 
 | Package | Purpose |
 |---|---|
-| `engine.core` | `Engine` (window, GL loop, lifecycle, screenshots), `Game` (your entry point), `FixedTimestep`, `EngineConfig` |
+| `engine.core` | `Engine` (window, GL loop, lifecycle, pause, window options, screenshots), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
 | `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
 | `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, sky and image-based lighting, post-processing, UI batching) |
@@ -223,7 +282,7 @@ How it works:
 | `engine.audio.al` | The OpenAL (JOAL) implementation of `AudioBackend` (buffers, sources, streaming) |
 | `engine.serialization` | `Json`, `SceneSerializer`, `Prefab`, `ComponentRegistry`, `ComponentSerializer`/`FieldSerializer`, `SerializationContext` |
 | `engine.ui` | `Gui`: immediate-mode widgets on any `UiCanvas`; `TextEdit` (text editing model), `Clipboard` (system or in-memory), `TextWrap` |
-| `engine.resources` | `ResourceManager` (cached meshes/textures/models/sounds, generated resources, keys for scene files), `ObjLoader`, `MtlLoader`, `GltfLoader`/`GltfModel`, `ImageLoader` (ImageIO), `HdrLoader` (Radiance `.hdr`), `AudioLoader`/`VorbisDecoder`, `NormalMaps` (height field to normal map), `Model` |
+| `engine.resources` | `Assets` (asset directories, then the classpath), `ResourceManager` (cached meshes/textures/models/sounds, generated resources, keys for scene files, scopes that release a level's resources), `ObjLoader`, `MtlLoader`, `GltfLoader`/`GltfModel`, `ImageLoader` (ImageIO), `HdrLoader` (Radiance `.hdr`), `AudioLoader`/`VorbisDecoder`, `NormalMaps` (height field to normal map), `Model` |
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |

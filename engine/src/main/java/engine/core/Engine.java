@@ -1,10 +1,14 @@
 package engine.core;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Properties;
+import java.util.TreeSet;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
@@ -13,6 +17,7 @@ import javax.imageio.ImageIO;
 
 import org.joml.Vector3f;
 
+import com.jogamp.newt.MonitorMode;
 import com.jogamp.newt.event.KeyEvent;
 import com.jogamp.newt.event.MouseAdapter;
 import com.jogamp.newt.event.MouseEvent;
@@ -50,6 +55,7 @@ import engine.physics.RayHit;
 import engine.render.Overlay;
 import engine.render.RenderBackend;
 import engine.render.gl.GlBackend;
+import engine.resources.Assets;
 import engine.resources.ResourceManager;
 import engine.serialization.SerializationContext;
 import lombok.Getter;
@@ -70,18 +76,42 @@ import lombok.extern.slf4j.Slf4j;
  * {@code engine.screenshot=file.png} saves the last frame before exiting (with {@code exitAfterFrames}) or, with
  * {@code engine.screenshotFrame=N}, frame N. A screenshot can also be requested with {@link #saveScreenshot}.
  * {@code engine.audio=false} turns sound off; without a sound device it is off anyway (the engine never fails to
- * start because of sound). {@code engine.gamepads=false} skips looking for gamepads.
+ * start because of sound). {@code engine.gamepads=false} skips looking for gamepads. {@code engine.fullscreen} and
+ * {@code engine.vsync} override the config.
+ *
+ * <p>
+ * A game either builds everything in {@link Game#init}, or pushes {@link GameState}s (title screen, levels, pause
+ * menu) onto {@code states()}.
  */
 @Slf4j
 public class Engine {
   @Getter private final EngineConfig config;
   private final Game game;
+  /** The engine library's version (from the jar it was built into), e.g. {@code 0.8.0}. */
+  public static final String VERSION = readVersion();
+
   @Getter private final Scene scene = new Scene();
   @Getter private final IMessageService messages = new MessageService();
   @Getter private final InputState input = new InputState();
   private final InputListener inputListener = new InputListener(this.messages, this.input);
-  private final List<ISystem> systems = new ArrayList<>();
-  private final List<Overlay> overlays = new ArrayList<>();
+  // copy-on-write: systems and overlays may add or remove others while the engine iterates them
+  private final List<ISystem> systems = new CopyOnWriteArrayList<>();
+  private final List<Overlay> overlays = new CopyOnWriteArrayList<>();
+  /** The overlays and, last, the game states' drawing. */
+  private volatile List<Overlay> drawn = List.of();
+  /** The game's screens and modes (title, levels, pause menu). */
+  @Getter private final GameStates states = new GameStates(this);
+  private final Overlay statesOverlay = this.states.overlay();
+  /** Where resources are looked up: add directories to load assets from disk (mods, user content). */
+  @Getter private final Assets assets = new Assets();
+  /** Per-user directories for settings and saves, named after {@link EngineConfig#id()}. */
+  @Getter private final UserDirs userDirs;
+  private volatile boolean paused;
+  private volatile boolean vsync;
+  private volatile boolean fullscreen;
+  private volatile int startWidth;
+  private volatile int startHeight;
+  private boolean appliedVsync;
   private final FixedTimestep timestep;
   @Getter private final PhysicsSystem physics = new PhysicsSystem(this.messages);
   private final CountDownLatch closed = new CountDownLatch(1);
@@ -111,6 +141,25 @@ public class Engine {
     this.config = config;
     this.game = game;
     this.timestep = new FixedTimestep(config.updateStep(), 0.25);
+    this.userDirs = UserDirs.of(config.id());
+    this.vsync = config.vsync();
+    this.fullscreen = config.fullscreen();
+    this.startWidth = config.width();
+    this.startHeight = config.height();
+    this.drawn = List.of(this.statesOverlay);
+  }
+
+  private static String readVersion() {
+    try (InputStream in = Engine.class.getResourceAsStream("version.properties")) {
+      if (in != null) {
+        final var p = new Properties();
+        p.load(in);
+        return p.getProperty("version", "unknown");
+      }
+    } catch (IOException e) {
+      // fall through
+    }
+    return "unknown";
   }
 
   /** Nearest solid (non-trigger) collider hit by the ray, see {@link PhysicsSystem#raycast}. */
@@ -145,9 +194,100 @@ public class Engine {
     this.systems.add(system);
   }
 
-  /** Adds 2D content drawn over the scene every frame, in registration order. */
+  public void removeSystem(ISystem system) {
+    this.systems.remove(system);
+  }
+
+  /** Adds 2D content drawn over the scene every frame, in registration order (the game states draw last). */
   public void addOverlay(Overlay overlay) {
     this.overlays.add(overlay);
+    updateDrawn();
+  }
+
+  public void removeOverlay(Overlay overlay) {
+    this.overlays.remove(overlay);
+    updateDrawn();
+  }
+
+  private void updateDrawn() {
+    final List<Overlay> list = new ArrayList<>(this.overlays);
+    list.add(this.statesOverlay);
+    this.drawn = List.copyOf(list);
+  }
+
+  /**
+   * Stops (or resumes) the simulation: systems other than those that {@link ISystem#runsWhilePaused run while
+   * paused} skip their updates, so physics, animation and component updates stand still while the game and its states
+   * still get updates and draw. The top game state can also pause the simulation (see {@link GameState#simulates}).
+   */
+  public void setPaused(boolean value) {
+    this.paused = value;
+  }
+
+  /** Whether the scene is standing still, by {@link #setPaused} or because of the top game state. */
+  public boolean isPaused() {
+    return this.paused || !this.states.simulates();
+  }
+
+  /**
+   * Switches between a window and borderless fullscreen on the window's monitor. Safe to call from any thread, also
+   * before {@link #run}; the window changes shortly after.
+   */
+  public void setFullscreen(boolean value) {
+    this.fullscreen = value;
+    final var w = this.window;
+    if (w != null) {
+      new Thread(() -> w.setFullscreen(value), "engine-fullscreen").start();
+    }
+  }
+
+  /** The fullscreen state last asked for (the window may take a moment to follow). */
+  public boolean isFullscreen() {
+    return this.fullscreen;
+  }
+
+  /** Waits for the display's refresh between frames (no tearing; frame rate capped at the refresh rate). */
+  public void setVsync(boolean value) {
+    this.vsync = value;
+  }
+
+  public boolean isVsync() {
+    return this.vsync;
+  }
+
+  /** Resizes the window (its size when not fullscreen). Safe to call from any thread, also before {@link #run}. */
+  public void setWindowSize(int width, int height) {
+    this.startWidth = width;
+    this.startHeight = height;
+    final var w = this.window;
+    if (w != null) {
+      new Thread(() -> w.setSize(width, height), "engine-resize").start();
+    }
+  }
+
+  /** The width of the drawing area in pixels. */
+  public int width() {
+    return this.window != null ? this.window.getSurfaceWidth() : this.startWidth;
+  }
+
+  public int height() {
+    return this.window != null ? this.window.getSurfaceHeight() : this.startHeight;
+  }
+
+  /**
+   * The resolutions the window's monitor supports, largest first, as {@code {width, height}}; useful for a settings
+   * menu's window size choices. Empty before {@link #run} opened the window.
+   */
+  public List<int[]> monitorResolutions() {
+    if (this.window == null) {
+      return List.of();
+    }
+    final var sizes = new TreeSet<int[]>((a, b) -> a[0] != b[0] ? b[0] - a[0] : b[1] - a[1]);
+    for (MonitorMode mode : this.window.getMainMonitor().getSupportedModes()) {
+      final var res = mode.getSurfaceSize().getResolution();
+      sizes.add(new int[] { res.getWidth(), res.getHeight() });
+    }
+    return List.copyOf(sizes);
   }
 
   public void setTitle(String title) {
@@ -163,7 +303,8 @@ public class Engine {
     caps.setDepthBits(24);
     this.window = GLWindow.create(caps);
     this.window.setTitle(this.config.title());
-    this.window.setSize(this.config.width(), this.config.height());
+    this.window.setSize(this.startWidth, this.startHeight);
+    this.window.setFullscreen(this.fullscreen);
     this.window.setDefaultCloseOperation(WindowClosingMode.DISPOSE_ON_CLOSE);
     this.window.addKeyListener(this.inputListener);
     this.window.addMouseListener(this.inputListener);
@@ -257,6 +398,7 @@ public class Engine {
   }
 
   private void step(double dt) {
+    this.states.applyPending();
     this.scene.flush();
     for (Entity e : this.scene.entities()) {
       e.transform().snapshot(); // previous state for render interpolation
@@ -266,10 +408,14 @@ public class Engine {
     if (this.input.wasActionPressed("release_mouse")) {
       captureMouse(false);
     }
+    final boolean simulate = !isPaused();
     for (ISystem s : this.systems) {
-      s.update(this.scene, dt);
+      if (simulate || s.runsWhilePaused()) {
+        s.update(this.scene, dt);
+      }
     }
     this.game.update(this, dt);
+    this.states.update(dt);
     this.input.endFrame();
   }
 
@@ -284,6 +430,12 @@ public class Engine {
     }
   }
 
+  private void applyVsync(GL3 gl) {
+    final boolean value = this.vsync;
+    gl.setSwapInterval(value ? 1 : 0);
+    this.appliedVsync = value;
+  }
+
   private final class Loop implements GLEventListener {
     @Override
     public void init(GLAutoDrawable drawable) {
@@ -291,14 +443,15 @@ public class Engine {
         drawable.setGL(new DebugGL3(drawable.getGL().getGL3()));
       }
       final var gl = drawable.getGL().getGL3();
-      gl.setSwapInterval(1);
+      applyVsync(gl);
       log.info("OpenGL {} on {}", gl.glGetString(GL3.GL_VERSION), gl.glGetString(GL3.GL_RENDERER));
       Engine.this.backend = new GlBackend(() -> Engine.this.window.getGL().getGL3());
       Engine.this.backend.init();
       final var sound = Boolean.parseBoolean(System.getProperty("engine.audio", "true")) ? AlAudioBackend.open(32)
           : null;
       Engine.this.audio = new AudioSystem(sound != null ? sound : new NullAudioBackend());
-      Engine.this.resources = new ResourceManager(Engine.this.backend, Engine.this.audio.backend());
+      Engine.this.resources = new ResourceManager(Engine.this.backend, Engine.this.audio.backend(),
+          Engine.this.assets);
 
       if (Boolean.parseBoolean(System.getProperty("engine.gamepads", "true"))) {
         final var pads = JInputGamepads.open(Engine.this.input);
@@ -315,6 +468,7 @@ public class Engine {
       Engine.this.addSystem(debug);
       Engine.this.addOverlay(debug);
       Engine.this.game.init(Engine.this);
+      Engine.this.states.applyPending();
       Engine.this.scene.flush();
       Engine.this.fpsWindowStart = System.nanoTime();
       captureMouse(Boolean.parseBoolean(System.getProperty("engine.captureMouse", "true")));
@@ -322,10 +476,13 @@ public class Engine {
 
     @Override
     public void display(GLAutoDrawable drawable) {
+      if (Engine.this.vsync != Engine.this.appliedVsync) {
+        applyVsync(drawable.getGL().getGL3());
+      }
       Engine.this.timestep.advance(System.nanoTime(), Engine.this::step);
       Engine.this.scene.flush();
       Engine.this.backend.render(Engine.this.scene, Engine.this.timestep.alpha(), drawable.getSurfaceWidth(),
-          drawable.getSurfaceHeight(), Engine.this.overlays);
+          drawable.getSurfaceHeight(), Engine.this.drawn);
       Engine.this.frameCount++;
       captureIfRequested(drawable.getSurfaceWidth(), drawable.getSurfaceHeight());
       trackFps();
@@ -344,6 +501,7 @@ public class Engine {
 
     @Override
     public void dispose(GLAutoDrawable drawable) {
+      Engine.this.states.exitAll();
       Engine.this.game.shutdown(Engine.this);
       Engine.this.gamepads.dispose();
       Engine.this.resources.dispose();

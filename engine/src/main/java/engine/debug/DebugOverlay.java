@@ -29,6 +29,11 @@ public class DebugOverlay implements ISystem, Overlay {
   }
 
   @Override
+  public boolean runsWhilePaused() {
+    return true;
+  }
+
+  @Override
   public void update(Scene scene, double dt) {
     if (this.engine.input().wasActionPressed("toggle_debug")) {
       this.visible = !this.visible;
@@ -44,11 +49,12 @@ public class DebugOverlay implements ISystem, Overlay {
       return String.format(Locale.ROOT, "%.1f %.1f %.1f", p.x, p.y, p.z);
     }).orElse("-");
     final var p = this.engine.physics().stats();
-    this.text = String.format(Locale.ROOT, "%s %s\n%.0f fps\nentities %d\n"
+    this.text = String.format(Locale.ROOT, "%s %s (engine %s)%s\n%.0f fps\nentities %d\n"
         + "draw calls %d  instances %d\nculled %d  occluded %d (%d queries)\n"
         + "shadow casters %d (%d cascades, %d local, %d maps reused)  lights %d\n"
         + "bodies %d (%d asleep)  pairs %d  contacts %d\nsounds %d (+%d virtual) on %s\ncamera %s",
-        this.engine.config().title(), this.engine.config().version(), this.engine.fps(), scene.entities().size(),
+        this.engine.config().title(), this.engine.config().version(), Engine.VERSION,
+        this.engine.isPaused() ? "  paused" : "", this.engine.fps(), scene.entities().size(),
         s.drawCalls, s.instances, s.culled, s.occluded, s.occlusionQueries, s.shadowCasters, s.shadowCascades,
         s.pointShadows, s.cachedShadowMaps, s.lights, p.bodies, p.sleepingBodies, p.candidatePairs, p.contacts,
         this.engine.audio().audibleCount(), this.engine.audio().virtualCount(), this.engine.audio().backend().name(),

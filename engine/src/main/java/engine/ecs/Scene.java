@@ -38,6 +38,15 @@ public class Scene {
     this.toRemove.add(entity);
   }
 
+  /**
+   * Removes every entity at the next {@link #flush()}, including ones added since the last flush. Entities added after
+   * this call stay: clearing and then building the next level in the same step works.
+   */
+  public void clear() {
+    this.toAdd.clear();
+    this.toRemove.addAll(this.entities);
+  }
+
   /** Applies pending adds and removes. Called by the engine at the start of every update step. */
   public void flush() {
     if (!this.toRemove.isEmpty()) {

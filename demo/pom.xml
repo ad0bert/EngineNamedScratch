@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.ad0bert</groupId>
     <artifactId>engine-named-scratch-parent</artifactId>
-    <version>0.7.0-SNAPSHOT</version>
+    <version>0.8.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>engine-named-scratch-demo</artifactId>
@@ -16,6 +16,13 @@
 
   <properties>
     <maven.deploy.skip>true</maven.deploy.skip>
+    <dist.directory>${project.build.directory}/dist</dist.directory>
+    <!-- for -Pjpackage: app-image (a folder), or an installer type such as deb, rpm, dmg, pkg, msi, exe -->
+    <jpackage.type>app-image</jpackage.type>
+    <!-- jpackage wants a plain numeric version -->
+    <jpackage.version>1.0.0</jpackage.version>
+    <!-- the JDK modules the bundled runtime keeps (jlink); everything else is left out to keep the download small -->
+    <jpackage.modules>java.base,java.desktop,java.logging,java.management,java.naming,java.xml,jdk.unsupported</jpackage.modules>
   </properties>
 
   <dependencies>
@@ -38,16 +45,27 @@
 
   <build>
     <finalName>demo</finalName>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- text files with ${project.version} and the like; kept apart so binary assets are never filtered -->
+      <resource>
+        <directory>src/main/resources-filtered</directory>
+        <filtering>true</filtering>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
       </plugin>
-      <!-- target/demo.jar runs with `java -jar` and finds its dependencies in target/lib -->
+      <!-- target/dist/demo.jar runs with `java -jar` and finds its dependencies in target/dist/lib -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
         <configuration>
+          <outputDirectory>${dist.directory}</outputDirectory>
           <archive>
             <manifest>
               <mainClass>game.Main</mainClass>
@@ -72,7 +90,7 @@
               <goal>copy-dependencies</goal>
             </goals>
             <configuration>
-              <outputDirectory>${project.build.directory}/lib</outputDirectory>
+              <outputDirectory>${dist.directory}/lib</outputDirectory>
               <includeScope>runtime</includeScope>
             </configuration>
           </execution>
@@ -80,4 +98,58 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      mvn package -Pjpackage: a self-contained application with its own Java runtime in target/jpackage (no Java needed
+      on the player's machine). jpackage builds for the system it runs on; build on each OS for each platform.
+    -->
+    <profile>
+      <id>jpackage</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.5.1</version>
+            <executions>
+              <execution>
+                <id>jpackage</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <configuration>
+                  <executable>${java.home}/bin/jpackage</executable>
+                  <arguments>
+                    <argument>--type</argument>
+                    <argument>${jpackage.type}</argument>
+                    <argument>--name</argument>
+                    <argument>EngineNamedScratch</argument>
+                    <argument>--app-version</argument>
+                    <argument>${jpackage.version}</argument>
+                    <argument>--vendor</argument>
+                    <argument>ad0bert</argument>
+                    <argument>--input</argument>
+                    <argument>${dist.directory}</argument>
+                    <argument>--main-jar</argument>
+                    <argument>demo.jar</argument>
+                    <argument>--main-class</argument>
+                    <argument>game.Main</argument>
+                    <!-- what jdeps finds, plus java.xml and java.management for logging configuration -->
+                    <argument>--add-modules</argument>
+                    <argument>${jpackage.modules}</argument>
+                    <argument>--java-options</argument>
+                    <argument>--enable-native-access=ALL-UNNAMED</argument>
+                    <argument>--dest</argument>
+                    <argument>${project.build.directory}/jpackage</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
