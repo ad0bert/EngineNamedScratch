@@ -2,6 +2,7 @@ name: release
 # Push a tag like v0.8.0 to publish the engine at that version: the jar (with sources and javadoc) goes to GitHub
 # Packages as io.github.ad0bert:engine-named-scratch, and a GitHub release gets the jars, the runnable demo (needs
 # Java 25) and the demo packaged with its own Java runtime for Linux, macOS and Windows (jpackage app images).
+# Title and description come from builds/release-notes/<tag>.md (see the README there).
 on:
   push:
     tags: ['v*']
@@ -33,9 +34,19 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           (cd demo/target/dist && zip -q -r "../../../demo-$version.zip" demo.jar lib)
-          notes=$(awk -v v="Version $version" '$0 == v {found = 1; next} found && /^Version / {exit} found' \
-            builds/releaseHistory.txt)
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "${notes:-Release $version}" \
+          # builds/release-notes/<tag>.md: a "# title" line, then the description in Markdown
+          notes_file="builds/release-notes/$GITHUB_REF_NAME.md"
+          if [ -f "$notes_file" ]; then
+            title=$(head -n 1 "$notes_file" | sed -E 's/^#[[:space:]]*//')
+            tail -n +2 "$notes_file" | sed '/./,$!d' > release-notes.md # without the blank lines after the title
+          else
+            echo "::warning::No $notes_file; using builds/releaseHistory.txt"
+            title="$GITHUB_REF_NAME"
+            awk -v v="Version $version" '$0 == v {found = 1; next} found && /^Version / {exit} found' \
+              builds/releaseHistory.txt > release-notes.md
+            [ -s release-notes.md ] || echo "Release $version" > release-notes.md
+          fi
+          gh release create "$GITHUB_REF_NAME" --title "${title:-$GITHUB_REF_NAME}" --notes-file release-notes.md \
             engine/target/engine-named-scratch-$version.jar \
             engine/target/engine-named-scratch-$version-sources.jar \
             engine/target/engine-named-scratch-$version-javadoc.jar \

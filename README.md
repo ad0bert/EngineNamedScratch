@@ -66,7 +66,8 @@ xvfb-run -a -s "-screen 0 1280x800x24" java -Dengine.debugGL=true -Dengine.exitA
 
 Keep the game in its own project and depend on the engine. A release is published when a tag like `v0.8.0` is
 pushed (`.github/workflows/release.yml`): the jars go to GitHub Packages and are attached to a GitHub release, along
-with a zip of the runnable demo.
+with the demo (a runnable jar, and packaged for each platform). The release's title and description come from
+`builds/release-notes/<tag>.md`; write it before pushing the tag.
 
 ```xml
 <repositories>
