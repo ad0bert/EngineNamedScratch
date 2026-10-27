@@ -128,6 +128,8 @@ public class Engine {
 
   private GLWindow window;
   private Animator animator;
+  /** Held while the window is being changed (fullscreen, size), so that changes do not overlap. */
+  private final Object windowChange = new Object();
   private volatile GamepadBackend gamepads = GamepadBackend.NONE;
   @Getter private RenderBackend backend;
   @Getter private ResourceManager resources;
@@ -252,7 +254,32 @@ public class Engine {
     this.fullscreen = value;
     final var w = this.window;
     if (w != null) {
-      new Thread(() -> w.setFullscreen(value), "engine-fullscreen").start();
+      new Thread(() -> changeWindow("fullscreen", () -> w.setFullscreen(value)), "engine-fullscreen").start();
+    }
+  }
+
+  /**
+   * Changes the window with the drawing paused. The animator holds the window's lock while it draws a frame and takes
+   * it again right after; a change that needs the lock (fullscreen, size) could otherwise wait for it until it times
+   * out, as it did on Windows with vsync ("Waited 5000ms for ... owner main-Animator"). One change at a time; a change
+   * that fails anyway is logged, and the game goes on in the window it has.
+   */
+  private void changeWindow(String what, Runnable change) {
+    synchronized (this.windowChange) {
+      final var a = this.animator;
+      final boolean pause = a != null && a.isStarted() && !a.isPaused();
+      if (pause) {
+        a.pause(); // returns once the animator is between frames and has let go of the window
+      }
+      try {
+        change.run();
+      } catch (RuntimeException e) {
+        log.warn("Could not change the window ({}): {}", what, e.toString());
+      } finally {
+        if (pause) {
+          a.resume();
+        }
+      }
     }
   }
 
@@ -276,7 +303,7 @@ public class Engine {
     this.startHeight = height;
     final var w = this.window;
     if (w != null) {
-      new Thread(() -> w.setSize(width, height), "engine-resize").start();
+      new Thread(() -> changeWindow("size", () -> w.setSize(width, height)), "engine-resize").start();
     }
   }
 
