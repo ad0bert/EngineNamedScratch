@@ -3,17 +3,30 @@ name: release
 # Packages as io.github.ad0bert:engine-named-scratch, and a GitHub release gets the jars, the runnable demo (needs
 # Java 25) and the demo packaged with its own Java runtime for Linux, macOS and Windows (jpackage app images).
 # Title and description come from builds/release-notes/<tag>.md (see the README there).
+#
+# Safe to run again for the same tag (Actions > release > Run workflow, with the tag): a version already in GitHub
+# Packages is not uploaded again (versions there cannot be replaced), and an existing release gets its title, notes and
+# files updated instead of failing.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release again, e.g. v0.8.0
+        required: true
 permissions:
   contents: write
   packages: write
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -23,34 +36,46 @@ jobs:
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
       - name: Set the version from the tag
-        run: mvn -B -q versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
+        run: mvn -B -q versions:set -DnewVersion="${TAG#v}" -DgenerateBackupPoms=false
       - name: Test and deploy to GitHub Packages
-        run: mvn -B deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${TAG#v}"
+          pom="https://maven.pkg.github.com/${{ github.repository }}/io/github/ad0bert/engine-named-scratch/$version/engine-named-scratch-$version.pom"
+          if curl -sfo /dev/null -u "$GITHUB_ACTOR:$GITHUB_TOKEN" "$pom"; then
+            echo "::warning::engine-named-scratch $version is already in GitHub Packages; building without deploying"
+            mvn -B verify
+          else
+            mvn -B deploy
+          fi
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           (cd demo/target/dist && zip -q -r "../../../demo-$version.zip" demo.jar lib)
           # builds/release-notes/<tag>.md: a "# title" line, then the description in Markdown
-          notes_file="builds/release-notes/$GITHUB_REF_NAME.md"
+          notes_file="builds/release-notes/$TAG.md"
           if [ -f "$notes_file" ]; then
             title=$(head -n 1 "$notes_file" | sed -E 's/^#[[:space:]]*//')
             tail -n +2 "$notes_file" | sed '/./,$!d' > release-notes.md # without the blank lines after the title
           else
             echo "::warning::No $notes_file; using builds/releaseHistory.txt"
-            title="$GITHUB_REF_NAME"
+            title="$TAG"
             awk -v v="Version $version" '$0 == v {found = 1; next} found && /^Version / {exit} found' \
               builds/releaseHistory.txt > release-notes.md
             [ -s release-notes.md ] || echo "Release $version" > release-notes.md
           fi
-          gh release create "$GITHUB_REF_NAME" --title "${title:-$GITHUB_REF_NAME}" --notes-file release-notes.md \
-            engine/target/engine-named-scratch-$version.jar \
-            engine/target/engine-named-scratch-$version-sources.jar \
-            engine/target/engine-named-scratch-$version-javadoc.jar \
-            "demo-$version.zip"
+          files=(engine/target/engine-named-scratch-$version.jar engine/target/engine-named-scratch-$version-sources.jar
+            engine/target/engine-named-scratch-$version-javadoc.jar "demo-$version.zip")
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::notice::Release $TAG exists; updating its title, notes and files"
+            gh release edit "$TAG" --title "${title:-$TAG}" --notes-file release-notes.md
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" --verify-tag --title "${title:-$TAG}" --notes-file release-notes.md "${files[@]}"
+          fi
 
   # jpackage builds for the system it runs on, so each platform gets its own job
   demo-app:
@@ -71,6 +96,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -78,7 +105,7 @@ jobs:
           cache: maven
       - name: Build the app image
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           numeric="${version%%-*}"
           case "$numeric" in 0.*) numeric=1.0.0 ;; esac # jpackage (macOS) wants a first number above zero
           mvn -B -q versions:set -DnewVersion="$version" -DgenerateBackupPoms=false
@@ -87,12 +114,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           name="EngineNamedScratch-demo-$version-${{ matrix.platform }}"
           if [ "$RUNNER_OS" = Windows ]; then
             (cd demo/target/jpackage && 7z a -bd "../../../$name.zip" .)
-            gh release upload "$GITHUB_REF_NAME" "$name.zip"
+            gh release upload "$TAG" "$name.zip" --clobber
           else
             tar -czf "$name.tar.gz" -C demo/target/jpackage . # keeps the launcher executable
-            gh release upload "$GITHUB_REF_NAME" "$name.tar.gz"
+            gh release upload "$TAG" "$name.tar.gz" --clobber
           fi
