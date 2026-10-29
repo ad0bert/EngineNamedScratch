@@ -17,12 +17,17 @@ public class RenderStats {
   public int occluded;
   /** Grid cells tested with occlusion queries. */
   public int occlusionQueries;
+  /** Particles drawn, and the emitters they came from. */
+  public int particles;
+  public int particleEmitters;
 
   public void reset() {
     this.pointShadows = 0;
     this.cachedShadowMaps = 0;
     this.occluded = 0;
     this.occlusionQueries = 0;
+    this.particles = 0;
+    this.particleEmitters = 0;
     this.drawCalls = 0;
     this.instances = 0;
     this.culled = 0;
