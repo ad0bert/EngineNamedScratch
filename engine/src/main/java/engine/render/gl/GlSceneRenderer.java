@@ -649,6 +649,7 @@ final class GlSceneRenderer {
     this.basic.set(gl, "uUvTransform", this.linearColor);
     this.basic.set(gl, "uClampUv", m.clampUv ? 1 : 0);
     this.basic.set(gl, "uUnlit", m.unlit ? 1 : 0);
+    this.basic.set(gl, "uGlass", m.glass && m.transparent ? 1 : 0);
     this.basic.set(gl, "uAlphaCutoff", m.transparent ? 0f : m.alphaCutoff);
     this.basic.set(gl, "uPointSize", m.pointSize);
   }

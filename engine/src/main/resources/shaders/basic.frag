@@ -42,6 +42,7 @@ uniform vec3 uMaterialAmbient;                 // linear
 uniform vec4 uUvTransform;                     // xy scale, zw offset
 uniform int uClampUv;
 uniform int uOit;                              // 1: write weighted blended transparency targets
+uniform int uGlass;                            // 1: light added in full, coverage rises edge-on (Material.glass)
 
 uniform int uLightCount;
 uniform vec4 uLightPos[MAX_LIGHTS];   // xyz: direction towards the light (w=0) or position (w=1 point, w=2 spot)
@@ -387,6 +388,14 @@ void main() {
   if (uDebugCascades == 1 && uCascadeCount > 0) {
     vec3 tint[4] = vec3[4](vec3(1.0, 0.4, 0.4), vec3(0.4, 1.0, 0.4), vec3(0.4, 0.5, 1.0), vec3(1.0, 1.0, 0.4));
     lit = mix(lit, lit * tint[cascade], 0.5);
+  }
+  if (uGlass == 1) {
+    // blending scales the colour by alpha: divide it out, so the glass adds all of its light (reflections,
+    // highlights) and only the light from behind is cut by its coverage, which rises edge-on (Fresnel)
+    float coverage = albedo.a + (1.0 - albedo.a) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    float a = max(coverage, 0.02);
+    writeColor(lit / a, a);
+    return;
   }
   writeColor(lit, albedo.a);
 }
