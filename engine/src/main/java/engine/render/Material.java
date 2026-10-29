@@ -65,6 +65,13 @@ public class Material {
   public boolean unlit;
   /** Alpha-blended; drawn after all opaque geometry, sorted back to front, and never casts shadows. */
   public boolean transparent;
+  /**
+   * Glass (implies {@link #transparent}): the surface's own light (reflections, highlights, emissive) is added in full
+   * however see-through it is, and it lets through what is behind it scaled by one minus its alpha. The alpha rises
+   * with Fresnel from {@link #color}'s alpha where it is looked at head-on to opaque at grazing angles, so a clear pane
+   * reflects most towards its edges. Looks best with {@link #pbr}, a low roughness and a dark colour (the tint).
+   */
+  public boolean glass;
   public float pointSize = 6f;
 
   public Material() {
@@ -97,6 +104,14 @@ public class Material {
 
   public Material transparent() {
     this.transparent = true;
+    return this;
+  }
+
+  /** Makes this {@link #glass}: see-through with {@code alpha} where it is looked at head-on, reflections in full. */
+  public Material glass(float alpha) {
+    this.color.w = alpha;
+    this.transparent = true;
+    this.glass = true;
     return this;
   }
 }
