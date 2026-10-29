@@ -10,6 +10,7 @@ import engine.render.RenderSettings;
  * <li>the scene is drawn into an HDR target (RGBA16F colour, 24-bit depth texture);</li>
  * <li>transparent surfaces are accumulated into two more targets that share that depth (weighted blended
  * order-independent transparency) and resolved over the opaque image;</li>
+ * <li>on request, the depth is copied into a texture that particles sample to fade where they meet geometry;</li>
  * <li>bloom: the bright parts are downsampled through a chain of half-size targets and added back up;</li>
  * <li>tone mapping (exposure, ACES curve, sRGB) into an 8-bit target, then FXAA into the window.</li>
  * </ol>
@@ -35,6 +36,8 @@ final class PostProcessor {
   private int oitFbo;
   private int oitAccum;
   private int oitWeights;
+  private int depthCopyFbo;
+  private int depthCopy;
   private int ldrFbo;
   private int ldrColor;
   private final int[] bloomFbo = new int[MAX_BLOOM_LEVELS];
@@ -97,6 +100,40 @@ final class PostProcessor {
     gl.glEnable(GL3.GL_DEPTH_TEST);
     gl.glDepthMask(true);
     gl.glDisable(GL3.GL_BLEND);
+  }
+
+  int width() {
+    return this.width;
+  }
+
+  int height() {
+    return this.height;
+  }
+
+  /**
+   * Copies the scene's depth into a texture that can be sampled while the scene target stays bound (soft particles),
+   * re-binds the scene target and returns the copy.
+   */
+  int copyDepth(GL3 gl) {
+    if (this.depthCopyFbo == 0) {
+      this.depthCopy = texture(gl, this.width, this.height, GL3.GL_DEPTH_COMPONENT24, GL3.GL_DEPTH_COMPONENT,
+          GL3.GL_FLOAT);
+      gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_NEAREST);
+      gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_NEAREST);
+      final int[] ids = new int[1];
+      gl.glGenFramebuffers(1, ids, 0);
+      this.depthCopyFbo = ids[0];
+      gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, this.depthCopyFbo);
+      gl.glFramebufferTexture2D(GL3.GL_FRAMEBUFFER, GL3.GL_DEPTH_ATTACHMENT, GL3.GL_TEXTURE_2D, this.depthCopy, 0);
+      gl.glDrawBuffers(1, new int[] { GL3.GL_NONE }, 0);
+      gl.glReadBuffer(GL3.GL_NONE);
+    }
+    gl.glBindFramebuffer(GL3.GL_READ_FRAMEBUFFER, this.sceneFbo);
+    gl.glBindFramebuffer(GL3.GL_DRAW_FRAMEBUFFER, this.depthCopyFbo);
+    gl.glBlitFramebuffer(0, 0, this.width, this.height, 0, 0, this.width, this.height, GL3.GL_DEPTH_BUFFER_BIT,
+        GL3.GL_NEAREST);
+    bindScene(gl);
+    return this.depthCopy;
   }
 
   /** Bloom, tone mapping and FXAA into the default framebuffer. */
@@ -253,6 +290,12 @@ final class PostProcessor {
     for (int i = 0; i < this.bloomLevels; i++) {
       gl.glDeleteFramebuffers(1, new int[] { this.bloomFbo[i] }, 0);
       gl.glDeleteTextures(1, new int[] { this.bloomTex[i] }, 0);
+    }
+    if (this.depthCopyFbo != 0) { // made on first use, at the current size
+      gl.glDeleteFramebuffers(1, new int[] { this.depthCopyFbo }, 0);
+      gl.glDeleteTextures(1, new int[] { this.depthCopy }, 0);
+      this.depthCopyFbo = 0;
+      this.depthCopy = 0;
     }
     this.bloomLevels = 0;
     this.allocated = false;

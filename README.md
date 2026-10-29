@@ -23,8 +23,8 @@ mvn -q package -Pjpackage     # also: demo/target/jpackage, the demo with its ow
 ```
 
 Demo controls: mouse look, `WASD`/arrows move, `Space`/`Shift` up/down, `F` throws a crate, `E` pushes the body
-under the crosshair, `F3` toggles the on-screen debug text, `F5` saves the scene to `demo-scene.json`, `Esc` frees
-the mouse and shows a settings panel with volume sliders (click outside it to look around again, `Tab` moves between
+under the crosshair (with sparks), `F3` toggles the on-screen debug text, `F5` saves the scene to
+`demo-scene.json`, `Esc` frees the mouse and shows a settings panel with volume sliders (click outside it to look around again, `Tab` moves between
 its widgets), `P` pauses, `F11` switches to fullscreen. With a gamepad: left stick moves, right stick looks,
 triggers fly up and down, `RB`/`X` throws, `A` pushes, `Start` pauses. Volumes, fullscreen and vsync are saved in the
 user's config directory (`~/.config/enginenamedscratch-demo` on Linux).
@@ -168,6 +168,11 @@ class PauseMenu implements GameState {
   (`RenderSettings.sky`: a procedural gradient with a sun disc, or an equirectangular HDR image) that also lights it:
   image-based lighting baked once on the GPU (diffuse irradiance, GGX-prefiltered reflections per roughness, split-sum
   BRDF table), with intensity and rotation settings.
+- **Particles:** `ParticleEmitter` components spawn camera-facing quads by rate or in bursts, inside a sphere and a
+  cone, with acceleration, drag, size, colour and spin over their life, texture atlases (animated or one random frame
+  each), additive or alpha blending (sorted back to front) and soft edges where they meet geometry; simulated at the
+  fixed step in flat arrays, spread along the emitter's path when it moves, in world or local space, and drawn with
+  one instanced call per emitter.
 - **Materials:** Blinn-Phong or physically based (GGX, metallic/roughness, glTF-style metal-rough maps); colour or
   texture, tangent-space normal maps (meshes carry tangents with handedness, so mirrored uvs work), specular maps,
   emissive colour and maps, height maps with parallax occlusion mapping, uv scale/offset and clamping; with a sky,
@@ -277,8 +282,8 @@ How it works:
 |---|---|
 | `engine.core` | `Engine` (window, GL loop, lifecycle, pause, window options, screenshots), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
-| `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
-| `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, sky and image-based lighting, post-processing, UI batching) |
+| `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer`, `ParticleEmitter`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
+| `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, particles, sky and image-based lighting, post-processing, UI batching) |
 | `engine.animation` | `Track`, `Easing`, `Channel`, `AnimationClip`, `Animator` (layers, blending), `AnimationSystem` |
 | `engine.audio` | Backend-agnostic: `AudioBackend`, `AudioClip`/`AudioVoice` handles, `AudioSource`, `AudioListener`, `ImpactSound`, `AudioMixer`/`AudioBus`, `Rolloff`, `VoiceAllocator`, `AudioSystem`, `NullAudioBackend` |
 | `engine.audio.al` | The OpenAL (JOAL) implementation of `AudioBackend` (buffers, sources, streaming) |
@@ -303,7 +308,8 @@ writing another `RenderBackend` and a platform class instead of `Engine`'s windo
 writers are public, gamepads included).
 
 Writing a game: implement `Game.init`, build entities (`new Entity().add(new MeshRenderer(...))`), add them to
-`engine.scene()`, register extra `ISystem`s with `engine.addSystem` and HUD code with `engine.addOverlay`. Entities with
+`engine.scene()` (effects: `entity.add(new ParticleEmitter())`, then set its fields), register extra `ISystem`s with
+`engine.addSystem` and HUD code with `engine.addOverlay`. Entities with
 a collider and no `Rigidbody` are static; add a `Rigidbody` to make them move, several colliders to give it a compound
 shape, a joint (`link.add(new BallJoint()).setWorldAnchor(point)`, with `connected` set to the other entity or left
 null for the world) to tie it to something; `setWorldAxis` plus `coneAngle`/`limitTwist` (ball) or `limit` (hinge)
@@ -335,6 +341,9 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   behind a wall can appear a frame after it should. A moved static renderer is re-registered at the next fixed step,
   so it can be drawn at its old place for a frame unless `invalidate()` is called. Order-independent transparency is
   an approximation: overlapping layers of very different opacity blend a little differently from exact sorting.
+- Particles are unlit (no shadows received or cast, no lights on smoke) and drawn after all other transparent
+  surfaces, so a particle behind a glass pane is not dimmed by it. Alpha particles are sorted per emitter and the
+  emitters by their centres, so two smoke clouds that overlap can sort wrongly; no collisions with the world.
 - The UI has no input method support, and text areas do not wrap (only `Gui.paragraph` does).
 - Sound: positioned sounds should be mono (OpenAL does not pan stereo clips). A streaming clip that loses its voice
   starts from the beginning when it gets one again (whole clips resume where their clock is). No effects (reverb,

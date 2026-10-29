@@ -36,6 +36,7 @@ import engine.render.ShadowMath;
  * <li>the sky ({@link GlSky}) where nothing opaque was drawn;</li>
  * <li>transparent geometry: weighted blended order-independent transparency (batched like opaque geometry), or sorted
  * back to front;</li>
+ * <li>particles ({@link GlParticles}), emitters back to front;</li>
  * <li>bloom, tone mapping and FXAA into the window.</li>
  * </ol>
  * Lighting happens in linear space: colour textures are sRGB-decoded by the GPU, material colours are converted on
@@ -71,6 +72,7 @@ final class GlSceneRenderer {
   private final RenderQueue queue = new RenderQueue();
   private final PostProcessor post = new PostProcessor();
   private final GlSky sky = new GlSky();
+  private final GlParticles particles = new GlParticles();
   private ShaderProgram basic;
   private ShaderProgram depth;
   private ShaderProgram cutout;
@@ -155,6 +157,7 @@ final class GlSceneRenderer {
     this.skinning.init(gl, this.basic, this.depth, this.cutout);
     this.post.init(gl);
     this.sky.init(gl);
+    this.particles.init(gl);
     // placeholders until a light needs them; the samplers must always have a texture of their type bound
     this.shadowMap = new ShadowMapArray(gl, 1, 1, false);
     this.localShadowMap = new ShadowMapArray(gl, 1, 6, true);
@@ -228,6 +231,8 @@ final class GlSceneRenderer {
     }
     this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z);
     mainPass(gl, cascades);
+    this.particles.draw(gl, scene, alpha, this.viewProj, this.cameraPos, this.cameraForward, this.cameraRight,
+        this.cameraUp, camera.near, camera.far, this.post, this.white, this.stats);
     this.post.finish(gl, this.settings, screen);
   }
 
@@ -748,6 +753,7 @@ final class GlSceneRenderer {
       this.localShadowMap.dispose(gl);
       this.post.dispose(gl);
       this.sky.dispose(gl);
+      this.particles.dispose(gl);
       gl.glDeleteVertexArrays(1, new int[] { this.boxVao }, 0);
       gl.glDeleteBuffers(2, new int[] { this.boxVbo, this.boxEbo }, 0);
       if (this.queryPool.length > 0) {

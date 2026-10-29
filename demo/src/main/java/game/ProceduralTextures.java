@@ -115,6 +115,52 @@ final class ProceduralTextures {
     return NormalMaps.fromHeights(heights, size, size, strength);
   }
 
+  /**
+   * A 2 x 2 atlas of white smoke puffs: soft round shapes with a cloudy edge (value noise), alpha as coverage. Unlike
+   * the other textures it does not tile: every frame fades out towards its edges.
+   */
+  static ImageData puffs(int size, long seed) {
+    final int half = size / 2;
+    final byte[] rgba = new byte[size * size * 4];
+    final var rnd = new Random(seed);
+    final int cells = 6;
+    for (int frame = 0; frame < 4; frame++) {
+      final float[] grid = new float[cells * cells];
+      for (int i = 0; i < grid.length; i++) {
+        grid[i] = rnd.nextFloat();
+      }
+      final int ox = (frame % 2) * half;
+      final int oy = (frame / 2) * half;
+      for (int y = 0; y < half; y++) {
+        for (int x = 0; x < half; x++) {
+          final float u = (x + 0.5f) / half * 2f - 1f;
+          final float v = (y + 0.5f) / half * 2f - 1f;
+          final float fx = (x + 0.5f) / half * (cells - 1);
+          final float fy = (y + 0.5f) / half * (cells - 1);
+          final int x0 = Math.min(cells - 2, (int) fx);
+          final int y0 = Math.min(cells - 2, (int) fy);
+          final float tx = smooth(fx - x0);
+          final float ty = smooth(fy - y0);
+          final float a = grid[y0 * cells + x0];
+          final float b = grid[y0 * cells + x0 + 1];
+          final float c = grid[(y0 + 1) * cells + x0];
+          final float d = grid[(y0 + 1) * cells + x0 + 1];
+          final float noise = (a + (b - a) * tx) * (1f - ty) + (c + (d - c) * tx) * ty;
+          // the radius the puff reaches wobbles with the noise; inside it the density falls off smoothly
+          final float r = (float) Math.sqrt(u * u + v * v) / (0.65f + 0.3f * noise);
+          final float density = r >= 1f ? 0f : smooth(1f - r) * (0.75f + 0.25f * noise);
+          final int o = ((oy + y) * size + ox + x) * 4;
+          final byte shade = (byte) clamp255(225 + 30 * noise);
+          rgba[o] = shade;
+          rgba[o + 1] = shade;
+          rgba[o + 2] = shade;
+          rgba[o + 3] = (byte) clamp255(255 * density);
+        }
+      }
+    }
+    return new ImageData(size, size, rgba);
+  }
+
   private static float smooth(float t) {
     return t * t * (3f - 2f * t);
   }

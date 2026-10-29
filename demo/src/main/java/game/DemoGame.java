@@ -46,6 +46,7 @@ import engine.render.Light;
 import engine.render.Material;
 import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
+import engine.render.ParticleEmitter;
 import engine.render.Sky;
 import engine.render.UiCanvas;
 import engine.resources.HdrLoader;
@@ -58,7 +59,8 @@ import lombok.extern.slf4j.Slf4j;
  * Sample scene exercising the engine: cascaded and point-light shadows, normal, height and specular maps, a cut-out
  * grate, instanced crates under physics, a turntable carrying crates, a compound body, an MTL-textured model,
  * transparency, points, a sprite, a jointed chain, a motorised hinge, a mesh-collider dome, synthesized sounds
- * (impacts, throws, a humming light, wind) and a HUD. Press F to throw a crate.
+ * (impacts, throws, a humming light, wind), a campfire of particles and a HUD. Press F to throw a crate, E to push
+ * what the crosshair is on (with sparks).
  */
 @Slf4j
 public class DemoGame implements Game {
@@ -73,6 +75,7 @@ public class DemoGame implements Game {
   private boolean bending;
   private Entity player;
   private Entity turntable;
+  private ParticleEmitter sparks;
   private float turntableSpeed = 0.6f;
   private String aim = "";
   private Gui gui;
@@ -238,6 +241,27 @@ public class DemoGame implements Game {
     grate.transform().setEulerDegrees(0f, -30f, 0f);
     grate.add(new MeshRenderer(res.mesh(MeshFactory.quad(3f, 3f)), grateMaterial)).setStaticGeometry(true);
     scene.add(grate);
+
+    addCampfire(engine, new Vector3f(-4f, -1f, 3f));
+    // sparks fly where E pokes something: one emitter, moved to the hit and burst
+    final var sparkEntity = new Entity("sparks");
+    this.sparks = sparkEntity.add(new ParticleEmitter());
+    this.sparks.emitting = false;
+    this.sparks.blend = ParticleEmitter.Blend.ADDITIVE;
+    this.sparks.colorStart.set(1f, 0.85f, 0.5f, 1f);
+    this.sparks.colorEnd.set(1f, 0.3f, 0.05f, 0f);
+    this.sparks.brightness = 6f;
+    this.sparks.sizeStart = 0.06f;
+    this.sparks.sizeEnd = 0.02f;
+    this.sparks.speedMin = 2f;
+    this.sparks.speedMax = 6f;
+    this.sparks.spreadDegrees = 70f;
+    this.sparks.lifetimeMin = 0.3f;
+    this.sparks.lifetimeMax = 0.7f;
+    this.sparks.acceleration.set(0f, -9.81f, 0f);
+    this.sparks.drag = 1f;
+    this.sparks.softness = 0f;
+    scene.add(sparkEntity);
 
     final List<Vector3f> ring = new ArrayList<>();
     for (int i = 0; i < 48; i++) {
@@ -577,6 +601,99 @@ public class DemoGame implements Game {
     this.gui.end();
   }
 
+  /**
+   * Logs with three particle emitters: additive flames that rise and shrink, glowing embers that fly up and fall
+   * back, and alpha-blended smoke from a texture atlas that grows and drifts; a flickering light shines with them.
+   */
+  private void addCampfire(Engine engine, Vector3f at) {
+    final var res = engine.resources();
+    final var scene = engine.scene();
+    final var wood = new Material().color(0.25f, 0.15f, 0.08f, 1f);
+    final var logMesh = res.mesh(MeshFactory.cube(1f));
+    for (int i = 0; i < 3; i++) {
+      final var log = new Entity("log");
+      log.transform().position().set(at.x, at.y + 0.08f, at.z);
+      log.transform().setEulerDegrees(0f, i * 60f, 8f);
+      log.transform().scale().set(0.9f, 0.14f, 0.14f);
+      log.add(new MeshRenderer(logMesh, wood)).setStaticGeometry(true);
+      scene.add(log);
+    }
+
+    final var fire = new Entity("fire");
+    fire.transform().position().set(at.x, at.y + 0.15f, at.z);
+    final var flames = fire.add(new ParticleEmitter());
+    flames.blend = ParticleEmitter.Blend.ADDITIVE;
+    flames.rate = 90f;
+    flames.lifetimeMin = 0.5f;
+    flames.lifetimeMax = 0.9f;
+    flames.speedMin = 0.4f;
+    flames.speedMax = 1f;
+    flames.spreadDegrees = 15f;
+    flames.shapeRadius = 0.2f;
+    flames.acceleration.set(0f, 2.5f, 0f);
+    flames.sizeStart = 0.5f;
+    flames.sizeEnd = 0.1f;
+    flames.sizeVariation = 0.3f;
+    flames.colorStart.set(1f, 0.75f, 0.3f, 0.8f);
+    flames.colorEnd.set(0.9f, 0.15f, 0.02f, 0f);
+    flames.fadeIn = 0.15f;
+    flames.brightness = 2.5f;
+    flames.softness = 0.15f;
+    // the light flickers with the flames: a looping tween of its intensity
+    final var light = fire.add(Light.point(1f, 0.55f, 0.2f, 1.8f, 7f));
+    fire.add(new Animator()).tween(v -> light.intensity = v[0], new float[] { 1.4f }, new float[] { 2.2f }, 0.13f,
+        Easing.QUAD_IN_OUT, AnimationLayer.Loop.PING_PONG);
+    scene.add(fire);
+
+    final var embers = new Entity("embers");
+    embers.transform().position().set(at.x, at.y + 0.2f, at.z);
+    final var sparks = embers.add(new ParticleEmitter());
+    sparks.blend = ParticleEmitter.Blend.ADDITIVE;
+    sparks.rate = 8f;
+    sparks.lifetimeMin = 1f;
+    sparks.lifetimeMax = 2f;
+    sparks.speedMin = 1.5f;
+    sparks.speedMax = 3f;
+    sparks.spreadDegrees = 25f;
+    sparks.shapeRadius = 0.15f;
+    sparks.acceleration.set(0f, -1.2f, 0f);
+    sparks.drag = 0.6f;
+    sparks.sizeStart = 0.05f;
+    sparks.sizeEnd = 0.03f;
+    sparks.colorStart.set(1f, 0.7f, 0.3f, 1f);
+    sparks.colorEnd.set(1f, 0.25f, 0.05f, 0f);
+    sparks.brightness = 5f;
+    sparks.softness = 0f;
+    scene.add(embers);
+
+    final var smokeEntity = new Entity("smoke");
+    smokeEntity.transform().position().set(at.x, at.y + 0.8f, at.z);
+    final var smoke = smokeEntity.add(new ParticleEmitter());
+    smoke.texture = res.texture("gen:puffs", ProceduralTextures.puffs(256, 7L));
+    smoke.atlasColumns = 2;
+    smoke.atlasRows = 2;
+    smoke.animateFrames = false;
+    smoke.rate = 7f;
+    smoke.lifetimeMin = 3f;
+    smoke.lifetimeMax = 4.5f;
+    smoke.speedMin = 0.4f;
+    smoke.speedMax = 0.7f;
+    smoke.spreadDegrees = 12f;
+    smoke.shapeRadius = 0.15f;
+    smoke.acceleration.set(0.15f, 0.1f, 0f); // a light breeze
+    smoke.drag = 0.2f;
+    smoke.sizeStart = 0.4f;
+    smoke.sizeEnd = 2.2f;
+    smoke.sizeVariation = 0.2f;
+    smoke.spinMin = -25f;
+    smoke.spinMax = 25f;
+    smoke.colorStart.set(0.22f, 0.21f, 0.2f, 0.75f);
+    smoke.colorEnd.set(0.45f, 0.45f, 0.47f, 0f);
+    smoke.fadeIn = 0.2f;
+    smoke.softness = 0.5f;
+    scene.add(smokeEntity);
+  }
+
   private void spawnCrate(Engine engine, Vector3f position, Vector3f velocity) {
     final var crate = new Entity("crate");
     crate.transform().position().set(position);
@@ -658,6 +775,9 @@ public class DemoGame implements Game {
           body.wakeUp();
           body.velocity.fma(8f, forward);
         });
+        this.sparks.entity().transform().position().set(hit.get().point()).fma(0.02f, hit.get().normal());
+        this.sparks.direction.set(hit.get().normal());
+        this.sparks.burst(40);
       }
     } else {
       this.aim = "";
