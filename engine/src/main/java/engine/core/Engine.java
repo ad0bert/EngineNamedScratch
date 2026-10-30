@@ -497,6 +497,34 @@ public class Engine {
     return this.profiler.section(name);
   }
 
+  /**
+   * Sound occlusion: a physics ray from the listener towards the sound, stopping short of it, that hits something
+   * solid other than the listener's and the sound's own colliders (or their parents', like the player's capsule
+   * around a head with the listener).
+   */
+  private boolean occluded(Vector3f from, Vector3f to, Entity listener, Entity source) {
+    final var dir = new Vector3f(to).sub(from);
+    final float dist = dir.length();
+    if (dist < 0.5f) {
+      return false;
+    }
+    return this.physics.raycast(this.scene, from, dir, dist - 0.25f,
+        c -> !c.trigger && !holds(c.entity(), listener) && !holds(c.entity(), source)).isPresent();
+  }
+
+  /** True if {@code e} is {@code other} or one of its ancestors. */
+  private static boolean holds(Entity e, Entity other) {
+    if (other == null) {
+      return false;
+    }
+    for (var t = other.transform(); t != null; t = t.parent()) {
+      if (t == e.transform()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** A shader file in an asset directory replaces the built-in one of the same path (e.g. shaders/basic.frag). */
   private String shaderFromAssets(String path) {
     final var file = this.assets.file(path);
@@ -574,6 +602,7 @@ public class Engine {
       final var sound = Boolean.parseBoolean(System.getProperty("engine.audio", "true")) ? AlAudioBackend.open(32)
           : null;
       Engine.this.audio = new AudioSystem(sound != null ? sound : new NullAudioBackend());
+      Engine.this.audio.setOcclusionTest(Engine.this::occluded);
       Engine.this.resources = new ResourceManager(Engine.this.backend, Engine.this.audio.backend(),
           Engine.this.assets);
 

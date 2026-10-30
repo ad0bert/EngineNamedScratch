@@ -22,6 +22,8 @@ import engine.audio.AudioClip;
 import engine.audio.AudioListener;
 import engine.audio.AudioSource;
 import engine.audio.ImpactSound;
+import engine.audio.ReverbPreset;
+import engine.audio.ReverbZone;
 import engine.core.Engine;
 import engine.core.Game;
 import engine.core.Settings;
@@ -837,7 +839,7 @@ public class DemoGame implements Game {
   /**
    * A small room open to -x with a polished floor and a glowing panel, and a reflection probe that matches its walls:
    * inside, the floor mirrors the room (box-projected) instead of the sky, and the sky's ambient light is replaced by
-   * the room's own.
+   * the room's own. A reverb zone of the same size makes it sound like a room.
    */
   private void buildRoom(Engine engine, Vector3f floorCentre) {
     final var res = engine.resources();
@@ -873,6 +875,8 @@ public class DemoGame implements Game {
     p.fade = 0.6f;
     p.setEnabled(!"false".equals(System.getProperty("demo.probe"))); // -Ddemo.probe=false: compare without it
     scene.add(probe);
+    // and it sounds like a room: positioned sounds reverberate while the listener is inside
+    probe.add(new ReverbZone(ReverbPreset.ROOM, w, h, w)).fade = 0.6f;
   }
 
   /** The companion keeps within a few metres of the player, planning its way on the navigation grid. */

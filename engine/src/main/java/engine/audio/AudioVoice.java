@@ -26,6 +26,13 @@ public interface AudioVoice {
 
   void setVelocity(float x, float y, float z);
 
+  /**
+   * Treble kept of what goes straight to the speakers ({@code directHF}, 0..1: 1 unfiltered, less muffled) and how
+   * much of the voice goes into the reverberation ({@code send}, 0..1). Ignored by backends without effects.
+   */
+  default void setFilter(float directHF, float send) {
+  }
+
   /** False once a started clip has played to its end without looping, or after {@link #stop()}. */
   boolean isPlaying();
 

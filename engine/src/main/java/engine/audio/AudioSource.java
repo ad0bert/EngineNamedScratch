@@ -30,6 +30,11 @@ public class AudioSource extends Component {
   public Rolloff rolloffMode = Rolloff.INVERSE;
   /** Higher priorities keep their voice over louder sounds of lower priority; music should use a high one. */
   public int priority;
+  /**
+   * Muffled and quieter while something solid is between it and the listener (positioned sources, when the system
+   * has an {@link AudioSystem#setOcclusionTest occlusion test}; the engine sets one up with physics rays).
+   */
+  public boolean occlusion = true;
   /** Starts playing as soon as the system first sees it in a scene. */
   public boolean playOnStart;
 
@@ -108,6 +113,8 @@ public class AudioSource extends Component {
     p.rolloff = this.rolloff;
     p.rolloffMode = this.rolloffMode;
     p.priority = this.priority;
+    p.occludable = this.occlusion;
+    p.entity = entity();
     if (p.clip == null) {
       p.state = Playback.State.STOPPED;
     }

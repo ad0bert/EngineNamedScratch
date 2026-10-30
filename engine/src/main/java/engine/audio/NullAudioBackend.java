@@ -61,6 +61,24 @@ public class NullAudioBackend implements AudioBackend {
   public void setDoppler(float factor, float speedOfSound) {
   }
 
+  private ReverbPreset reverb;
+  private float reverbWet;
+
+  /** Kept (and readable) so tests can see what the system asked for; nothing is heard. */
+  @Override
+  public void setReverb(ReverbPreset preset, float wet) {
+    this.reverb = preset;
+    this.reverbWet = wet;
+  }
+
+  public ReverbPreset reverb() {
+    return this.reverb;
+  }
+
+  public float reverbWet() {
+    return this.reverbWet;
+  }
+
   @Override
   public void update(double dt) {
     for (NullVoice v : this.voices) {
@@ -89,6 +107,8 @@ public class NullAudioBackend implements AudioBackend {
     private boolean loop;
     private float time;
     private float gain;
+    private float directHF = 1f;
+    private float send;
     private float pitch = 1f;
     private boolean spatial;
     private final Vector3f position = new Vector3f();
@@ -141,6 +161,20 @@ public class NullAudioBackend implements AudioBackend {
     @Override
     public AudioClip clip() {
       return this.clip;
+    }
+
+    @Override
+    public void setFilter(float directHF, float send) {
+      this.directHF = directHF;
+      this.send = send;
+    }
+
+    public float directHF() {
+      return this.directHF;
+    }
+
+    public float send() {
+      return this.send;
     }
 
     public float gain() {

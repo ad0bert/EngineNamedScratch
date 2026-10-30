@@ -206,7 +206,11 @@ class PauseMenu implements GameState {
   volume, pitch, loop, three distance curves, min/max distance, priority, play/pause/stop, play on start) and an
   `AudioListener` (or the camera), Doppler from rigidbody velocities, one-shots (`engine.audio().play(clip, pos)`),
   mixer buses (master, music, effects, UI), a voice limit with priority- and loudness-based stealing (sounds without
-  a voice keep time and come back), impact sounds scaled by the collision impulse (`ImpactSound`). WAV/AIFF/AU and
+  a voice keep time and come back), impact sounds scaled by the collision impulse (`ImpactSound`). Effects through
+  OpenAL's EFX: `ReverbZone`s (boxes with a reverb preset, a wet mix and an optional low-pass that muffles everything
+  heard inside, e.g. under water) give positioned sounds the acoustics of where the listener is, and sounds behind
+  solid colliders are muffled and quieter (occlusion by physics rays from the listener, smoothed; `AudioSource.
+  occlusion` turns it off per source). WAV/AIFF/AU and
   Ogg Vorbis (JOrbis), long music streamed from the compressed file.
 - **Scenes and prefabs:** entities, their hierarchy and components saved to and loaded from JSON
   (`SceneSerializer`); materials, animation clips and skins are shared by index and resources referred to by key;
@@ -398,8 +402,10 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   emitters by their centres, so two smoke clouds that overlap can sort wrongly.
 - The UI has no input method support, and text areas do not wrap (only `Gui.paragraph` does).
 - Sound: positioned sounds should be mono (OpenAL does not pan stereo clips). A streaming clip that loses its voice
-  starts from the beginning when it gets one again (whole clips resume where their clock is). No effects (reverb,
-  filters, occlusion). Impact sounds estimate the impulse from the body's change of velocity in the step the contact
+  starts from the beginning when it gets one again (whole clips resume where their clock is). One reverb at a time
+  (the zone the listener is deepest in; zones do not blend their presets), occlusion is all or nothing per ray (no
+  partial or diffracted paths), and backends without EFX (the silent one, OpenAL without the extension) play
+  everything dry. Impact sounds estimate the impulse from the body's change of velocity in the step the contact
   began. Without a sound device the ALSA library may print a few lines while OpenAL looks for one.
 - Gamepads: JInput finds pads at start-up and on a rescan (window focus or `Engine.rescanGamepads()`), not the
   moment they are plugged in; buttons are mapped by name for Xbox-style pads and guessed for others. Rumble goes
