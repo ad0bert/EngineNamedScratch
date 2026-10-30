@@ -87,7 +87,7 @@ with the demo (a runnable jar, and packaged for each platform). The release's ti
   <dependency>
     <groupId>io.github.ad0bert</groupId>
     <artifactId>engine-named-scratch</artifactId>
-    <version>0.8.0</version>
+    <version>0.9.0</version>
   </dependency>
   <!-- the engine logs through SLF4J only; pick a backend -->
   <dependency>
