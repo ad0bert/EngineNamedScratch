@@ -59,6 +59,11 @@ public class RenderSettings {
   /** Turns the sky about the vertical axis, degrees. */
   public float skyRotation;
   /** Tint the shadow cascades (debugging). */
+  /**
+   * Multiplies the distances at which meshes switch to coarser levels of detail and are culled
+   * ({@link MeshRenderer#addLod}): above 1 keeps detail further out.
+   */
+  public float lodBias = floatProperty("engine.lodBias", 1f);
   public boolean debugCascades = Boolean.getBoolean("engine.debugCascades");
   /** Shows the ambient occlusion (white: open, black: occluded) instead of the scene's opaque surfaces. */
   public boolean debugAmbientOcclusion = Boolean.getBoolean("engine.debugAmbientOcclusion");

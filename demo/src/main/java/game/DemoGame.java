@@ -51,6 +51,7 @@ import engine.render.Light;
 import engine.render.Material;
 import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
+import engine.render.MeshSimplifier;
 import engine.render.ParticleEmitter;
 import engine.render.Sky;
 import engine.render.UiCanvas;
@@ -321,7 +322,11 @@ public class DemoGame implements Game {
     }
 
     // physically based materials: rougher from left to right, the back row metallic (gold)
-    final var sphereMesh = res.mesh(MeshFactory.sphere(0.35f, 32, 16));
+    // with coarser levels of detail from 12 and 30 m on (a quarter, then a tenth of the triangles)
+    final var sphereData = MeshFactory.sphere(0.35f, 32, 16);
+    final var sphereMesh = res.mesh(sphereData);
+    final var sphereMid = res.mesh(MeshSimplifier.simplify(sphereData, 0.25f));
+    final var sphereLow = res.mesh(MeshSimplifier.simplify(sphereData, 0.1f));
     for (int i = 0; i < 5; i++) {
       for (int row = 0; row < 2; row++) {
         final var m = new Material();
@@ -332,7 +337,8 @@ public class DemoGame implements Game {
         }
         final var ball = new Entity("pbr-sphere");
         ball.transform().position().set(-2f + i, -0.6f, 4.5f - row);
-        ball.add(new MeshRenderer(sphereMesh, m)).setStaticGeometry(true);
+        ball.add(new MeshRenderer(sphereMesh, m)).setStaticGeometry(true)
+            .addLod(12f, sphereMid).addLod(30f, sphereLow);
         scene.add(ball);
       }
     }

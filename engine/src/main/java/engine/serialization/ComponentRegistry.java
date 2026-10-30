@@ -106,6 +106,22 @@ public class ComponentRegistry {
       out.put("material", ctx.materialId(r.material));
       out.put("castShadows", r.castShadows);
       out.put("staticGeometry", r.isStaticGeometry());
+      if (r.cullDistance > 0f) {
+        out.put("cullDistance", r.cullDistance);
+      }
+      final List<Object> lods = new ArrayList<>();
+      for (int i = 0; i < r.lodCount(); i++) {
+        final var key = ctx.key(r.lodMesh(i));
+        if (key != null) { // a level without a key is left out: the nearer one is drawn further
+          final Map<String, Object> lod = new LinkedHashMap<>();
+          lod.put("distance", r.lodDistance(i));
+          lod.put("mesh", key);
+          lods.add(lod);
+        }
+      }
+      if (!lods.isEmpty()) {
+        out.put("lods", lods);
+      }
       if (r.skin != null) {
         final var skin = ctx.skinId(r.skin);
         if (skin != null) {
@@ -124,6 +140,15 @@ public class ComponentRegistry {
       final var r = new MeshRenderer(mesh, ctx.material(data.get("material")));
       r.castShadows = !Boolean.FALSE.equals(data.get("castShadows"));
       r.setStaticGeometry(Boolean.TRUE.equals(data.get("staticGeometry")));
+      r.cullDistance = Json.asFloat(data.getOrDefault("cullDistance", 0.0));
+      for (final Object o : Json.asList(data.getOrDefault("lods", List.of()))) {
+        final var lod = Json.asObject(o);
+        final var m = ctx.mesh((String) lod.get("mesh"));
+        if (m == null) {
+          throw new IllegalArgumentException("mesh " + lod.get("mesh") + " not found");
+        }
+        r.addLod(Json.asFloat(lod.get("distance")), m);
+      }
       if (data.get("skin") != null) {
         ctx.afterRead(() -> r.skin = ctx.skin(data.get("skin"))); // the joints may come later in the file
       }

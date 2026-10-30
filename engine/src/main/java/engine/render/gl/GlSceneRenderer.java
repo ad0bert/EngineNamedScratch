@@ -65,7 +65,7 @@ final class GlSceneRenderer {
 
   /** Shadow casters: by mesh, and only cut-out materials need to be told apart (they sample their texture). */
   private static final Comparator<MeshRenderer> SHADOW_ORDER = Comparator
-      .comparingInt((MeshRenderer r) -> r.mesh.id()).thenComparingInt(GlSceneRenderer::shadowMaterialKey);
+      .comparingInt((MeshRenderer r) -> r.drawnMesh().id()).thenComparingInt(GlSceneRenderer::shadowMaterialKey);
 
   private final RenderStats stats;
   private final RenderSettings settings;
@@ -218,6 +218,7 @@ final class GlSceneRenderer {
     this.world.transformDirection(this.cameraUp.set(0f, 1f, 0f)).normalize();
     this.cameraNear = camera.near;
 
+    this.queue.setLodBias(this.settings.lodBias);
     this.queue.collect(scene, alpha, this.cameraPos);
     prepareLights(scene, alpha);
     this.sky.prepare(gl, this.settings); // bakes the sky's lighting when it is new or changed
@@ -618,7 +619,7 @@ final class GlSceneRenderer {
       RenderQueue.writeInstance(list.get(from + k), this.instanceBuffer, k);
     }
     this.instanceBuffer.position(0).limit(floats);
-    ((GlMesh) list.get(from).mesh).draw(gl, this.instanceBuffer, count);
+    ((GlMesh) list.get(from).drawnMesh()).draw(gl, this.instanceBuffer, count);
     this.stats.drawCalls++;
     this.stats.instances += count;
   }

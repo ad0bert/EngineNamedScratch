@@ -187,7 +187,10 @@ class PauseMenu implements GameState {
   (height), texture options `-s -o -clamp -bm`; one part per `usemtl`. glTF 2.0 (`.gltf` with embedded or external
   data, `.glb`): node hierarchy, meshes, metallic-roughness materials with base colour, metal-rough, normal and
   emissive textures, alpha modes, skins and animations (`ResourceManager.gltf(path).instantiate(scene)`). Generated
-  meshes: cube, quad, sphere, points, and shape specs such as `cube:0.5` that scene files can refer to.
+  meshes: cube, quad, sphere, points, and shape specs such as `cube:0.5` that scene files can refer to. Levels of
+  detail: `MeshRenderer.addLod(distance, mesh)` switches to coarser meshes with the camera distance (times
+  `RenderSettings.lodBias`, `-Dengine.lodBias`), `cullDistance` stops drawing far away, and `MeshSimplifier` makes
+  coarser meshes by vertex clustering (keeping hard edges apart).
   Radiance `.hdr` images (`HdrLoader`) for skies.
 - **Animation:** keyframe tracks (step, linear with 16 easing curves, slerped rotations, cubic splines) for transform
   properties of an entity or its named descendants and for any float values (material colours, volumes...), as
