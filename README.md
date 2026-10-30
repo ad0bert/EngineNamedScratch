@@ -22,11 +22,12 @@ java -jar demo/target/dist/demo.jar
 mvn -q package -Pjpackage     # also: demo/target/jpackage, the demo with its own Java runtime
 ```
 
-Demo controls: mouse look, `WASD`/arrows move, `Space`/`Shift` up/down, `F` throws a crate, `E` pushes the body
+Demo controls: mouse look, `WASD`/arrows walk, `Space` jumps, `V` switches between walking and flying (`Space`/`Shift`
+fly up/down), `F` throws a crate, `E` pushes the body
 under the crosshair (with sparks), `F3` toggles the on-screen debug text, `F5` saves the scene to
 `demo-scene.json`, `Esc` frees the mouse and shows a settings panel with volume sliders (click outside it to look around again, `Tab` moves between
 its widgets), `P` pauses, `F11` switches to fullscreen. With a gamepad: left stick moves, right stick looks,
-triggers fly up and down, `RB`/`X` throws, `A` pushes, `Start` pauses. Volumes, fullscreen and vsync are saved in the
+`Y` jumps, triggers fly up and down, `RB`/`X` throws, `A` pushes, `Start` pauses. Volumes, fullscreen and vsync are saved in the
 user's config directory (`~/.config/enginenamedscratch-demo` on Linux).
 
 System properties:
@@ -48,7 +49,7 @@ System properties:
 | `engine.fullscreen=true`, `engine.vsync=false` | override the config's `app.fullscreen` / `app.vsync` |
 | `engine.debugOverlay=false` | start with the debug text (`F3`) hidden; games can also call `engine.setDebugOverlayVisible(false)` |
 | `engine.userDir=dir` | keep settings and saves under `dir/<app id>` instead of the platform's user directories |
-| `demo.camera=x,y,z,yaw,pitch` | demo only: start somewhere else |
+| `demo.camera=x,y,z,yaw,pitch` | demo only: start flying with the eyes somewhere else |
 | `demo.sky=file.hdr` or `demo.sky=none` | demo only: an HDR environment image instead of the procedural sky, or no sky |
 | `demo.saveScene=file.json` | demo only: save the scene at start (what `F5` does) |
 | `demo.paused=true` | demo only: start in the pause menu |
@@ -214,8 +215,15 @@ class PauseMenu implements GameState {
   multi-point contact manifolds solved as a block with friction at their centre, warm-started impulses and
   speculative contacts (40-crate stacks stand), moving platforms (kinematic or static colliders moved by code carry
   what rests on them), triggers, enter/exit `CollisionEvent`s, grid broadphase, sleeping, parented bodies,
-  grid-accelerated `raycast` and `overlapSphere` queries (`syncQueries` makes them see colliders moved since the last
-  step), `Camera.viewRay` for picking.
+  grid-accelerated `raycast`, `sphereCast`, `capsuleCast`, `overlapSphere` and `overlapCapsule` queries (the casts
+  are exact for every shape: conservative advancement on the GJK distance; `syncQueries` makes them see colliders
+  moved since the last step), collision layers (`Collider.layer`, `setLayersCollide`, query filters by layer mask
+  with `PhysicsSystem.solid(mask)`), `Camera.viewRay` for picking.
+- **Characters:** `CharacterController` walks a capsule by sweeping it (collide and slide, creases, step up ledges,
+  slope limit, ground snapping down slopes and steps, jumps with coyote time, ceilings), rides moving and turning
+  ground, pushes dynamic bodies by its mass, is pushed out of things that move into it, and is a collider other bodies
+  rest on. `FirstPersonController` walks with it when the entity has one (pitch on a `head` child) and flies
+  otherwise.
 - **Loop:** fixed-timestep updates with render interpolation between the last two steps.
 - **Input:** keys, mouse, text and up to four gamepads (JInput; radial stick and trigger dead zones, connect and
   disconnect), with actions bound to keys, gamepad buttons and gamepad axes at once; a first-person controller that
@@ -294,7 +302,7 @@ How it works:
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
-| `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `PhysicsSystem` (+ raycasts) |
+| `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.debug` | `DebugOverlay` |
 | `game` (demo module) | Demo scene (`DemoGame`, `Main`) |
 
@@ -333,7 +341,9 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   contacts, and a hull stops at its vertex cap (an inner approximation). Hinge limits are angles in -180..180 degrees
   (no multi-turn limits) and a ball joint's cone is circular. Continuous collision sweeps the largest sphere inside a
   body, so a fast box can still clip a corner, and it stops the body at the first hit instead of solving the rest of
-  the step.
+  the step. A `CharacterController` stays upright (it turns only about Y), takes the ground's motion at the point it
+  stands on but not its turn, and is seen by bodies as a static collider moved by code, so it pushes them only
+  through `mass`, while bodies that run into it meet an immovable wall.
 - At most 8 lights per frame in a forward renderer; only the first directional light has cascaded shadows and at most
   4 point or spot lights cast shadows. Image-based lighting comes from the sky only (no local reflection probes, no
   ambient occlusion), so the insides of rooms get the sky's ambient light too.

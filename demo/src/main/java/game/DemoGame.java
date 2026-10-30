@@ -36,8 +36,10 @@ import engine.physics.BallJoint;
 import engine.physics.BoxCollider;
 import engine.physics.CapsuleCollider;
 import engine.physics.CollisionEvent;
+import engine.physics.CharacterController;
 import engine.physics.HingeJoint;
 import engine.physics.MeshCollider;
+import engine.physics.PhysicsSystem;
 import engine.physics.Rigidbody;
 import engine.physics.SphereCollider;
 import engine.render.Camera;
@@ -80,6 +82,11 @@ public class DemoGame implements Game {
   private String aim = "";
   private Gui gui;
   private FirstPersonController controller;
+  private CharacterController walker;
+  /** Child of the player with the camera and the listener. */
+  private Entity head;
+  /** Small bodies the player walks through instead of being blocked by. */
+  private static final int LAYER_DEBRIS = 1;
   private String playerName = "Player";
   private String notes = "";
   /** Recent collision events of the player, newest last (shown in a scrolling list). */
@@ -96,6 +103,7 @@ public class DemoGame implements Game {
     engine.input().bind("save_scene", KeyEvent.VK_F5);
     engine.input().bind("pause", KeyEvent.VK_P);
     engine.input().bind("fullscreen", KeyEvent.VK_F11);
+    engine.input().bind("fly", KeyEvent.VK_V);
     engine.input().bindGamepad("pause", Gamepad.BUTTON_START);
     engine.input().bindGamepad("spawn", Gamepad.BUTTON_RIGHT_BUMPER, Gamepad.BUTTON_X);
     engine.input().bindGamepad("poke", Gamepad.BUTTON_A);
@@ -110,23 +118,31 @@ public class DemoGame implements Game {
     scene.add(sun);
     setUpSky(engine);
 
+    // the player walks (a capsule moved by a CharacterController); the camera is in its head, which looks up and down
     this.player = new Entity("player");
-    this.player.transform().position().set(0f, 1.5f, 8f);
-    this.player.add(new Camera());
-    this.player.add(new AudioListener());
+    this.player.transform().position().set(0f, -0.09f, 8f); // feet on the ground at y = -1
+    this.player.add(new CapsuleCollider(0.3f, 0.6f));
+    this.walker = this.player.add(new CharacterController());
+    this.walker.layerMask = ~PhysicsSystem.layers(LAYER_DEBRIS); // walks through the small debris
+    this.head = new Entity("head");
+    this.head.transform().position().set(0f, 0.7f, 0f); // eyes 1.6 m above the feet
+    this.head.transform().setParent(this.player.transform());
+    this.head.add(new Camera());
+    this.head.add(new AudioListener());
     final var controller = this.player.add(new FirstPersonController(engine.input()));
+    controller.head = this.head;
     this.controller = controller;
-    // -Ddemo.camera=x,y,z,yaw,pitch starts somewhere else (handy for screenshots)
+    // -Ddemo.camera=x,y,z,yaw,pitch starts somewhere else, flying (handy for screenshots)
     final var start = System.getProperty("demo.camera");
     if (start != null) {
       final var v = start.split(",");
-      this.player.transform().position().set(Float.parseFloat(v[0]), Float.parseFloat(v[1]), Float.parseFloat(v[2]));
+      this.player.transform().position().set(Float.parseFloat(v[0]), Float.parseFloat(v[1]) - 0.7f,
+          Float.parseFloat(v[2]));
       controller.setLook(v.length > 3 ? Float.parseFloat(v[3]) : 0f, v.length > 4 ? Float.parseFloat(v[4]) : 0f);
+      this.walker.setEnabled(false);
     }
-    this.player.add(new SphereCollider(0.4f));
-    final var playerBody = this.player.add(new Rigidbody());
-    playerBody.kinematic = true;
     scene.add(this.player);
+    scene.add(this.head);
 
     final var ground = new Entity("ground");
     ground.transform().setEulerDegrees(-90f, 0f, 0f);
@@ -333,7 +349,7 @@ public class DemoGame implements Game {
       scene.add(pane);
     }
 
-    // a kinematic turntable turned by code (see update): the crates on it ride along
+    // a kinematic turntable turned by code (see update): the crates on it ride along, and so does the player
     this.turntable = new Entity("turntable");
     this.turntable.transform().position().set(9f, -0.75f, -6f);
     this.turntable.transform().scale().set(2.5f, 0.25f, 2.5f);
@@ -376,7 +392,8 @@ public class DemoGame implements Game {
     scene.add(small);
     scene.add(bar);
 
-    // a chain of capsules hanging from a fixed point by ball joints; push it with E
+    // a chain of capsules hanging from a fixed point by ball joints; push it with E. Its links are on the debris
+    // layer, which the player's controller ignores
     final var linkMesh = res.mesh(MeshFactory.cube(1f));
     final var linkMaterial = new Material().color(0.85f, 0.85f, 0.9f, 1f).pbr(1f, 0.3f);
     Entity previous = null;
@@ -386,7 +403,7 @@ public class DemoGame implements Game {
       link.transform().setEulerDegrees(0f, 0f, 90f);
       link.transform().scale().set(0.12f, 0.5f, 0.12f);
       link.add(new MeshRenderer(linkMesh, linkMaterial));
-      link.add(new CapsuleCollider(0.5f, 0.5f));
+      link.add(new CapsuleCollider(0.5f, 0.5f)).layer = LAYER_DEBRIS; // the player walks through it
       link.add(new Rigidbody()).linearDamping = 0.3f;
       scene.add(link);
       final var joint = link.add(new BallJoint());
@@ -551,9 +568,9 @@ public class DemoGame implements Game {
       g.label("Grüße, " + this.playerName + "! – Ünïcödé ½ € ✓");
       g.row(2);
       if (g.button("Throw crate")) {
-        final var t = this.player.transform();
-        final var forward = t.forward(new Vector3f());
-        spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), forward.mul(10f));
+        final var t = this.head.transform();
+        final var forward = t.worldRotation(new Quaternionf()).transform(new Vector3f(0f, 0f, -1f));
+        spawnCrate(engine, t.worldPosition(new Vector3f()).fma(1.5f, forward), forward.mul(10f));
         engine.audio().play2D(this.click, 0.6f, AudioBus.UI);
       }
       if (g.button("Wake all")) {
@@ -754,18 +771,22 @@ public class DemoGame implements Game {
       this.dancer.blend(this.dancer.clip("pulse"), 0.5f, AnimationLayer.Loop.PING_PONG);
     }
     this.controller.setEnabled(!this.gui.wantsKeyboard()); // typing a name must not walk around
-    final var t = this.player.transform();
-    final var forward = t.forward(new Vector3f());
+    if (engine.input().wasActionPressed("fly")) { // V: fly through everything, or walk again
+      this.walker.setEnabled(!this.walker.isEnabled());
+    }
+    final var t = this.head.transform();
+    final var forward = t.worldRotation(new Quaternionf()).transform(new Vector3f(0f, 0f, -1f));
     if (engine.input().wasActionPressed("save_scene")) { // F5: everything with a serializer, as JSON
       saveScene(engine, Path.of("demo-scene.json"));
     }
     if (engine.input().wasActionPressed("spawn")) {
-      spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(18f));
-      engine.audio().play(this.whoosh, t.position().fma(0.8f, forward, new Vector3f()), 0.7f, 1f, AudioBus.EFFECTS, 1);
+      final var eye = t.worldPosition(new Vector3f());
+      spawnCrate(engine, new Vector3f(eye).fma(1.5f, forward), new Vector3f(forward).mul(18f));
+      engine.audio().play(this.whoosh, eye.fma(0.8f, forward), 0.7f, 1f, AudioBus.EFFECTS, 1);
     }
 
     // what is the crosshair pointing at? E pushes it (wakes sleeping bodies)
-    final var origin = t.position();
+    final var origin = t.worldPosition(new Vector3f());
     final var hit = engine.physics().raycast(engine.scene(), origin, forward, 60f,
         c -> c.entity() != this.player && !c.trigger);
     if (hit.isPresent()) {
@@ -793,7 +814,7 @@ public class DemoGame implements Game {
       ui.drawText(this.aim, cx + 15f, cy + 9f, 1.25f, 0f, 0f, 0f, 0.8f);
       ui.drawText(this.aim, cx + 14f, cy + 8f, 1.25f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  F5 save scene  P pause  F11 fullscreen  Esc settings"
+    final var help = "WASD walk  Space jump  V fly (Space/Shift up/down)  F throw crate  E push  F3 debug  F5 save scene  P pause  F11 fullscreen  Esc settings"
         + (engine.input().firstGamepad() != null ? "  Pad: sticks, triggers, RB throw, A push" : "");
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);

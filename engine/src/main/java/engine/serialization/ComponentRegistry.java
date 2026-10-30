@@ -14,6 +14,7 @@ import engine.input.FirstPersonController;
 import engine.physics.BallJoint;
 import engine.physics.BoxCollider;
 import engine.physics.CapsuleCollider;
+import engine.physics.CharacterController;
 import engine.physics.DistanceJoint;
 import engine.physics.HingeJoint;
 import engine.physics.MeshCollider;
@@ -43,6 +44,8 @@ public class ComponentRegistry {
     r.register(new FieldSerializer<>("BoxCollider", BoxCollider.class, ctx -> new BoxCollider()));
     r.register(new FieldSerializer<>("SphereCollider", SphereCollider.class, ctx -> new SphereCollider()));
     r.register(new FieldSerializer<>("CapsuleCollider", CapsuleCollider.class, ctx -> new CapsuleCollider()));
+    r.register(new FieldSerializer<>("CharacterController", CharacterController.class,
+        ctx -> new CharacterController()));
     r.register(new MeshColliderSerializer());
     r.register(new FieldSerializer<>("BallJoint", BallJoint.class, ctx -> new BallJoint()));
     r.register(new FieldSerializer<>("HingeJoint", HingeJoint.class, ctx -> new HingeJoint()));
