@@ -631,6 +631,7 @@ public class DemoGame implements Game {
       settings.occlusionCulling = g.checkbox("Occlusion culling", settings.occlusionCulling);
       settings.maxPointShadows = g.checkbox("Point light shadows", settings.maxPointShadows > 0) ? 4 : 0;
       settings.debugCascades = g.checkbox("Tint shadow cascades", settings.debugCascades);
+      settings.ambientOcclusion = g.checkbox("Ambient occlusion", settings.ambientOcclusion);
       g.row(2);
       settings.antiAliasing = g.checkbox("FXAA", settings.antiAliasing);
       settings.orderIndependentTransparency = g.checkbox("OIT", settings.orderIndependentTransparency);

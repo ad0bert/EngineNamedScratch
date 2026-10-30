@@ -202,7 +202,7 @@ final class GlSceneRenderer {
     final var sky = srgbToLinear(this.settings.clearColor, this.linear);
     final var activeCamera = scene.activeCamera();
     if (activeCamera.isEmpty()) {
-      this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z);
+      this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z, false);
       this.post.finish(gl, this.settings, screen);
       return;
     }
@@ -229,7 +229,7 @@ final class GlSceneRenderer {
     if (this.localLayers > 0) {
       localShadowPasses(gl);
     }
-    this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z);
+    this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z, this.settings.ambientOcclusion);
     mainPass(gl, cascades);
     this.particles.draw(gl, scene, alpha, this.viewProj, this.cameraPos, this.cameraForward, this.cameraRight,
         this.cameraUp, camera.near, camera.far, this.post, this.white, this.stats);
@@ -495,6 +495,8 @@ final class GlSceneRenderer {
     }
     RenderQueue.sortForBatching(this.opaque, true);
     drawList(gl, this.opaque);
+    this.post.ambientOcclusion(gl, this.settings, this.proj);
+    this.basic.use(gl);
 
     if (occlusion) {
       this.stats.occluded = this.queue.occluded();

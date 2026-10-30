@@ -43,6 +43,7 @@ System properties:
 | `engine.debugCascades=true` | tint the shadow cascades |
 | `engine.exposure=1`, `engine.bloomStrength=0.08`, `engine.bloomThreshold=1` | HDR tone mapping and bloom |
 | `engine.antiAliasing=false`, `engine.orderIndependentTransparency=false` | turn off FXAA / weighted blended OIT |
+| `engine.ambientOcclusion=false`, `engine.aoRadius=0.8`, `engine.aoStrength=2` | screen-space ambient occlusion; `engine.debugAmbientOcclusion=true` shows it in grey |
 | `engine.skyIntensity=1` | brightness of the sky and its lighting |
 | `engine.audio=false` | no sound (also automatic without a sound device) |
 | `engine.gamepads=false` | do not look for gamepads |
@@ -161,7 +162,8 @@ class PauseMenu implements GameState {
 
 ## Features
 
-- **Rendering:** GL3 core forward renderer into an HDR target, then bloom, ACES tone mapping and FXAA; linear
+- **Rendering:** GL3 core forward renderer into an HDR target, then screen-space ambient occlusion (it darkens only
+  the ambient and sky light, which the opaque pass writes to a second target), bloom, ACES tone mapping and FXAA; linear
   lighting (colour textures and colours are sRGB, data maps are linear). GPU-instanced draw calls batched by (mesh,
   material), frustum culling (sphere, then box for long or flat objects), occlusion culling of static geometry, up to 8
   lights (directional, point and spot), up to 4 cascaded shadow maps with soft edges and cascade blending for the first
@@ -367,7 +369,8 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   container); agents do not avoid each other.
 - At most 8 lights per frame in a forward renderer; only the first directional light has cascaded shadows and at most
   4 point or spot lights cast shadows. Image-based lighting comes from the sky only (no local reflection probes, no
-  ambient occlusion), so the insides of rooms get the sky's ambient light too.
+  geometry-based occlusion beyond the screen-space kind, which only sees what is on screen and fades out from 30 to
+  60 m), so the insides of rooms get much of the sky's ambient light too.
 - Occlusion culling only skips static geometry, in whole grid cells, and is one frame late: an object coming out from
   behind a wall can appear a frame after it should. A moved static renderer is re-registered at the next fixed step,
   so it can be drawn at its old place for a frame unless `invalidate()` is called. Order-independent transparency is

@@ -74,7 +74,9 @@ uniform vec2 uSkyRotation;                     // cos, sin of the sky's turn abo
 uniform float uPrefilteredLevels;
 
 layout(location = 0) out vec4 fragColor;
-layout(location = 1) out vec4 fragWeight;      // transparency pass only
+layout(location = 1) out vec4 fragWeight;      // transparency pass: weights; opaque pass: the ambient light
+                                               // (what ambient occlusion may take away)
+vec3 gAmbient = vec3(0.0);
 
 // Tangent frame (columns t, b, n). Meshes with uvs carry a tangent attribute; without one, the frame comes from
 // screen-space derivatives of the position and uv. Returns false when there is no usable frame.
@@ -215,7 +217,7 @@ void writeColor(vec3 color, float alpha) {
     fragWeight = vec4(alpha * w, 0.0, 0.0, alpha);
   } else {
     fragColor = vec4(color, alpha);
-    fragWeight = vec4(0.0);
+    fragWeight = vec4(gAmbient, 1.0);
   }
 }
 
@@ -375,15 +377,17 @@ void main() {
       float ndotv = max(dot(n, v), 1e-4);
       vec3 f = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - ndotv, 5.0);
       vec3 kd = (1.0 - f) * (1.0 - metallic);
-      lit = uMaterialAmbient * (kd * albedo.rgb * skyIrradiance(n) + skySpecular(n, v, geometric, f0, roughness))
-          + specular + emissive;
+      gAmbient = uMaterialAmbient * (kd * albedo.rgb * skyIrradiance(n) + skySpecular(n, v, geometric, f0, roughness));
+      lit = gAmbient + specular + emissive;
     } else {
       vec3 ambient = uAmbient * uMaterialAmbient;
-      lit = ambient * (albedo.rgb * (1.0 - metallic) + f0 * (1.0 - roughness) * 0.5) + specular + emissive;
+      gAmbient = ambient * (albedo.rgb * (1.0 - metallic) + f0 * (1.0 - roughness) * 0.5);
+      lit = gAmbient + specular + emissive;
     }
   } else {
     vec3 ambient = uSky == 1 ? skyIrradiance(n) : uAmbient;
-    lit = albedo.rgb * (ambient * uMaterialAmbient + diffuse) + specular + emissive;
+    gAmbient = albedo.rgb * ambient * uMaterialAmbient;
+    lit = gAmbient + albedo.rgb * diffuse + specular + emissive;
   }
   if (uDebugCascades == 1 && uCascadeCount > 0) {
     vec3 tint[4] = vec3[4](vec3(1.0, 0.4, 0.4), vec3(0.4, 1.0, 0.4), vec3(0.4, 0.5, 1.0), vec3(1.0, 1.0, 0.4));
