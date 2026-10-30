@@ -199,7 +199,9 @@ class PauseMenu implements GameState {
   a voice keep time and come back), impact sounds scaled by the collision impulse (`ImpactSound`). WAV/AIFF/AU and
   Ogg Vorbis (JOrbis), long music streamed from the compressed file.
 - **Scenes and prefabs:** entities, their hierarchy and components saved to and loaded from JSON
-  (`SceneSerializer`); materials are shared by index and resources referred to by key; any component with public
+  (`SceneSerializer`); materials, animation clips and skins are shared by index and resources referred to by key;
+  animators keep their clips and the layers playing (clock, speed, weight, fade) and sound sources whether they play
+  and where, so a saved glTF instance moves on where it was; any component with public
   fields can opt in with one line (`FieldSerializer`), others with a `ComponentSerializer`. A `Prefab` is such a file
   used as a template, instantiated as often as needed (the instances share materials, so they still batch).
 - **UI:** immediate-mode drawing with any number of fonts (any installed or logical Java font, proportional or fixed,
@@ -380,8 +382,8 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   moment they are plugged in; buttons are mapped by name for Xbox-style pads and guessed for others; no rumble. On
   Linux the user needs read access to `/dev/input/event*`.
 - Scene files keep resources by key: meshes and textures generated without a key (`res.mesh(data)`) are left out,
-  and generated ones with a key must be generated again before loading. Animators and skins are not saved (a loaded
-  glTF instance stands still), nor is whether a sound is playing (use `playOnStart`).
+  and generated ones with a key must be generated again before loading. Animation channels with a custom target
+  (code) are not saved, nor are one-shot sounds (`engine.audio().play`).
 - glTF: no morph targets, sparse accessors, cameras, lights, texture transforms or occlusion maps; only the first uv
   set; the file's tangents are recomputed. Skinned meshes are culled with a generous sphere around their bind pose
   and are drawn one by one.
