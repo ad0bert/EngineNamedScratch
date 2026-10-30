@@ -29,6 +29,7 @@ import engine.ecs.Entity;
 import engine.ecs.Spinner;
 import engine.input.FirstPersonController;
 import engine.input.Gamepad;
+import engine.input.Rebinder;
 import engine.messaging.IMessageReceiver;
 import engine.navigation.NavAgent;
 import engine.navigation.NavGrid;
@@ -85,6 +86,7 @@ public class DemoGame implements Game {
   private Gui gui;
   private FirstPersonController controller;
   private CharacterController walker;
+  private Rebinder rebinder;
   private Entity companion;
   private NavGrid navigation;
   /** Child of the player with the camera and the listener. */
@@ -520,8 +522,9 @@ public class DemoGame implements Game {
 
     // a settings panel while the mouse is free (Esc); clicks on it do not recapture the mouse
     this.gui = new Gui(engine.input());
+    this.rebinder = new Rebinder(engine.input());
     engine.setClickCapturesMouse(() -> !this.gui.wantsMouse());
-    engine.addOverlay((ui, width, height) -> drawPanel(engine, ui, width));
+    engine.addOverlay((ui, width, height) -> drawPanel(engine, ui, width, height));
   }
 
   private void loadSettings(Engine engine) {
@@ -539,6 +542,7 @@ public class DemoGame implements Game {
     for (AudioBus bus : AudioBus.values()) {
       mixer.setVolume(bus, this.settings.getFloat("audio." + bus.name().toLowerCase(Locale.ROOT), mixer.volume(bus)));
     }
+    engine.input().loadBindings(this.settings, "input."); // the player's own keys over the defaults
   }
 
   @Override
@@ -548,6 +552,7 @@ public class DemoGame implements Game {
     for (AudioBus bus : AudioBus.values()) {
       this.settings.set("audio." + bus.name().toLowerCase(Locale.ROOT), mixer.volume(bus));
     }
+    engine.input().saveBindings(this.settings, "input.");
     try {
       this.settings.save();
     } catch (IOException e) {
@@ -575,7 +580,36 @@ public class DemoGame implements Game {
     }
   }
 
-  private void drawPanel(Engine engine, UiCanvas ui, int width) {
+  /**
+   * Bottom left, beside the settings: every action with its keys and buttons, and a button to change them (the next
+   * key or gamepad button pressed replaces the keys, or the buttons; Esc cancels). Saved with the settings.
+   */
+  private void drawControls(Engine engine, int height) {
+    final var g = this.gui;
+    final var input = engine.input();
+    g.beginPanel("Controls", 10f, height - 250f, 330f);
+    if (this.rebinder.isWaiting()) {
+      g.label("Press a key or button for " + this.rebinder.action() + " (Esc cancels)");
+    } else if (!this.rebinder.lastConflicts().isEmpty()) {
+      g.label("Also used by " + String.join(", ", this.rebinder.lastConflicts()));
+    } else {
+      g.label("Click an action to change its keys");
+    }
+    g.beginScroll("controls", 160f);
+    for (String action : input.actions()) {
+      if (action.equals("release_mouse") || action.equals("toggle_debug")) {
+        continue; // the engine's own
+      }
+      final var keys = input.describe(action);
+      if (g.button(action + ": " + (keys.isEmpty() ? "-" : keys) + "##" + action)) {
+        this.rebinder.start(action, true);
+      }
+    }
+    g.endScroll();
+    g.endPanel();
+  }
+
+  private void drawPanel(Engine engine, UiCanvas ui, int width, int height) {
     final boolean free = !engine.isMouseCaptured();
     this.gui.begin(ui, width, 0, free);
     if (free) {
@@ -631,6 +665,7 @@ public class DemoGame implements Game {
       }
       g.endScroll();
       g.endPanel();
+      drawControls(engine, height);
     }
     this.gui.end();
   }
@@ -790,6 +825,11 @@ public class DemoGame implements Game {
 
   @Override
   public void update(Engine engine, double dt) {
+    // typing a name, or choosing a key for an action, must not walk around or trigger anything
+    this.controller.setEnabled(!this.gui.wantsKeyboard() && !this.rebinder.isWaiting());
+    if (this.rebinder.update() || this.rebinder.isWaiting()) {
+      return; // a key that was just bound does not act in the same step
+    }
     if (engine.input().wasActionPressed("fullscreen")) {
       engine.setFullscreen(!engine.isFullscreen());
     }
@@ -811,7 +851,6 @@ public class DemoGame implements Game {
       this.dancer.remove(pulse); // keep the pulse on top, at its weight
       this.dancer.blend(this.dancer.clip("pulse"), 0.5f, AnimationLayer.Loop.PING_PONG);
     }
-    this.controller.setEnabled(!this.gui.wantsKeyboard()); // typing a name must not walk around
     if (engine.input().wasActionPressed("fly")) { // V: fly through everything, or walk again
       this.walker.setEnabled(!this.walker.isEnabled());
     }
@@ -821,6 +860,7 @@ public class DemoGame implements Game {
       saveScene(engine, Path.of("demo-scene.json"));
     }
     if (engine.input().wasActionPressed("spawn")) {
+      engine.input().rumble(0.2f, 0.5f, 0.12f); // a light kick on gamepads that have motors
       final var eye = t.worldPosition(new Vector3f());
       spawnCrate(engine, new Vector3f(eye).fma(1.5f, forward), new Vector3f(forward).mul(18f));
       engine.audio().play(this.whoosh, eye.fma(0.8f, forward), 0.7f, 1f, AudioBus.EFFECTS, 1);
@@ -833,6 +873,7 @@ public class DemoGame implements Game {
     if (hit.isPresent()) {
       this.aim = String.format(Locale.ROOT, "%s  %.1f m", hit.get().entity().name(), hit.get().distance());
       if (engine.input().wasActionPressed("poke")) {
+        engine.input().rumble(0.6f, 0.3f, 0.2f);
         hit.get().entity().find(Rigidbody.class).ifPresent(body -> {
           body.wakeUp();
           body.velocity.fma(8f, forward);

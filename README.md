@@ -25,7 +25,7 @@ mvn -q package -Pjpackage     # also: demo/target/jpackage, the demo with its ow
 Demo controls: mouse look, `WASD`/arrows walk, `Space` jumps, `V` switches between walking and flying (`Space`/`Shift`
 fly up/down), `F` throws a crate, `E` pushes the body
 under the crosshair (with sparks), `F3` toggles the on-screen debug text, `F5` saves the scene to
-`demo-scene.json`, `Esc` frees the mouse and shows a settings panel with volume sliders (click outside it to look around again, `Tab` moves between
+`demo-scene.json`, `Esc` frees the mouse and shows a settings panel with volume sliders and a controls panel to change the keys (click outside it to look around again, `Tab` moves between
 its widgets), `P` pauses, `F11` switches to fullscreen. With a gamepad: left stick moves, right stick looks,
 `Y` jumps, triggers fly up and down, `RB`/`X` throws, `A` pushes, `Start` pauses. Volumes, fullscreen and vsync are saved in the
 user's config directory (`~/.config/enginenamedscratch-demo` on Linux).
@@ -234,8 +234,10 @@ class PauseMenu implements GameState {
   the path, through its `CharacterController` if it has one, and plans again when the goal moves or it gets stuck.
 - **Loop:** fixed-timestep updates with render interpolation between the last two steps.
 - **Input:** keys, mouse, text and up to four gamepads (JInput; radial stick and trigger dead zones, connect and
-  disconnect), with actions bound to keys, gamepad buttons and gamepad axes at once; a first-person controller that
-  takes both.
+  disconnect, rumble where JInput finds motors), with actions bound to keys, gamepad buttons and gamepad axes at
+  once; bindings can be listed, changed, written as text (`W, UP, pad:Y`) and saved in `Settings`
+  (`saveBindings`/`loadBindings`), and a `Rebinder` binds the next key or button pressed (for a controls menu); a
+  first-person controller that takes both.
 - **Hot reloading and profiling:** with `Engine.setHotReload(true)` the asset directories are watched; changed
   shaders are compiled again (one that does not compile keeps its old version), textures and OBJ meshes loaded again
   in place, and `Engine.onAssetChanged` listeners hear of every changed path (to reload a level or a prefab). Shader
@@ -379,7 +381,9 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   filters, occlusion). Impact sounds estimate the impulse from the body's change of velocity in the step the contact
   began. Without a sound device the ALSA library may print a few lines while OpenAL looks for one.
 - Gamepads: JInput finds pads at start-up and on a rescan (window focus or `Engine.rescanGamepads()`), not the
-  moment they are plugged in; buttons are mapped by name for Xbox-style pads and guessed for others; no rumble. On
+  moment they are plugged in; buttons are mapped by name for Xbox-style pads and guessed for others. Rumble goes
+  through JInput's rumblers, which many pads and platforms do not offer (`GamepadState.canRumble()`); gamepad axis
+  bindings are not part of the saved text. On
   Linux the user needs read access to `/dev/input/event*`.
 - Scene files keep resources by key: meshes and textures generated without a key (`res.mesh(data)`) are left out,
   and generated ones with a key must be generated again before loading. Animation channels with a custom target

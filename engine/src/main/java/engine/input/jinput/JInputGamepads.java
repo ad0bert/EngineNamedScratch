@@ -11,12 +11,14 @@ import java.util.logging.Logger;
 
 import engine.input.Gamepad;
 import engine.input.GamepadBackend;
+import engine.input.GamepadState;
 import engine.input.InputState;
 import lombok.extern.slf4j.Slf4j;
 import net.java.games.input.Component;
 import net.java.games.input.Component.Identifier;
 import net.java.games.input.Controller;
 import net.java.games.input.ControllerEnvironment;
+import net.java.games.input.Rumbler;
 
 /**
  * Gamepads through JInput (DirectInput/raw input on Windows, evdev on Linux, IOKit on macOS). The native libraries
@@ -107,7 +109,8 @@ public final class JInputGamepads implements GamepadBackend {
       if (c.getType() == Controller.Type.GAMEPAD || c.getType() == Controller.Type.STICK) {
         this.pads[slot] = new Pad(c);
         state.gamepadConnected(slot, c.getName());
-        log.info("Gamepad {}: {}", slot, c.getName());
+        state.gamepadCanRumble(slot, this.pads[slot].rumblers.length > 0);
+        log.info("Gamepad {}: {}{}", slot, c.getName(), this.pads[slot].rumblers.length > 0 ? " (rumble)" : "");
         slot++;
       }
     }
@@ -157,12 +160,22 @@ public final class JInputGamepads implements GamepadBackend {
     final Controller controller;
     final Component[] buttons = new Component[Gamepad.BUTTON_COUNT];
     final Component[] axes = new Component[Gamepad.AXIS_COUNT];
+    final Rumbler[] rumblers;
+    float appliedStrong;
+    float appliedWeak;
     Component pov;
     /** DirectInput reports both triggers on one Z axis (left positive, right negative). */
     Component sharedTriggers;
 
     Pad(Controller c) {
       this.controller = c;
+      Rumbler[] found;
+      try {
+        found = c.getRumblers();
+      } catch (RuntimeException | LinkageError e) {
+        found = null;
+      }
+      this.rumblers = found != null ? found : new Rumbler[0];
       for (Component comp : c.getComponents()) {
         final var id = comp.getIdentifier();
         if (id instanceof Identifier.Button) {
@@ -242,6 +255,7 @@ public final class JInputGamepads implements GamepadBackend {
           || hat == Component.POV.UP_LEFT || hat == Component.POV.DOWN_LEFT);
       state.gamepadButton(slot, Gamepad.BUTTON_DPAD_RIGHT, hat == Component.POV.RIGHT
           || hat == Component.POV.UP_RIGHT || hat == Component.POV.DOWN_RIGHT);
+      rumble(state.gamepad(slot));
       state.gamepadAxis(slot, Gamepad.AXIS_LEFT_X, value(Gamepad.AXIS_LEFT_X));
       state.gamepadAxis(slot, Gamepad.AXIS_LEFT_Y, -value(Gamepad.AXIS_LEFT_Y)); // the platforms report down as +
       state.gamepadAxis(slot, Gamepad.AXIS_RIGHT_X, value(Gamepad.AXIS_RIGHT_X));
@@ -255,6 +269,34 @@ public final class JInputGamepads implements GamepadBackend {
         state.gamepadAxis(slot, Gamepad.AXIS_RIGHT_TRIGGER, trigger(Gamepad.AXIS_RIGHT_TRIGGER));
       }
       return true;
+    }
+
+    /**
+     * Applies the slot's rumble when it changed: the first motor is the strong one, the second the weak one; a pad
+     * with a single motor gets the stronger of the two.
+     */
+    private void rumble(GamepadState g) {
+      if (this.rumblers.length == 0) {
+        return;
+      }
+      final long now = System.nanoTime();
+      final float strong = g.rumbleStrong(now);
+      final float weak = g.rumbleWeak(now);
+      if (strong == this.appliedStrong && weak == this.appliedWeak) {
+        return;
+      }
+      this.appliedStrong = strong;
+      this.appliedWeak = weak;
+      try {
+        if (this.rumblers.length == 1) {
+          this.rumblers[0].rumble(Math.max(strong, weak));
+        } else {
+          this.rumblers[0].rumble(strong);
+          this.rumblers[1].rumble(weak);
+        }
+      } catch (RuntimeException e) {
+        log.debug("Rumble failed on {}: {}", this.controller.getName(), e.getMessage());
+      }
     }
 
     private float value(int axis) {
