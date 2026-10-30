@@ -2,9 +2,12 @@ package engine.core;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.TreeSet;
@@ -12,6 +15,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 import javax.imageio.ImageIO;
 
@@ -38,6 +42,7 @@ import engine.audio.AudioSystem;
 import engine.audio.NullAudioBackend;
 import engine.audio.al.AlAudioBackend;
 import engine.debug.DebugOverlay;
+import engine.debug.Profiler;
 import engine.ecs.ComponentUpdateSystem;
 import engine.ecs.Entity;
 import engine.ecs.ISystem;
@@ -116,6 +121,15 @@ public class Engine {
   private boolean appliedVsync;
   private final FixedTimestep timestep;
   @Getter private final PhysicsSystem physics = new PhysicsSystem(this.messages);
+  /** Where the frame time goes: each system, the game's update, rendering (shown by the F3 overlay). */
+  @Getter private final Profiler profiler = new Profiler();
+  private final Map<ISystem, Integer> systemSections = new IdentityHashMap<>();
+  private final int gameSection = this.profiler.section("Game");
+  private final int renderSection = this.profiler.section("Render");
+  private final int reloadSection = this.profiler.section("Hot reload");
+  private HotReload hotReload;
+  private boolean hotReloadWanted = Boolean.getBoolean("engine.hotReload");
+  private final List<Consumer<String>> assetListeners = HotReload.newListenerList();
   private final CountDownLatch closed = new CountDownLatch(1);
   private final AtomicBoolean stopping = new AtomicBoolean();
   private final AtomicBoolean audioClosed = new AtomicBoolean();
@@ -453,12 +467,79 @@ public class Engine {
     final boolean simulate = !isPaused();
     for (ISystem s : this.systems) {
       if (simulate || s.runsWhilePaused()) {
-        s.update(this.scene, dt);
+        this.profiler.begin(this.systemSections.computeIfAbsent(s, this::sectionName));
+        try {
+          s.update(this.scene, dt);
+        } finally {
+          this.profiler.end();
+        }
       }
     }
-    this.game.update(this, dt);
-    this.states.update(dt);
+    this.profiler.begin(this.gameSection);
+    try {
+      this.game.update(this, dt);
+      this.states.update(dt);
+    } finally {
+      this.profiler.end();
+    }
     this.input.endFrame();
+  }
+
+  /** "PhysicsSystem" becomes "Physics", anonymous systems keep their enclosing class's name. */
+  private int sectionName(ISystem system) {
+    String name = system.getClass().getSimpleName();
+    if (name.isEmpty()) {
+      name = system.getClass().getName().replaceAll(".*\\.", "").replaceAll("\\$\\d+$", "");
+    }
+    if (name.endsWith("System") && name.length() > "System".length()) {
+      name = name.substring(0, name.length() - "System".length());
+    }
+    return this.profiler.section(name);
+  }
+
+  /** A shader file in an asset directory replaces the built-in one of the same path (e.g. shaders/basic.frag). */
+  private String shaderFromAssets(String path) {
+    final var file = this.assets.file(path);
+    if (file == null) {
+      return null;
+    }
+    try {
+      return Files.readString(file);
+    } catch (IOException e) {
+      log.error("Cannot read shader {}", file, e);
+      return null;
+    }
+  }
+
+  /**
+   * Watches the asset directories ({@link Assets#addRoot}) and applies changed files while the game runs: shaders
+   * are compiled again, textures and OBJ meshes loaded again in place, and {@link #onAssetChanged} listeners called
+   * (also {@code -Dengine.hotReload=true}). Call on the GL thread (from the game) or before {@link #run()}.
+   */
+  public void setHotReload(boolean on) {
+    this.hotReloadWanted = on;
+    if (this.resources == null) {
+      return; // started with the engine
+    }
+    if (on && this.hotReload == null) {
+      this.hotReload = HotReload.start(this, this.assetListeners);
+    } else if (!on && this.hotReload != null) {
+      this.hotReload.close();
+      this.hotReload = null;
+    }
+  }
+
+  public boolean isHotReload() {
+    return this.hotReload != null;
+  }
+
+  /**
+   * Calls {@code listener} on the GL thread with the asset path (relative to its directory, e.g.
+   * {@code levels/one.json}) of every file that changed while hot reloading is on, after the engine reloaded what
+   * it knows how to.
+   */
+  public void onAssetChanged(Consumer<String> listener) {
+    this.assetListeners.add(listener);
   }
 
   private void trackFps() {
@@ -488,6 +569,7 @@ public class Engine {
       applyVsync(gl);
       log.info("OpenGL {} on {}", gl.glGetString(GL3.GL_VERSION), gl.glGetString(GL3.GL_RENDERER));
       Engine.this.backend = new GlBackend(() -> Engine.this.window.getGL().getGL3());
+      Engine.this.backend.setShaderSource(Engine.this::shaderFromAssets);
       Engine.this.backend.init();
       final var sound = Boolean.parseBoolean(System.getProperty("engine.audio", "true")) ? AlAudioBackend.open(32)
           : null;
@@ -512,6 +594,9 @@ public class Engine {
       Engine.this.game.init(Engine.this);
       Engine.this.states.applyPending();
       Engine.this.scene.flush();
+      if (Engine.this.hotReloadWanted) {
+        Engine.this.hotReload = HotReload.start(Engine.this, Engine.this.assetListeners);
+      }
       Engine.this.fpsWindowStart = System.nanoTime();
       captureMouse(Boolean.parseBoolean(System.getProperty("engine.captureMouse", "true")));
     }
@@ -521,10 +606,19 @@ public class Engine {
       if (Engine.this.vsync != Engine.this.appliedVsync) {
         applyVsync(drawable.getGL().getGL3());
       }
+      final var profiler = Engine.this.profiler;
+      if (Engine.this.hotReload != null) {
+        profiler.begin(Engine.this.reloadSection);
+        Engine.this.hotReload.poll();
+        profiler.end();
+      }
       Engine.this.timestep.advance(System.nanoTime(), Engine.this::step);
       Engine.this.scene.flush();
+      profiler.begin(Engine.this.renderSection);
       Engine.this.backend.render(Engine.this.scene, Engine.this.timestep.alpha(), drawable.getSurfaceWidth(),
           drawable.getSurfaceHeight(), Engine.this.drawn);
+      profiler.end();
+      profiler.endFrame();
       Engine.this.frameCount++;
       captureIfRequested(drawable.getSurfaceWidth(), drawable.getSurfaceHeight());
       trackFps();
@@ -546,6 +640,9 @@ public class Engine {
       Engine.this.states.exitAll();
       Engine.this.game.shutdown(Engine.this);
       Engine.this.gamepads.dispose();
+      if (Engine.this.hotReload != null) {
+        Engine.this.hotReload.close();
+      }
       Engine.this.resources.dispose();
       Engine.this.backend.dispose();
     }

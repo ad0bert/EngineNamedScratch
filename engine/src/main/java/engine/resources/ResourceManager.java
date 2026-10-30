@@ -210,6 +210,38 @@ public class ResourceManager {
     }
   }
 
+  /**
+   * Loads a changed file again into the resources made from it, in place (hot reloading): textures loaded by path
+   * (colour and data) get the new pixels, meshes loaded by OBJ path the new vertices; materials and renderers keep
+   * their handles. Textures derived from several files (normal maps converted from bump maps, combined
+   * metal/roughness or alpha masks) and models with their materials are not reloaded. Returns how many resources
+   * changed; a file that fails to load leaves them as they were (the error is logged).
+   */
+  public int reload(String path) {
+    int count = 0;
+    for (final boolean srgb : new boolean[] { true, false }) {
+      final var texture = this.textures.get(srgb ? path : path + "|linear");
+      if (texture != null) {
+        try (InputStream in = open(path)) {
+          this.backend.updateTexture(texture, ImageLoader.load(in, path));
+          count++;
+        } catch (IOException | RuntimeException e) {
+          log.error("Could not reload texture {}", path, e);
+        }
+      }
+    }
+    final var mesh = this.meshes.get(path);
+    if (mesh != null) {
+      try (InputStream in = open(path)) {
+        this.backend.updateMesh(mesh, ObjLoader.load(in, path));
+        count++;
+      } catch (IOException | RuntimeException e) {
+        log.error("Could not reload mesh {}", path, e);
+      }
+    }
+    return count;
+  }
+
   /** The key a cached mesh, texture or sound can be found again by, or null if it was not created through here. */
   public String keyOf(Object resource) {
     return resource == null ? null : this.keys.get(resource);

@@ -48,11 +48,13 @@ System properties:
 | `engine.gamepads=false` | do not look for gamepads |
 | `engine.fullscreen=true`, `engine.vsync=false` | override the config's `app.fullscreen` / `app.vsync` |
 | `engine.debugOverlay=false` | start with the debug text (`F3`) hidden; games can also call `engine.setDebugOverlayVisible(false)` |
+| `engine.hotReload=true` | watch the asset directories and apply changed shaders, textures and meshes while running (`Engine.setHotReload`) |
 | `engine.userDir=dir` | keep settings and saves under `dir/<app id>` instead of the platform's user directories |
 | `demo.camera=x,y,z,yaw,pitch` | demo only: start flying with the eyes somewhere else |
 | `demo.sky=file.hdr` or `demo.sky=none` | demo only: an HDR environment image instead of the procedural sky, or no sky |
 | `demo.saveScene=file.json` | demo only: save the scene at start (what `F5` does) |
 | `demo.paused=true` | demo only: start in the pause menu |
+| `demo.assets=dir` | demo only: an asset directory whose files replace the demo's and the engine's shaders (`dir/shaders/tonemap.frag`) |
 
 The render settings can also be changed at run time through `engine.backend().settings()`.
 
@@ -232,6 +234,12 @@ class PauseMenu implements GameState {
 - **Input:** keys, mouse, text and up to four gamepads (JInput; radial stick and trigger dead zones, connect and
   disconnect), with actions bound to keys, gamepad buttons and gamepad axes at once; a first-person controller that
   takes both.
+- **Hot reloading and profiling:** with `Engine.setHotReload(true)` the asset directories are watched; changed
+  shaders are compiled again (one that does not compile keeps its old version), textures and OBJ meshes loaded again
+  in place, and `Engine.onAssetChanged` listeners hear of every changed path (to reload a level or a prefab). Shader
+  files in an asset directory replace the built-in ones of the same path. `Engine.profiler()` times every system, the
+  game's update and rendering per frame over the last 240 frames; games add sections with `begin`/`end`. F3 shows a
+  frame-time graph and the slowest sections.
 - **ECS, message queues, resource caching, screenshots** (see below).
 
 ## Performance notes
@@ -292,7 +300,7 @@ How it works:
 
 | Package | Purpose |
 |---|---|
-| `engine.core` | `Engine` (window, GL loop, lifecycle, pause, window options, screenshots), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
+| `engine.core` | `Engine` (window, GL loop, lifecycle, pause, window options, screenshots, hot reloading), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
 | `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer`, `ParticleEmitter`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
 | `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, particles, sky and image-based lighting, post-processing, UI batching) |
@@ -301,14 +309,14 @@ How it works:
 | `engine.audio.al` | The OpenAL (JOAL) implementation of `AudioBackend` (buffers, sources, streaming) |
 | `engine.serialization` | `Json`, `SceneSerializer`, `Prefab`, `ComponentRegistry`, `ComponentSerializer`/`FieldSerializer`, `SerializationContext` |
 | `engine.ui` | `Gui`: immediate-mode widgets on any `UiCanvas`; `TextEdit` (text editing model), `Clipboard` (system or in-memory), `TextWrap` |
-| `engine.resources` | `Assets` (asset directories, then the classpath), `ResourceManager` (cached meshes/textures/models/sounds, generated resources, keys for scene files, scopes that release a level's resources), `ObjLoader`, `MtlLoader`, `GltfLoader`/`GltfModel`, `ImageLoader` (ImageIO), `HdrLoader` (Radiance `.hdr`), `AudioLoader`/`VorbisDecoder`, `NormalMaps` (height field to normal map), `Model` |
+| `engine.resources` | `Assets` (asset directories, then the classpath), `AssetWatcher` (changed files), `ResourceManager` (cached meshes/textures/models/sounds, generated resources, keys for scene files, scopes that release a level's resources), `ObjLoader`, `MtlLoader`, `GltfLoader`/`GltfModel`, `ImageLoader` (ImageIO), `HdrLoader` (Radiance `.hdr`), `AudioLoader`/`VorbisDecoder`, `NormalMaps` (height field to normal map), `Model` |
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.navigation` | `NavGrid` (baked walkable grid, A*, path straightening, blocking), `NavAgent` (path following) |
-| `engine.debug` | `DebugOverlay` |
+| `engine.debug` | `DebugOverlay` (F3 text and frame graph), `Profiler` |
 | `game` (demo module) | Demo scene (`DemoGame`, `Main`) |
 
 Everything — fixed-step update, message dispatch, rendering — runs on the GL thread, so scene state needs no locks.
@@ -377,5 +385,9 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
 - glTF: no morph targets, sparse accessors, cameras, lights, texture transforms or occlusion maps; only the first uv
   set; the file's tangents are recomputed. Skinned meshes are culled with a generous sphere around their bind pose
   and are drawn one by one.
+- Hot reloading covers shaders, textures and meshes loaded by path; textures derived from several files (bump maps
+  converted to normal maps, combined metal/roughness, alpha masks), OBJ models with their materials, glTF models and
+  sounds are not reloaded (listeners can rebuild them). On macOS the JDK polls for file changes, so they take a few
+  seconds to show.
 - MTL statements the renderer has no use for (`Ps`, `Pc`, `aniso`, reflection maps) and the texture options other than
   `-s -o -clamp -bm` are ignored; one uv transform is used for all of a material's maps.
