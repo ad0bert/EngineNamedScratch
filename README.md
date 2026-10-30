@@ -233,6 +233,10 @@ class PauseMenu implements GameState {
   ground, pushes dynamic bodies by its mass, is pushed out of things that move into it, and is a collider other bodies
   rest on. `FirstPersonController` walks with it when the entity has one (pitch on a `head` child) and flies
   otherwise.
+- **Terrain:** a `Heightfield` (from a function, an image or the built-in fractal noise `Heightfield.fbm`) becomes
+  chunked `Terrain` entities: smooth-normal meshes in metres-based uvs for tiling textures, coarser levels of detail
+  every second and fourth sample with skirts against cracks, and full-detail `MeshCollider`s, so physics, character
+  controllers and navigation walk on it.
 - **Navigation:** `NavGrid` bakes where an agent of a given radius, height, step and slope can walk from the static
   colliders (up to four floors per cell, so bridges and storeys work), finds paths with A* (no corner cutting) and
   straightens them; regions can be baked again and cells blocked at run time. A `NavAgent` walks its entity along
@@ -324,6 +328,7 @@ How it works:
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
+| `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |
 | `engine.navigation` | `NavGrid` (baked walkable grid, A*, path straightening, blocking), `NavAgent` (path following) |
 | `engine.debug` | `DebugOverlay` (F3 text and frame graph), `Profiler` |
 | `game` (demo module) | Demo scene (`DemoGame`, `Main`) |
@@ -366,6 +371,9 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   the step. A `CharacterController` stays upright (it turns only about Y), takes the ground's motion at the point it
   stands on but not its turn, and is seen by bodies as a static collider moved by code, so it pushes them only
   through `mass`, while bodies that run into it meet an immovable wall.
+- Terrain chunks use one material (no splatting of several textures by slope or height) and are generated meshes
+  without resource keys, so scene files leave them out: build the terrain again when loading. Its colliders are
+  triangle meshes (no dedicated heightfield shape), which costs more memory than the heights themselves.
 - Navigation grids are 2.5D: walkable heights are sampled at cell centres (a cell is walkable if its centre is and
   the agent fits there), so narrow gaps smaller than a cell may close, and jumps or drops are not links in the graph.
   Baking is synchronous and costs about a millisecond per 10 cells (1.6 s for the demo's 120 x 120 cells in the CI

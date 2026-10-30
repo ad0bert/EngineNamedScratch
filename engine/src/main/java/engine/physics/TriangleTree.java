@@ -190,20 +190,33 @@ final class TriangleTree {
     while (this.top > 0) {
       final int node = this.stack[--this.top];
       final int b = node * 6;
+      // slabs; an axis the ray does not move along is all or nothing (0 * infinity would be NaN on a face)
       float t0 = 0f;
       float t1 = best;
-      float ta = (this.bounds[b] - ox) * ix;
-      float tb = (this.bounds[b + 3] - ox) * ix;
-      t0 = Math.max(t0, Math.min(ta, tb));
-      t1 = Math.min(t1, Math.max(ta, tb));
-      ta = (this.bounds[b + 1] - oy) * iy;
-      tb = (this.bounds[b + 4] - oy) * iy;
-      t0 = Math.max(t0, Math.min(ta, tb));
-      t1 = Math.min(t1, Math.max(ta, tb));
-      ta = (this.bounds[b + 2] - oz) * iz;
-      tb = (this.bounds[b + 5] - oz) * iz;
-      t0 = Math.max(t0, Math.min(ta, tb));
-      t1 = Math.min(t1, Math.max(ta, tb));
+      if (dx != 0f) {
+        final float ta = (this.bounds[b] - ox) * ix;
+        final float tb = (this.bounds[b + 3] - ox) * ix;
+        t0 = Math.max(t0, Math.min(ta, tb));
+        t1 = Math.min(t1, Math.max(ta, tb));
+      } else if (ox < this.bounds[b] || ox > this.bounds[b + 3]) {
+        continue;
+      }
+      if (dy != 0f) {
+        final float ta = (this.bounds[b + 1] - oy) * iy;
+        final float tb = (this.bounds[b + 4] - oy) * iy;
+        t0 = Math.max(t0, Math.min(ta, tb));
+        t1 = Math.min(t1, Math.max(ta, tb));
+      } else if (oy < this.bounds[b + 1] || oy > this.bounds[b + 4]) {
+        continue;
+      }
+      if (dz != 0f) {
+        final float ta = (this.bounds[b + 2] - oz) * iz;
+        final float tb = (this.bounds[b + 5] - oz) * iz;
+        t0 = Math.max(t0, Math.min(ta, tb));
+        t1 = Math.min(t1, Math.max(ta, tb));
+      } else if (oz < this.bounds[b + 2] || oz > this.bounds[b + 5]) {
+        continue;
+      }
       if (t0 > t1 || Float.isNaN(t0) || Float.isNaN(t1)) {
         continue;
       }

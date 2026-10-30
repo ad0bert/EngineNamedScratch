@@ -57,6 +57,8 @@ import engine.render.Sky;
 import engine.render.UiCanvas;
 import engine.resources.HdrLoader;
 import engine.serialization.Prefab;
+import engine.terrain.Heightfield;
+import engine.terrain.Terrain;
 import engine.serialization.SceneSerializer;
 import engine.ui.Gui;
 import lombok.extern.slf4j.Slf4j;
@@ -160,6 +162,20 @@ public class DemoGame implements Game {
     grass.normalScale = 0.8f;
     ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(60f, 60f, 24f, 24f)), grass)).setStaticGeometry(true);
     scene.add(ground);
+
+    // hills behind the field: a heightfield terrain (chunks with levels of detail and colliders), flat where it meets
+    // the ground at z = -30 and rising with distance
+    final var hills = Heightfield.generate(121, 71, 1f, (x, z) -> {
+      final float rise = Math.max(0f, 70f - z); // metres from the field's edge
+      final float noise = Heightfield.fbm(x, z, 0.03f, 5, 11L);
+      return Math.min(1f, rise / 12f) * (0.18f * rise * (0.7f + 0.3f * noise) + 3f * noise);
+    });
+    final var hillMaterial = new Material().color(0.33f, 0.5f, 0.27f, 1f);
+    hillMaterial.specular = 0f;
+    hillMaterial.normalMap = grass.normalMap;
+    hillMaterial.normalScale = 0.8f;
+    Terrain.build(scene, res, hills, hillMaterial, new Terrain.Settings(), "hills").transform().position()
+        .set(-60f, -1f, -100f);
 
     final var groundBody = new Entity("ground-collider");
     groundBody.transform().position().set(0f, -1.5f, 0f);
