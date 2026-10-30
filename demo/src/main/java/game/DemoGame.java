@@ -53,6 +53,7 @@ import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
 import engine.render.MeshSimplifier;
 import engine.render.ParticleEmitter;
+import engine.render.ReflectionProbe;
 import engine.render.Sky;
 import engine.render.UiCanvas;
 import engine.resources.HdrLoader;
@@ -391,6 +392,8 @@ public class DemoGame implements Game {
       spawnCrate(engine, new Vector3f(9f + 1.6f * (i - 1), 0f, -5f + (i == 1 ? -1.2f : 0f)), new Vector3f());
     }
 
+    buildRoom(engine, new Vector3f(15f, -1f, 6f));
+
     // a compound body: two spheres and a bar on one rigidbody, turning about their common centre of mass
     final var ballMesh = res.mesh(MeshFactory.sphere(1f, 24, 12));
     final var steel = new Material().color(0.75f, 0.75f, 0.8f, 1f);
@@ -496,6 +499,9 @@ public class DemoGame implements Game {
       for (int z = -7; z <= 7; z++) {
         if (Math.abs(x) < 4 && z > -6 && z < 4) {
           continue; // keep the play area free
+        }
+        if (x * 4 > 11 && x * 4 < 19 && z * 4 > 2 && z * 4 < 10) {
+          continue; // and the room with the reflection probe
         }
         final var pillar = new Entity("pillar");
         pillar.transform().position().set(x * 4f, 0f + ((x * 7 + z * 13) & 3) * 0.5f, z * 4f);
@@ -826,6 +832,47 @@ public class DemoGame implements Game {
     } catch (IOException e) {
       log.warn("Could not save the scene: {}", e.getMessage());
     }
+  }
+
+  /**
+   * A small room open to -x with a polished floor and a glowing panel, and a reflection probe that matches its walls:
+   * inside, the floor mirrors the room (box-projected) instead of the sky, and the sky's ambient light is replaced by
+   * the room's own.
+   */
+  private void buildRoom(Engine engine, Vector3f floorCentre) {
+    final var res = engine.resources();
+    final var scene = engine.scene();
+    final var cube = res.mesh(MeshFactory.cube(0.5f)); // a unit cube, scaled to each part's size
+    final float w = 6f;
+    final float h = 3f;
+    final var plaster = new Material().color(0.85f, 0.82f, 0.75f, 1f).pbr(0f, 0.8f);
+    final var red = new Material().color(0.7f, 0.12f, 0.1f, 1f).pbr(0f, 0.6f);
+    final var floor = new Material().color(0.2f, 0.22f, 0.25f, 1f).pbr(0f, 0.08f);
+    // floor, ceiling and three walls: {centre offset x, y, z, size x, y, z}
+    final float[][] parts = { { 0, 0.05f, 0, w, 0.1f, w }, { 0, h, 0, w, 0.1f, w }, { w / 2, h / 2, 0, 0.2f, h, w },
+        { 0, h / 2, -w / 2, w, h, 0.2f }, { 0, h / 2, w / 2, w, h, 0.2f } };
+    for (int i = 0; i < parts.length; i++) {
+      final float[] q = parts[i];
+      final var part = new Entity("room-" + i);
+      part.transform().position().set(floorCentre.x + q[0], floorCentre.y + q[1], floorCentre.z + q[2]);
+      part.transform().scale().set(q[3], q[4], q[5]);
+      part.add(new MeshRenderer(cube, i == 0 ? floor : i == 3 ? red : plaster)).setStaticGeometry(true);
+      part.add(new BoxCollider(0.5f, 0.5f, 0.5f));
+      scene.add(part);
+    }
+    final var panel = new Entity("room-panel");
+    panel.transform().position().set(floorCentre.x + w / 2 - 0.15f, floorCentre.y + 1.6f, floorCentre.z);
+    panel.transform().scale().set(0.05f, 1.2f, 2.4f);
+    final var glow = new Material().color(0.2f, 0.6f, 1f, 1f);
+    glow.emissive.set(0.4f, 1.2f, 2.5f);
+    panel.add(new MeshRenderer(cube, glow)).setStaticGeometry(true);
+    scene.add(panel);
+    final var probe = new Entity("room-probe");
+    probe.transform().position().set(floorCentre.x, floorCentre.y + h / 2, floorCentre.z);
+    final var p = probe.add(new ReflectionProbe(w, h, w));
+    p.fade = 0.6f;
+    p.setEnabled(!"false".equals(System.getProperty("demo.probe"))); // -Ddemo.probe=false: compare without it
+    scene.add(probe);
   }
 
   /** The companion keeps within a few metres of the player, planning its way on the navigation grid. */

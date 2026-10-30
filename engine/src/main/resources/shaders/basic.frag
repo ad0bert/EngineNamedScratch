@@ -263,8 +263,58 @@ vec3 toSky(vec3 d) {
   return vec3(uSkyRotation.x * d.x + uSkyRotation.y * d.z, d.y, -uSkyRotation.y * d.x + uSkyRotation.x * d.z);
 }
 
+// Local reflection probes: cube maps captured in the scene, used instead of the sky inside their boxes (faded out
+// over the last uProbeMin.w metres to the box's faces). Reflections are box-projected: the reflected ray is traced
+// to the box and the probe looked up towards where it leaves it, so near walls line up. Diffuse light comes from the
+// roughest level.
+uniform int uProbeCount;
+uniform vec4 uProbeMin[4];        // box corner, w: fade distance
+uniform vec4 uProbeMax[4];        // box corner, w: intensity
+uniform vec3 uProbePos[4];        // where it was captured
+uniform samplerCube uProbe0;
+uniform samplerCube uProbe1;
+uniform samplerCube uProbe2;
+uniform samplerCube uProbe3;
+
+vec3 probeLod(int i, vec3 dir, float lod) {
+  if (i == 0) return textureLod(uProbe0, dir, lod).rgb;
+  if (i == 1) return textureLod(uProbe1, dir, lod).rgb;
+  if (i == 2) return textureLod(uProbe2, dir, lod).rgb;
+  return textureLod(uProbe3, dir, lod).rgb;
+}
+
+float probeWeight(int i) {
+  vec3 inside = min(vWorldPos - uProbeMin[i].xyz, uProbeMax[i].xyz - vWorldPos);
+  float d = min(inside.x, min(inside.y, inside.z));
+  return d <= 0.0 ? 0.0 : clamp(d / max(uProbeMin[i].w, 1e-3), 0.0, 1.0);
+}
+
+// The direction to look the probe up in for a ray from this point along r: towards where it leaves the box.
+vec3 boxProject(int i, vec3 r) {
+  vec3 far = mix(uProbeMin[i].xyz, uProbeMax[i].xyz, step(0.0, r));
+  vec3 safe = mix(r, mix(vec3(1e-5), vec3(-1e-5), lessThan(r, vec3(0.0))), lessThan(abs(r), vec3(1e-5)));
+  vec3 t = (far - vWorldPos) / safe;
+  float exit = min(t.x, min(t.y, t.z));
+  return vWorldPos + r * max(exit, 0.0) - uProbePos[i];
+}
+
+// Blends the probes (weights summing up to 1 at most, the rest is the sky) for a lookup of r at level lod.
+vec3 probesOver(vec3 sky, vec3 r, float lod, bool project) {
+  vec3 sum = vec3(0.0);
+  float total = 0.0;
+  for (int i = 0; i < uProbeCount; i++) {
+    float w = probeWeight(i) * (1.0 - total);
+    if (w > 0.0) {
+      sum += w * probeLod(i, project ? boxProject(i, r) : r, lod) * uProbeMax[i].w;
+      total += w;
+    }
+  }
+  return sum + sky * (1.0 - total);
+}
+
 vec3 skyIrradiance(vec3 n) {
-  return texture(uIrradianceMap, toSky(n)).rgb * uSkyIntensity;
+  vec3 sky = texture(uIrradianceMap, toSky(n)).rgb * uSkyIntensity;
+  return uProbeCount > 0 ? probesOver(sky, n, uPrefilteredLevels, false) : sky;
 }
 
 // Reflected sky light (split sum); reflections that point into the surface are faded out (no sky down there).
@@ -273,6 +323,9 @@ vec3 skySpecular(vec3 n, vec3 v, vec3 geometric, vec3 f0, float roughness) {
   float ndotv = max(dot(n, v), 1e-4);
   vec2 ab = texture(uBrdfLut, vec2(ndotv, roughness)).rg;
   vec3 light = textureLod(uPrefilteredMap, toSky(r), roughness * uPrefilteredLevels).rgb * uSkyIntensity;
+  if (uProbeCount > 0) {
+    light = probesOver(light, r, roughness * uPrefilteredLevels, true);
+  }
   float horizon = clamp(1.0 + dot(r, geometric), 0.0, 1.0);
   return light * (f0 * ab.x + ab.y) * horizon * horizon;
 }

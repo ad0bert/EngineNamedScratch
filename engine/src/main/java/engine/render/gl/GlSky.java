@@ -96,6 +96,77 @@ final class GlSky {
     return true;
   }
 
+  // ---- reflection probes -------------------------------------------------------------------------------------
+
+  /** A black cube, for samplers with nothing to show. */
+  int blackCube() {
+    return this.blackCube;
+  }
+
+  /** An RGBA16F cube with a full mip chain, for a probe's capture. */
+  int newEnvironment(GL3 gl, int size) {
+    return cubeTexture(gl, size, Integer.numberOfTrailingZeros(Integer.highestOneBit(size)) + 1);
+  }
+
+  /** An RGBA16F cube with one level per roughness ({@link #PREFILTER_LEVELS}), for a probe's reflections. */
+  int newPrefiltered(GL3 gl, int size) {
+    return cubeTexture(gl, size, PREFILTER_LEVELS);
+  }
+
+  /**
+   * Blurs a captured environment (mipmapped, bound to nothing) into {@code target}: level k for roughness
+   * k / (levels - 1), like the sky's reflections. Restores the framebuffer binding (0) and the viewport.
+   */
+  void prefilter(GL3 gl, int env, int envSize, int target, int size) {
+    gl.glGetIntegerv(GL3.GL_VIEWPORT, this.viewport, 0);
+    gl.glDisable(GL3.GL_DEPTH_TEST);
+    gl.glDepthMask(false);
+    gl.glDisable(GL3.GL_BLEND);
+    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, this.fbo);
+    gl.glBindVertexArray(this.vao);
+    gl.glActiveTexture(GL3.GL_TEXTURE0);
+    gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, env);
+    this.prefilterProgram.use(gl);
+    this.prefilterProgram.set(gl, "uEnv", 0);
+    this.prefilterProgram.set(gl, "uEnvSize", (float) envSize);
+    this.prefilterProgram.set(gl, "uMaxLod", (float) (Math.log(envSize) / Math.log(2)));
+    for (int level = 0; level < PREFILTER_LEVELS; level++) {
+      final int s = Math.max(1, size >> level);
+      this.prefilterProgram.set(gl, "uRoughness", (float) level / (PREFILTER_LEVELS - 1));
+      for (int face = 0; face < 6; face++) {
+        attach(gl, GL3.GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, target, level, s);
+        this.prefilterProgram.set(gl, "uFace", face);
+        gl.glDrawArrays(GL3.GL_TRIANGLES, 0, 3);
+      }
+    }
+    gl.glBindVertexArray(0);
+    gl.glFramebufferTexture2D(GL3.GL_FRAMEBUFFER, GL3.GL_COLOR_ATTACHMENT0, GL3.GL_TEXTURE_2D, 0, 0);
+    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
+    gl.glViewport(this.viewport[0], this.viewport[1], this.viewport[2], this.viewport[3]);
+    gl.glDepthMask(true);
+    gl.glEnable(GL3.GL_DEPTH_TEST);
+  }
+
+  private int cubeTexture(GL3 gl, int size, int levels) {
+    gl.glGenTextures(1, this.ids, 0);
+    final int id = this.ids[0];
+    gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, id);
+    for (int level = 0; level < levels; level++) {
+      final int s = Math.max(1, size >> level);
+      for (int face = 0; face < 6; face++) {
+        gl.glTexImage2D(GL3.GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, level, GL3.GL_RGBA16F, s, s, 0, GL3.GL_RGBA,
+            GL3.GL_FLOAT, null);
+      }
+    }
+    gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR_MIPMAP_LINEAR);
+    gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
+    gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, GL3.GL_TEXTURE_MAX_LEVEL, levels - 1);
+    for (final int wrap : new int[] { GL3.GL_TEXTURE_WRAP_S, GL3.GL_TEXTURE_WRAP_T, GL3.GL_TEXTURE_WRAP_R }) {
+      gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, wrap, GL3.GL_CLAMP_TO_EDGE);
+    }
+    return id;
+  }
+
   // ---- baking ------------------------------------------------------------------------------------------------
 
   private void bake(GL3 gl, Sky sky) {

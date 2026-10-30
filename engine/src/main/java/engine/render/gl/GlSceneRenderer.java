@@ -4,7 +4,9 @@ import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -18,6 +20,7 @@ import engine.render.Camera;
 import engine.render.Light;
 import engine.render.Material;
 import engine.render.MeshRenderer;
+import engine.render.ReflectionProbe;
 import engine.render.RenderQueue;
 import engine.render.RenderSettings;
 import engine.render.RenderStats;
@@ -55,6 +58,11 @@ final class GlSceneRenderer {
   private static final int UNIT_HEIGHT = 5;
   private static final int UNIT_LOCAL_SHADOWS = 6;
   private static final int UNIT_METAL_ROUGH = 7;
+  /** Four reflection probes on 8-11 (12 is the skinning palette). */
+  private static final int UNIT_PROBES = 8;
+  private static final int MAX_PROBES = 4;
+  private static final String[] PROBE_SAMPLERS = { "uProbe0", "uProbe1", "uProbe2", "uProbe3" };
+  private static final String[] PROBE_POSITIONS = { "uProbePos[0]", "uProbePos[1]", "uProbePos[2]", "uProbePos[3]" };
   private static final int UNIT_IRRADIANCE = 13;
   private static final int UNIT_PREFILTERED = 14;
   private static final int UNIT_BRDF = 15;
@@ -230,6 +238,7 @@ final class GlSceneRenderer {
     if (this.localLayers > 0) {
       localShadowPasses(gl);
     }
+    updateProbes(gl, scene, cascades);
     this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z, this.settings.ambientOcclusion);
     mainPass(gl, cascades);
     this.particles.draw(gl, scene, alpha, this.viewProj, this.cameraPos, this.cameraForward, this.cameraRight,
@@ -493,6 +502,12 @@ final class GlSceneRenderer {
   }
 
   private void mainPass(GL3 gl, int cascades) {
+    bindLighting(gl, cascades, true);
+    mainPassDraw(gl);
+  }
+
+  /** The main shader's camera, light, shadow and sky uniforms, and the reflection probes unless capturing one. */
+  private void bindLighting(GL3 gl, int cascades, boolean probes) {
     this.basic.use(gl);
     this.basic.set(gl, "uViewProj", this.viewProj);
     this.basic.set(gl, "uCameraPos", this.cameraPos);
@@ -526,7 +541,196 @@ final class GlSceneRenderer {
     this.sky.bindLighting(gl, this.basic, this.settings, UNIT_IRRADIANCE, UNIT_PREFILTERED, UNIT_BRDF);
     this.shadowMap.bindTexture(gl, UNIT_CASCADES);
     this.localShadowMap.bindTexture(gl, UNIT_LOCAL_SHADOWS);
+    bindProbes(gl, probes);
+  }
 
+  // ---- reflection probes -------------------------------------------------------------------------------------
+
+  /** GL state of one probe. */
+  private static final class ProbeTargets {
+    int resolution;
+    int env;
+    int prefiltered;
+    int fbo;
+    int depth;
+    long capturedFrame;
+  }
+
+  private final Map<ReflectionProbe, ProbeTargets> probeTargets = new IdentityHashMap<>();
+  private final List<ReflectionProbe> activeProbes = new ArrayList<>();
+  private final List<ReflectionProbe> probeOrder = new ArrayList<>();
+  private final float[] probeMin = new float[4 * MAX_PROBES];
+  private final float[] probeMax = new float[4 * MAX_PROBES];
+  private final Vector3f boxMin = new Vector3f();
+  private final Vector3f boxMax = new Vector3f();
+  private final Matrix4f savedView = new Matrix4f();
+  private final Matrix4f savedProj = new Matrix4f();
+  private final Matrix4f savedViewProj = new Matrix4f();
+  private final Vector3f savedCameraPos = new Vector3f();
+  private long frameNumber;
+  private static final Vector3f[] FACE_DIR = { new Vector3f(1f, 0f, 0f), new Vector3f(-1f, 0f, 0f),
+      new Vector3f(0f, 1f, 0f), new Vector3f(0f, -1f, 0f), new Vector3f(0f, 0f, 1f), new Vector3f(0f, 0f, -1f) };
+  private static final Vector3f[] FACE_UP = { new Vector3f(0f, -1f, 0f), new Vector3f(0f, -1f, 0f),
+      new Vector3f(0f, 0f, 1f), new Vector3f(0f, 0f, -1f), new Vector3f(0f, -1f, 0f), new Vector3f(0f, -1f, 0f) };
+
+  /**
+   * Captures the probes that are due (at most one per frame, it renders the scene six times) and picks the ones the
+   * main pass uses: captured, nearest to the camera first, up to {@link #MAX_PROBES}. Probes only replace a sky's
+   * light, so without a sky none is used.
+   */
+  private void updateProbes(GL3 gl, Scene scene, int cascades) {
+    this.frameNumber++;
+    this.activeProbes.clear();
+    final var probes = scene.components(ReflectionProbe.class);
+    if (this.probeTargets.size() > probes.size() || !probes.isEmpty()) {
+      this.probeTargets.keySet().removeIf(p -> {
+        if (probes.contains(p) && p.isEnabled()) {
+          return false;
+        }
+        disposeProbe(gl, this.probeTargets.get(p)); // removed from the scene or disabled
+        return true;
+      });
+    }
+    if (probes.isEmpty() || this.settings.sky == null) {
+      return;
+    }
+    boolean capturedOne = false;
+    for (int i = 0; i < probes.size(); i++) {
+      final var p = probes.get(i);
+      if (!p.isEnabled()) {
+        continue;
+      }
+      var t = this.probeTargets.get(p);
+      final int res = Math.max(8, Integer.highestOneBit(Math.min(1024, p.resolution)));
+      final boolean due = t == null || t.resolution != res || p.isDirty()
+          || p.refreshFrames > 0 && this.frameNumber - t.capturedFrame >= p.refreshFrames;
+      if (due && !capturedOne) {
+        if (t == null || t.resolution != res) {
+          if (t != null) {
+            disposeProbe(gl, t);
+          }
+          t = createProbe(gl, res);
+          this.probeTargets.put(p, t);
+        }
+        capture(gl, p, t, cascades);
+        p.captured();
+        t.capturedFrame = this.frameNumber;
+        capturedOne = true;
+      }
+      if (t != null && t.capturedFrame > 0) {
+        this.activeProbes.add(p);
+      }
+    }
+    // nearest first: where boxes overlap, the shader gives the first one the larger share
+    this.activeProbes.sort((a, b) -> Float.compare(boxDistance(a), boxDistance(b)));
+    while (this.activeProbes.size() > MAX_PROBES) {
+      this.activeProbes.remove(this.activeProbes.size() - 1);
+    }
+  }
+
+  private float boxDistance(ReflectionProbe p) {
+    p.box(this.boxMin, this.boxMax);
+    final float dx = Math.max(0f, Math.max(this.boxMin.x - this.cameraPos.x, this.cameraPos.x - this.boxMax.x));
+    final float dy = Math.max(0f, Math.max(this.boxMin.y - this.cameraPos.y, this.cameraPos.y - this.boxMax.y));
+    final float dz = Math.max(0f, Math.max(this.boxMin.z - this.cameraPos.z, this.cameraPos.z - this.boxMax.z));
+    return dx * dx + dy * dy + dz * dz;
+  }
+
+  private ProbeTargets createProbe(GL3 gl, int res) {
+    final var t = new ProbeTargets();
+    t.resolution = res;
+    t.env = this.sky.newEnvironment(gl, res);
+    t.prefiltered = this.sky.newPrefiltered(gl, Math.max(4, res / 2));
+    final int[] ids = new int[1];
+    gl.glGenRenderbuffers(1, ids, 0);
+    t.depth = ids[0];
+    gl.glBindRenderbuffer(GL3.GL_RENDERBUFFER, t.depth);
+    gl.glRenderbufferStorage(GL3.GL_RENDERBUFFER, GL3.GL_DEPTH_COMPONENT24, res, res);
+    gl.glGenFramebuffers(1, ids, 0);
+    t.fbo = ids[0];
+    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, t.fbo);
+    gl.glFramebufferRenderbuffer(GL3.GL_FRAMEBUFFER, GL3.GL_DEPTH_ATTACHMENT, GL3.GL_RENDERBUFFER, t.depth);
+    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
+    return t;
+  }
+
+  private static void disposeProbe(GL3 gl, ProbeTargets t) {
+    gl.glDeleteTextures(2, new int[] { t.env, t.prefiltered }, 0);
+    gl.glDeleteFramebuffers(1, new int[] { t.fbo }, 0);
+    gl.glDeleteRenderbuffers(1, new int[] { t.depth }, 0);
+  }
+
+  /** Renders the opaque scene and the sky into the six faces from the probe, then blurs them per roughness. */
+  private void capture(GL3 gl, ReflectionProbe probe, ProbeTargets t, int cascades) {
+    this.savedView.set(this.view);
+    this.savedProj.set(this.proj);
+    this.savedViewProj.set(this.viewProj);
+    this.savedCameraPos.set(this.cameraPos);
+    final var sky = srgbToLinear(this.settings.clearColor, this.linear);
+    final float skyR = sky.x;
+    final float skyG = sky.y;
+    final float skyB = sky.z;
+    probe.entity().transform().worldPosition(this.cameraPos);
+    this.proj.setPerspective((float) Math.toRadians(90.0), 1f, probe.near, probe.far);
+    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, t.fbo);
+    gl.glViewport(0, 0, t.resolution, t.resolution);
+    for (int face = 0; face < 6; face++) {
+      gl.glFramebufferTexture2D(GL3.GL_FRAMEBUFFER, GL3.GL_COLOR_ATTACHMENT0, GL3.GL_TEXTURE_CUBE_MAP_POSITIVE_X + face,
+          t.env, 0);
+      gl.glClearColor(skyR, skyG, skyB, 1f);
+      gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
+      final var d = FACE_DIR[face];
+      this.view.setLookAt(this.cameraPos.x, this.cameraPos.y, this.cameraPos.z, this.cameraPos.x + d.x,
+          this.cameraPos.y + d.y, this.cameraPos.z + d.z, FACE_UP[face].x, FACE_UP[face].y, FACE_UP[face].z);
+      this.proj.mul(this.view, this.viewProj);
+      bindLighting(gl, cascades, false); // probes do not see probes
+      this.queue.cull(this.viewProj, RenderQueue.Pass.MAIN, this.visible, false);
+      this.opaque.clear();
+      for (int i = 0; i < this.visible.size(); i++) {
+        if (!this.visible.get(i).material.transparent) {
+          this.opaque.add(this.visible.get(i));
+        }
+      }
+      RenderQueue.sortForBatching(this.opaque, true);
+      drawList(gl, this.opaque);
+      drawSky(gl);
+    }
+    gl.glFramebufferTexture2D(GL3.GL_FRAMEBUFFER, GL3.GL_COLOR_ATTACHMENT0, GL3.GL_TEXTURE_2D, 0, 0);
+    gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, t.env);
+    gl.glGenerateMipmap(GL3.GL_TEXTURE_CUBE_MAP);
+    this.sky.prefilter(gl, t.env, t.resolution, t.prefiltered, Math.max(4, t.resolution / 2));
+    this.view.set(this.savedView);
+    this.proj.set(this.savedProj);
+    this.viewProj.set(this.savedViewProj);
+    this.cameraPos.set(this.savedCameraPos);
+  }
+
+  /** The probe uniforms and cube maps of the main pass (or none, while capturing). */
+  private void bindProbes(GL3 gl, boolean use) {
+    final int n = use ? this.activeProbes.size() : 0;
+    this.basic.set(gl, "uProbeCount", n);
+    for (int i = 0; i < n; i++) {
+      final var p = this.activeProbes.get(i);
+      p.box(this.boxMin, this.boxMax);
+      put(this.probeMin, i, this.boxMin.x, this.boxMin.y, this.boxMin.z, p.fade);
+      put(this.probeMax, i, this.boxMax.x, this.boxMax.y, this.boxMax.z, p.intensity);
+      p.entity().transform().worldPosition(this.boxMin);
+      this.basic.set(gl, PROBE_POSITIONS[i], this.boxMin);
+    }
+    if (n > 0) {
+      this.basic.setVec4Array(gl, "uProbeMin", this.probeMin, n);
+      this.basic.setVec4Array(gl, "uProbeMax", this.probeMax, n);
+    }
+    for (int i = 0; i < MAX_PROBES; i++) {
+      this.basic.set(gl, PROBE_SAMPLERS[i], UNIT_PROBES + i);
+      gl.glActiveTexture(GL3.GL_TEXTURE0 + UNIT_PROBES + i);
+      gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, i < n ? this.probeTargets.get(this.activeProbes.get(i)).prefiltered
+          : this.sky.blackCube());
+    }
+    gl.glActiveTexture(GL3.GL_TEXTURE0);
+  }
+
+  private void mainPassDraw(GL3 gl) {
     final boolean occlusion = this.settings.occlusionCulling;
     this.queue.cull(this.viewProj, RenderQueue.Pass.MAIN, this.visible, occlusion);
     this.stats.culled = this.queue.candidates() - this.visible.size() - (occlusion ? this.queue.occluded() : 0);
@@ -788,6 +992,10 @@ final class GlSceneRenderer {
   }
 
   void dispose(GL3 gl) {
+    for (final var t : this.probeTargets.values()) {
+      disposeProbe(gl, t);
+    }
+    this.probeTargets.clear();
     if (this.basic != null) {
       this.basic.dispose(gl);
       this.depth.dispose(gl);

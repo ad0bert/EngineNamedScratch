@@ -28,6 +28,7 @@ import engine.render.Camera;
 import engine.render.Light;
 import engine.render.MeshRenderer;
 import engine.render.ParticleEmitter;
+import engine.render.ReflectionProbe;
 
 /**
  * Which component types can be saved, and how. {@link #defaults()} knows the engine's own components; games register
@@ -46,6 +47,7 @@ public class ComponentRegistry {
     r.register(new MeshRendererSerializer());
     r.register(new FieldSerializer<>("Camera", Camera.class, ctx -> new Camera()));
     r.register(new FieldSerializer<>("Light", Light.class, ctx -> new Light()));
+    r.register(new FieldSerializer<>("ReflectionProbe", ReflectionProbe.class, ctx -> new ReflectionProbe()));
     r.register(new FieldSerializer<>("ParticleEmitter", ParticleEmitter.class, ctx -> new ParticleEmitter()));
     r.register(new FieldSerializer<>("Rigidbody", Rigidbody.class, ctx -> new Rigidbody()));
     r.register(new FieldSerializer<>("BoxCollider", BoxCollider.class, ctx -> new BoxCollider()));

@@ -55,6 +55,7 @@ System properties:
 | `demo.sky=file.hdr` or `demo.sky=none` | demo only: an HDR environment image instead of the procedural sky, or no sky |
 | `demo.saveScene=file.json` | demo only: save the scene at start (what `F5` does) |
 | `demo.paused=true` | demo only: start in the pause menu |
+| `demo.probe=false` | demo only: the room by the field without its reflection probe |
 | `demo.assets=dir` | demo only: an asset directory whose files replace the demo's and the engine's shaders (`dir/shaders/tonemap.frag`) |
 
 The render settings can also be changed at run time through `engine.backend().settings()`.
@@ -172,7 +173,9 @@ class PauseMenu implements GameState {
   (or back-to-front sorting), alpha cut-outs (with matching holes in the shadows), points. A sky behind the scene
   (`RenderSettings.sky`: a procedural gradient with a sun disc, or an equirectangular HDR image) that also lights it:
   image-based lighting baked once on the GPU (diffuse irradiance, GGX-prefiltered reflections per roughness, split-sum
-  BRDF table), with intensity and rotation settings.
+  BRDF table), with intensity and rotation settings. Local `ReflectionProbe`s capture the scene into cube maps
+  (blurred per roughness like the sky); inside their boxes surfaces take box-projected reflections and ambient light
+  from them instead of the sky, so rooms reflect their own walls and are not lit by the open sky.
 - **Particles:** `ParticleEmitter` components spawn camera-facing quads by rate or in bursts, inside a sphere and a
   cone, with acceleration, drag, size, colour and spin over their life, texture atlases (animated or one random frame
   each), additive or alpha blending (sorted back to front) and soft edges where they meet geometry; simulated at the
@@ -317,7 +320,7 @@ How it works:
 |---|---|
 | `engine.core` | `Engine` (window, GL loop, lifecycle, pause, window options, screenshots, hot reloading), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
-| `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer`, `ParticleEmitter`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
+| `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
 | `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, particles, sky and image-based lighting, post-processing, UI batching) |
 | `engine.animation` | `Track`, `Easing`, `Channel`, `AnimationClip`, `Animator` (layers, blending), `AnimationSystem` |
 | `engine.audio` | Backend-agnostic: `AudioBackend`, `AudioClip`/`AudioVoice` handles, `AudioSource`, `AudioListener`, `ImpactSound`, `AudioMixer`/`AudioBus`, `Rolloff`, `VoiceAllocator`, `AudioSystem`, `NullAudioBackend` |
@@ -381,9 +384,10 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   Baking is synchronous and costs about a millisecond per 10 cells (1.6 s for the demo's 120 x 120 cells in the CI
   container); agents do not avoid each other.
 - At most 8 lights per frame in a forward renderer; only the first directional light has cascaded shadows and at most
-  4 point or spot lights cast shadows. Image-based lighting comes from the sky only (no local reflection probes, no
-  geometry-based occlusion beyond the screen-space kind, which only sees what is on screen and fades out from 30 to
-  60 m), so the insides of rooms get much of the sky's ambient light too.
+  4 point or spot lights cast shadows. Reflection probes need a sky (they replace its light), are captured once
+  (or every `refreshFrames`), at most one per frame, see only opaque surfaces, and at most four apply per frame
+  (the nearest to the camera); their diffuse light is the roughest reflection level, not a separate irradiance map.
+  Ambient occlusion is screen-space only: it sees what is on screen and fades out from 30 to 60 m.
 - Occlusion culling only skips static geometry, in whole grid cells, and is one frame late: an object coming out from
   behind a wall can appear a frame after it should. A moved static renderer is re-registered at the next fixed step,
   so it can be drawn at its old place for a frame unless `invalidate()` is called. Order-independent transparency is
