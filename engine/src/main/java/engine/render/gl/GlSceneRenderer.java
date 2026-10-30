@@ -233,8 +233,50 @@ final class GlSceneRenderer {
     this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z, this.settings.ambientOcclusion);
     mainPass(gl, cascades);
     this.particles.draw(gl, scene, alpha, this.viewProj, this.cameraPos, this.cameraForward, this.cameraRight,
-        this.cameraUp, camera.near, camera.far, this.post, this.white, this.stats);
+        this.cameraUp, camera.near, camera.far, this.post, this.white, this.stats, this);
     this.post.finish(gl, this.settings, screen);
+  }
+
+  /**
+   * The light this frame's lights bring to point {@code p} (with their falloff and spot cones, without shadows) at
+   * half strength, as a surface turned half-way to each light gets it, plus the flat ambient light when there is no
+   * sky (the sky's own light is sampled on the GPU): for lit particles.
+   */
+  Vector3f lightAt(Vector3f p, Vector3f dest) {
+    if (this.settings.sky == null) {
+      dest.set(this.ambient);
+    } else {
+      dest.zero();
+    }
+    for (int i = 0; i < this.lightCount; i++) {
+      float atten = 1f;
+      if (this.lightPos[i * 4 + 3] != 0f) {
+        final float dx = this.lightPos[i * 4] - p.x;
+        final float dy = this.lightPos[i * 4 + 1] - p.y;
+        final float dz = this.lightPos[i * 4 + 2] - p.z;
+        final float distSq = dx * dx + dy * dy + dz * dz;
+        final float range = this.lightColor[i * 4 + 3];
+        final float x = Math.max(0f, Math.min(1f, 1f - distSq / (range * range)));
+        atten = x * x;
+        if (this.lightPos[i * 4 + 3] > 1.5f && atten > 0f) {
+          final float dist = (float) Math.sqrt(distSq);
+          final float c = dist > 1e-4f ? -(dx * this.lightSpot[i * 4] + dy * this.lightSpot[i * 4 + 1]
+              + dz * this.lightSpot[i * 4 + 2]) / dist : 1f;
+          final float outer = this.lightSpot[i * 4 + 3];
+          final float inner = this.lightInner[i];
+          final float t = Math.max(0f, Math.min(1f, (c - outer) / Math.max(1e-4f, inner - outer)));
+          atten *= t * t * (3f - 2f * t);
+        }
+      }
+      final float k = 0.5f * atten;
+      dest.add(this.lightColor[i * 4] * k, this.lightColor[i * 4 + 1] * k, this.lightColor[i * 4 + 2] * k);
+    }
+    return dest;
+  }
+
+  /** Binds the sky's lighting to another program (its irradiance on unit 2). */
+  void bindSky(GL3 gl, ShaderProgram program) {
+    this.sky.bindLighting(gl, program, this.settings, 2, 3, 4);
   }
 
   /** sRGB to linear, per channel (the exact curve, not a gamma of 2.2). */

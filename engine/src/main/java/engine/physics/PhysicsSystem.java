@@ -17,6 +17,8 @@ import engine.ecs.Transform;
 import engine.messaging.IMessageService;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
+import engine.render.ParticleCollider;
+import engine.render.ParticleEmitter;
 import engine.spatial.SpatialGrid;
 import lombok.Getter;
 
@@ -1545,6 +1547,51 @@ public class PhysicsSystem implements ISystem {
       return Optional.empty();
     }
     return Optional.of(new RayHit(q.bestCollider, new Vector3f(origin).fma(q.best, q.dir), q.bestNormal, q.best));
+  }
+
+  /**
+   * Particle collisions against this system's colliders (not triggers; those on the layers in {@code layerMask}),
+   * for {@link ParticleEmitter#collider}: one ray per particle and step along its move, through the broadphase grid
+   * of the last step. Allocates only when a particle hits something. One instance per emitter or shared, on the
+   * update thread.
+   */
+  public ParticleCollider particleCollider(Scene scene, int layerMask) {
+    final var q = new RayQuery();
+    final var origin = new Vector3f();
+    final var dir = new Vector3f();
+    return (x0, y0, z0, x1, y1, z1, hit) -> {
+      dir.set(x1 - x0, y1 - y0, z1 - z0);
+      final float len = dir.length();
+      if (len < 1e-6f) {
+        return false;
+      }
+      dir.div(len);
+      q.reset(origin.set(x0, y0, z0), dir, len, 0f, null);
+      q.mask = layerMask;
+      final var all = scene.components(Collider.class);
+      if (!gridMatches(all)) {
+        for (int i = 0; i < all.size(); i++) {
+          q.test(all.get(i));
+        }
+      } else {
+        final int stamp = nextQueryStamp();
+        final var large = this.grid.large();
+        for (int k = 0; k < large.size(); k++) {
+          testOnce(q, large.get(k), stamp);
+        }
+        walkGrid(q, stamp);
+      }
+      if (q.bestCollider == null) {
+        return false;
+      }
+      hit[0] = x0 + dir.x * q.best;
+      hit[1] = y0 + dir.y * q.best;
+      hit[2] = z0 + dir.z * q.best;
+      hit[3] = q.bestNormal.x;
+      hit[4] = q.bestNormal.y;
+      hit[5] = q.bestNormal.z;
+      return true;
+    };
   }
 
   /**

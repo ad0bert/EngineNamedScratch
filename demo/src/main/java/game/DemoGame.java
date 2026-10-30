@@ -298,6 +298,8 @@ public class DemoGame implements Game {
     this.sparks.lifetimeMin = 0.3f;
     this.sparks.lifetimeMax = 0.7f;
     this.sparks.acceleration.set(0f, -9.81f, 0f);
+    this.sparks.collider = engine.physics().particleCollider(scene, ~0); // they bounce off what they hit
+    this.sparks.bounce = 0.35f;
     this.sparks.drag = 1f;
     this.sparks.softness = 0f;
     scene.add(sparkEntity);
@@ -750,6 +752,8 @@ public class DemoGame implements Game {
     sparks.shapeRadius = 0.15f;
     sparks.acceleration.set(0f, -1.2f, 0f);
     sparks.drag = 0.6f;
+    sparks.collider = engine.physics().particleCollider(scene, ~0);
+    sparks.dieOnCollision = true; // embers that come down go out on the ground
     sparks.sizeStart = 0.05f;
     sparks.sizeEnd = 0.03f;
     sparks.colorStart.set(1f, 0.7f, 0.3f, 1f);
@@ -774,6 +778,7 @@ public class DemoGame implements Game {
     smoke.shapeRadius = 0.15f;
     smoke.acceleration.set(0.15f, 0.1f, 0f); // a light breeze
     smoke.drag = 0.2f;
+    smoke.lit = 1f; // grey by daylight, orange near the fire
     smoke.sizeStart = 0.4f;
     smoke.sizeEnd = 2.2f;
     smoke.sizeVariation = 0.2f;

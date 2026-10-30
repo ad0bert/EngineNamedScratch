@@ -13,6 +13,12 @@ uniform sampler2D uDepth;  // copy of the opaque scene's depth
 uniform float uSoftness;   // world units; 0 = hard
 uniform vec2 uInvScreen;
 uniform vec2 uNearFar;
+uniform float uLit;             // 0: the particle's own colour, 1: lit like a surface facing the light half-way
+uniform vec3 uLight;            // lights (and the flat ambient) at the emitter's centre, from the CPU
+uniform int uSky;
+uniform samplerCube uIrradianceMap;
+uniform float uSkyIntensity;
+uniform vec2 uSkyRotation;
 
 out vec4 fragColor;
 
@@ -35,5 +41,15 @@ void main() {
   if (k < 1.0 / 1024.0) {
     discard;
   }
-  fragColor = vec4(vColor.rgb * t.rgb * k, vColor.a * k);
+  vec3 color = vColor.rgb * t.rgb;
+  if (uLit > 0.0) {
+    vec3 light = uLight;
+    if (uSky == 1) { // the sky's light from above, as a horizontal surface would get it
+      vec3 up = vec3(0.0, 1.0, 0.0);
+      light += texture(uIrradianceMap, vec3(uSkyRotation.x * up.x + uSkyRotation.y * up.z, up.y,
+          -uSkyRotation.y * up.x + uSkyRotation.x * up.z)).rgb * uSkyIntensity;
+    }
+    color = mix(color, color * light, uLit);
+  }
+  fragColor = vec4(color * k, vColor.a * k);
 }

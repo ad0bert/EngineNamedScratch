@@ -177,7 +177,9 @@ class PauseMenu implements GameState {
   cone, with acceleration, drag, size, colour and spin over their life, texture atlases (animated or one random frame
   each), additive or alpha blending (sorted back to front) and soft edges where they meet geometry; simulated at the
   fixed step in flat arrays, spread along the emitter's path when it moves, in world or local space, and drawn with
-  one instanced call per emitter.
+  one instanced call per emitter. Smoke and dust can be lit (`lit`: the lights and the ambient or sky light at the
+  emitter), and particles can collide with the physics world (`collider = physics.particleCollider(scene, mask)`):
+  they bounce with `bounce` and `collisionFriction`, or die where they hit.
 - **Materials:** Blinn-Phong or physically based (GGX, metallic/roughness, glTF-style metal-rough maps); colour or
   texture, tangent-space normal maps (meshes carry tangents with handedness, so mirrored uvs work), specular maps,
   emissive colour and maps, height maps with parallax occlusion mapping, uv scale/offset and clamping; with a sky,
@@ -386,9 +388,10 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   behind a wall can appear a frame after it should. A moved static renderer is re-registered at the next fixed step,
   so it can be drawn at its old place for a frame unless `invalidate()` is called. Order-independent transparency is
   an approximation: overlapping layers of very different opacity blend a little differently from exact sorting.
-- Particles are unlit (no shadows received or cast, no lights on smoke) and drawn after all other transparent
+- Lit particles take one light value per emitter (at its centre, without shadows) and cast no shadows; colliding
+  particles cost a ray per particle and step. Particles are drawn after all other transparent
   surfaces, so a particle behind a glass pane is not dimmed by it. Alpha particles are sorted per emitter and the
-  emitters by their centres, so two smoke clouds that overlap can sort wrongly; no collisions with the world.
+  emitters by their centres, so two smoke clouds that overlap can sort wrongly.
 - The UI has no input method support, and text areas do not wrap (only `Gui.paragraph` does).
 - Sound: positioned sounds should be mono (OpenAL does not pan stereo clips). A streaming clip that loses its voice
   starts from the beginning when it gets one again (whole clips resume where their clock is). No effects (reverb,
