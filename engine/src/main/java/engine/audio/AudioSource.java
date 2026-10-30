@@ -49,6 +49,12 @@ public class AudioSource extends Component {
     this.playback.start();
   }
 
+  /** Starts the clip {@code seconds} in (where a saved game left it, for example). */
+  public void play(float seconds) {
+    play();
+    this.playback.time = Math.max(0f, seconds);
+  }
+
   public void stop() {
     this.playback.state = Playback.State.STOPPED;
   }

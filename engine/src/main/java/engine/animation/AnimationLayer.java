@@ -38,6 +38,22 @@ public final class AnimationLayer {
     this.time = seconds;
   }
 
+  /** The fade (0..1) the weight is multiplied with. */
+  public float fade() {
+    return this.fade;
+  }
+
+  /** How fast the fade changes, per second (negative: fading out). */
+  public float fadeSpeed() {
+    return this.fadeSpeed;
+  }
+
+  /** Sets the fade and its rate of change directly (restoring a saved state). */
+  public void setFade(float fade, float fadeSpeed) {
+    this.fade = fade;
+    this.fadeSpeed = fadeSpeed;
+  }
+
   /** Changes the fade (0..1) linearly to {@code target} over {@code seconds}. */
   public void fadeTo(float target, float seconds) {
     if (seconds <= 0f) {

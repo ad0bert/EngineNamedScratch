@@ -182,7 +182,7 @@ public class AudioSystem implements ISystem, IMessageReceiver {
       final var s = sources.get(i);
       if (!s.seen) {
         s.seen = true;
-        if (s.playOnStart && s.clip != null) {
+        if (s.playOnStart && s.clip != null && !s.playback.active()) { // not over a state loaded from a file
           s.play();
         }
       }

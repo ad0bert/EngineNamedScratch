@@ -44,6 +44,11 @@ public final class Skin {
     return this.joints[index];
   }
 
+  /** The inverse bind matrix of a joint, into {@code dest}. */
+  public Matrix4f inverseBind(int index, Matrix4f dest) {
+    return dest.set(this.inverseBind[index]);
+  }
+
   /** The joint matrices of the last update, 16 floats each (column-major); read-only. */
   public float[] palette() {
     return this.palette;
