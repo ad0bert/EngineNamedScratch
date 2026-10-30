@@ -23,6 +23,11 @@ public abstract class Collider extends Component {
   private static final AtomicInteger NEXT_ID = new AtomicInteger();
 
   public boolean trigger;
+  /**
+   * Collision layer, 0 to 31. {@link PhysicsSystem#setLayersCollide} says which layers touch each other (all do by
+   * default); queries pick layers with a bit mask ({@link PhysicsSystem#solid(int)}).
+   */
+  public int layer;
   /** Shape centre relative to the entity origin (in local, unscaled units). */
   public final Vector3f offset = new Vector3f();
 
@@ -37,6 +42,11 @@ public abstract class Collider extends Component {
   final Matrix4f lastMatrix = new Matrix4f();
   boolean hasLastPose;
   boolean moving;
+
+  /** This collider's bit in a layer mask. */
+  public int layerBit() {
+    return 1 << (this.layer & 31);
+  }
 
   public abstract Vector3f worldCenter(Vector3f dest);
 

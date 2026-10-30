@@ -1,5 +1,7 @@
 package engine.render.gl;
 
+import org.joml.Matrix4f;
+
 import com.jogamp.opengl.GL3;
 
 import engine.render.RenderSettings;
@@ -7,7 +9,10 @@ import engine.render.RenderSettings;
 /**
  * Off-screen targets and full-screen passes around the scene:
  * <ol>
- * <li>the scene is drawn into an HDR target (RGBA16F colour, 24-bit depth texture);</li>
+ * <li>the scene is drawn into an HDR target (RGBA16F colour, 24-bit depth texture); the opaque pass also writes its
+ * ambient light into a second target;</li>
+ * <li>ambient occlusion: at half size, from the depth, then blurred; the occluded share of the ambient light is taken
+ * off the scene colour;</li>
  * <li>transparent surfaces are accumulated into two more targets that share that depth (weighted blended
  * order-independent transparency) and resolved over the opaque image;</li>
  * <li>on request, the depth is copied into a texture that particles sample to fade where they meet geometry;</li>
@@ -26,13 +31,26 @@ final class PostProcessor {
   private ShaderProgram tonemap;
   private ShaderProgram fxaa;
   private ShaderProgram composite;
+  private ShaderProgram ssao;
+  private ShaderProgram ssaoBlur;
+  private ShaderProgram ssaoApply;
   private int emptyVao;
 
   private int width;
   private int height;
   private int sceneFbo;
   private int sceneColor;
+  private int sceneAmbient;
   private int depth;
+  private int aoW;
+  private int aoH;
+  private int aoTex;
+  private int aoFbo;
+  private int aoBlurTex;
+  private int aoBlurFbo;
+  private int applyFbo;
+  private boolean ambientTarget;
+  private final Matrix4f invProj = new Matrix4f();
   private int oitFbo;
   private int oitAccum;
   private int oitWeights;
@@ -53,24 +71,94 @@ final class PostProcessor {
     this.tonemap = new ShaderProgram(gl, "shaders/fullscreen.vert", "shaders/tonemap.frag");
     this.fxaa = new ShaderProgram(gl, "shaders/fullscreen.vert", "shaders/fxaa.frag");
     this.composite = new ShaderProgram(gl, "shaders/fullscreen.vert", "shaders/oit_composite.frag");
+    this.ssao = new ShaderProgram(gl, "shaders/fullscreen.vert", "shaders/ssao.frag");
+    this.ssaoBlur = new ShaderProgram(gl, "shaders/fullscreen.vert", "shaders/ssao_blur.frag");
+    this.ssaoApply = new ShaderProgram(gl, "shaders/fullscreen.vert", "shaders/ssao_apply.frag");
     final int[] ids = new int[1];
     gl.glGenVertexArrays(1, ids, 0);
     this.emptyVao = ids[0];
   }
 
-  /** Binds the HDR target (allocating it for this size if needed), sets the viewport and clears it. */
-  void beginScene(GL3 gl, int w, int h, float r, float g, float b) {
+  /**
+   * Binds the HDR target (allocating it for this size if needed), sets the viewport and clears it. With
+   * {@code ambient} the opaque pass also writes its ambient light, for {@link #ambientOcclusion}.
+   */
+  void beginScene(GL3 gl, int w, int h, float r, float g, float b, boolean ambient) {
     ensureSize(gl, Math.max(1, w), Math.max(1, h));
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, this.sceneFbo);
     gl.glViewport(0, 0, this.width, this.height);
     gl.glClearColor(r, g, b, 1f);
+    this.ambientTarget = ambient;
+    drawBuffers(gl, ambient);
     gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
+  }
+
+  private static void drawBuffers(GL3 gl, boolean both) {
+    gl.glDrawBuffers(2, new int[] { GL3.GL_COLOR_ATTACHMENT0, both ? GL3.GL_COLOR_ATTACHMENT1 : GL3.GL_NONE }, 0);
+  }
+
+  /**
+   * After the opaque pass: darkens its ambient light where the depth buffer says little of the sky is in view, then
+   * leaves the scene target bound with only its colour written (sky, transparency and particles have no ambient
+   * share). Does nothing but the latter unless {@link #beginScene} was asked for the ambient target.
+   */
+  void ambientOcclusion(GL3 gl, RenderSettings settings, Matrix4f proj) {
+    if (!this.ambientTarget) {
+      return;
+    }
+    this.ambientTarget = false;
+    gl.glDisable(GL3.GL_DEPTH_TEST);
+    gl.glDepthMask(false);
+    proj.invert(this.invProj);
+    // occlusion at half size
+    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, this.aoFbo);
+    gl.glViewport(0, 0, this.aoW, this.aoH);
+    this.ssao.use(gl);
+    this.ssao.set(gl, "uDepth", 0);
+    this.ssao.set(gl, "uProj", proj);
+    this.ssao.set(gl, "uInvProj", this.invProj);
+    this.ssao.set(gl, "uTexel", 1f / this.width, 1f / this.height);
+    this.ssao.set(gl, "uRadius", settings.aoRadius);
+    bind(gl, 0, this.depth);
+    drawFullscreen(gl);
+    // blurred, keeping to surfaces
+    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, this.aoBlurFbo);
+    this.ssaoBlur.use(gl);
+    this.ssaoBlur.set(gl, "uAo", 0);
+    this.ssaoBlur.set(gl, "uDepth", 1);
+    this.ssaoBlur.set(gl, "uTexel", 1f / this.aoW, 1f / this.aoH);
+    this.ssaoBlur.set(gl, "uInvProj", this.invProj);
+    bind(gl, 0, this.aoTex);
+    bind(gl, 1, this.depth);
+    drawFullscreen(gl);
+    // off the scene colour: colour - ambient * occluded
+    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, this.applyFbo);
+    gl.glViewport(0, 0, this.width, this.height);
+    if (!settings.debugAmbientOcclusion) {
+      gl.glEnable(GL3.GL_BLEND);
+      gl.glBlendEquation(GL3.GL_FUNC_REVERSE_SUBTRACT);
+      gl.glBlendFunc(GL3.GL_ONE, GL3.GL_ONE);
+    }
+    this.ssaoApply.use(gl);
+    this.ssaoApply.set(gl, "uDebug", settings.debugAmbientOcclusion ? 1 : 0);
+    this.ssaoApply.set(gl, "uAo", 0);
+    this.ssaoApply.set(gl, "uAmbient", 1);
+    this.ssaoApply.set(gl, "uStrength", settings.aoStrength);
+    bind(gl, 0, this.aoBlurTex);
+    bind(gl, 1, this.sceneAmbient);
+    drawFullscreen(gl);
+    gl.glBlendEquation(GL3.GL_FUNC_ADD);
+    gl.glDisable(GL3.GL_BLEND);
+    gl.glEnable(GL3.GL_DEPTH_TEST);
+    gl.glDepthMask(true);
+    bindScene(gl);
   }
 
   /** Re-binds the HDR target (after something else, like shadow maps, used another framebuffer). */
   void bindScene(GL3 gl) {
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, this.sceneFbo);
     gl.glViewport(0, 0, this.width, this.height);
+    drawBuffers(gl, this.ambientTarget);
   }
 
   /**
@@ -222,8 +310,19 @@ final class PostProcessor {
     this.width = w;
     this.height = h;
     this.sceneColor = texture(gl, w, h, GL3.GL_RGBA16F, GL3.GL_RGBA, GL3.GL_FLOAT);
+    this.sceneAmbient = texture(gl, w, h, GL3.GL_RGBA16F, GL3.GL_RGBA, GL3.GL_FLOAT);
     this.depth = texture(gl, w, h, GL3.GL_DEPTH_COMPONENT24, GL3.GL_DEPTH_COMPONENT, GL3.GL_FLOAT);
-    this.sceneFbo = framebuffer(gl, this.depth, this.sceneColor);
+    gl.glBindTexture(GL3.GL_TEXTURE_2D, this.depth); // read exactly by the occlusion passes
+    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_NEAREST);
+    gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_NEAREST);
+    this.sceneFbo = framebuffer(gl, this.depth, this.sceneColor, this.sceneAmbient);
+    this.applyFbo = framebuffer(gl, 0, this.sceneColor);
+    this.aoW = Math.max(1, w / 2);
+    this.aoH = Math.max(1, h / 2);
+    this.aoTex = texture(gl, this.aoW, this.aoH, GL3.GL_R8, GL3.GL_RED, GL3.GL_UNSIGNED_BYTE);
+    this.aoFbo = framebuffer(gl, 0, this.aoTex);
+    this.aoBlurTex = texture(gl, this.aoW, this.aoH, GL3.GL_R8, GL3.GL_RED, GL3.GL_UNSIGNED_BYTE);
+    this.aoBlurFbo = framebuffer(gl, 0, this.aoBlurTex);
     this.oitAccum = texture(gl, w, h, GL3.GL_RGBA16F, GL3.GL_RGBA, GL3.GL_FLOAT);
     this.oitWeights = texture(gl, w, h, GL3.GL_RGBA16F, GL3.GL_RGBA, GL3.GL_FLOAT);
     this.oitFbo = framebuffer(gl, this.depth, this.oitAccum, this.oitWeights);
@@ -284,9 +383,10 @@ final class PostProcessor {
     if (!this.allocated) {
       return;
     }
-    gl.glDeleteFramebuffers(3, new int[] { this.sceneFbo, this.oitFbo, this.ldrFbo }, 0);
-    gl.glDeleteTextures(5, new int[] { this.sceneColor, this.depth, this.oitAccum, this.oitWeights, this.ldrColor },
-        0);
+    gl.glDeleteFramebuffers(6, new int[] { this.sceneFbo, this.oitFbo, this.ldrFbo, this.applyFbo, this.aoFbo,
+        this.aoBlurFbo }, 0);
+    gl.glDeleteTextures(8, new int[] { this.sceneColor, this.sceneAmbient, this.depth, this.oitAccum, this.oitWeights,
+        this.ldrColor, this.aoTex, this.aoBlurTex }, 0);
     for (int i = 0; i < this.bloomLevels; i++) {
       gl.glDeleteFramebuffers(1, new int[] { this.bloomFbo[i] }, 0);
       gl.glDeleteTextures(1, new int[] { this.bloomTex[i] }, 0);

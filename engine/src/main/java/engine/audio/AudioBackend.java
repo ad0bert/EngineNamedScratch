@@ -37,6 +37,18 @@ public interface AudioBackend {
   /** Strength of the Doppler effect (0 off, 1 physical) and the speed of sound in metres per second. */
   void setDoppler(float factor, float speedOfSound);
 
+  /** True if it can reverberate and filter ({@link #setReverb}, {@link AudioVoice#setFilter}). */
+  default boolean supportsEffects() {
+    return false;
+  }
+
+  /**
+   * The reverberation positioned sounds are sent into ({@link AudioVoice#setFilter}): a preset, or null for none,
+   * mixed in at {@code wet} (0..1).
+   */
+  default void setReverb(ReverbPreset preset, float wet) {
+  }
+
   /** Keeps streams fed and lets voices notice that they finished; called once per update step. */
   void update(double dt);
 

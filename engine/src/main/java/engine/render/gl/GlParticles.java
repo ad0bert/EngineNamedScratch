@@ -68,7 +68,8 @@ final class GlParticles {
    * {@code white} stands in for missing textures.
    */
   void draw(GL3 gl, Scene scene, float alpha, Matrix4f viewProj, Vector3f cameraPos, Vector3f forward,
-      Vector3f right, Vector3f up, float near, float far, PostProcessor post, GlTexture white, RenderStats stats) {
+      Vector3f right, Vector3f up, float near, float far, PostProcessor post, GlTexture white, RenderStats stats,
+      GlSceneRenderer lighting) {
     final var all = scene.components(ParticleEmitter.class);
     if (all.isEmpty()) {
       return;
@@ -140,6 +141,7 @@ final class GlParticles {
     this.program.set(gl, "uNearFar", near, far);
     gl.glActiveTexture(GL3.GL_TEXTURE1);
     gl.glBindTexture(GL3.GL_TEXTURE_2D, depthCopy);
+    lighting.bindSky(gl, this.program); // units 2-4: the sky's light for lit particles
 
     gl.glBindVertexArray(this.vao);
     gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, this.instanceVbo);
@@ -156,6 +158,13 @@ final class GlParticles {
       this.program.set(gl, "uHasTexture", e.texture != null ? 1 : 0);
       this.program.set(gl, "uAtlas", Math.max(1, e.atlasColumns), Math.max(1, e.atlasRows));
       this.program.set(gl, "uSoftness", soft ? Math.max(0f, e.softness) : 0f);
+      final float lit = Math.max(0f, Math.min(1f, e.lit));
+      this.program.set(gl, "uLit", lit);
+      if (lit > 0f) {
+        e.entity().transform().interpolatedWorldMatrix(alpha, this.world);
+        e.bounds(this.world, this.center);
+        this.program.set(gl, "uLight", lighting.lightAt(this.center, this.light));
+      }
       final long base = (long) this.first[k] * STRIDE;
       gl.glVertexAttribPointer(1, 4, GL3.GL_FLOAT, false, STRIDE, base);
       gl.glVertexAttribPointer(2, 4, GL3.GL_FLOAT, false, STRIDE, base + 16L);
@@ -169,6 +178,8 @@ final class GlParticles {
     stats.particleEmitters = n;
     stats.particles = written;
   }
+
+  private final Vector3f light = new Vector3f();
 
   void dispose(GL3 gl) {
     if (this.program != null) {

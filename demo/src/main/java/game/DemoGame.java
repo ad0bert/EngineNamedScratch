@@ -22,6 +22,8 @@ import engine.audio.AudioClip;
 import engine.audio.AudioListener;
 import engine.audio.AudioSource;
 import engine.audio.ImpactSound;
+import engine.audio.ReverbPreset;
+import engine.audio.ReverbZone;
 import engine.core.Engine;
 import engine.core.Game;
 import engine.core.Settings;
@@ -29,15 +31,20 @@ import engine.ecs.Entity;
 import engine.ecs.Spinner;
 import engine.input.FirstPersonController;
 import engine.input.Gamepad;
+import engine.input.Rebinder;
 import engine.messaging.IMessageReceiver;
+import engine.navigation.NavAgent;
+import engine.navigation.NavGrid;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
 import engine.physics.BallJoint;
 import engine.physics.BoxCollider;
 import engine.physics.CapsuleCollider;
 import engine.physics.CollisionEvent;
+import engine.physics.CharacterController;
 import engine.physics.HingeJoint;
 import engine.physics.MeshCollider;
+import engine.physics.PhysicsSystem;
 import engine.physics.Rigidbody;
 import engine.physics.SphereCollider;
 import engine.render.Camera;
@@ -46,11 +53,15 @@ import engine.render.Light;
 import engine.render.Material;
 import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
+import engine.render.MeshSimplifier;
 import engine.render.ParticleEmitter;
+import engine.render.ReflectionProbe;
 import engine.render.Sky;
 import engine.render.UiCanvas;
 import engine.resources.HdrLoader;
 import engine.serialization.Prefab;
+import engine.terrain.Heightfield;
+import engine.terrain.Terrain;
 import engine.serialization.SceneSerializer;
 import engine.ui.Gui;
 import lombok.extern.slf4j.Slf4j;
@@ -80,6 +91,14 @@ public class DemoGame implements Game {
   private String aim = "";
   private Gui gui;
   private FirstPersonController controller;
+  private CharacterController walker;
+  private Rebinder rebinder;
+  private Entity companion;
+  private NavGrid navigation;
+  /** Child of the player with the camera and the listener. */
+  private Entity head;
+  /** Small bodies the player walks through instead of being blocked by. */
+  private static final int LAYER_DEBRIS = 1;
   private String playerName = "Player";
   private String notes = "";
   /** Recent collision events of the player, newest last (shown in a scrolling list). */
@@ -96,6 +115,7 @@ public class DemoGame implements Game {
     engine.input().bind("save_scene", KeyEvent.VK_F5);
     engine.input().bind("pause", KeyEvent.VK_P);
     engine.input().bind("fullscreen", KeyEvent.VK_F11);
+    engine.input().bind("fly", KeyEvent.VK_V);
     engine.input().bindGamepad("pause", Gamepad.BUTTON_START);
     engine.input().bindGamepad("spawn", Gamepad.BUTTON_RIGHT_BUMPER, Gamepad.BUTTON_X);
     engine.input().bindGamepad("poke", Gamepad.BUTTON_A);
@@ -110,23 +130,31 @@ public class DemoGame implements Game {
     scene.add(sun);
     setUpSky(engine);
 
+    // the player walks (a capsule moved by a CharacterController); the camera is in its head, which looks up and down
     this.player = new Entity("player");
-    this.player.transform().position().set(0f, 1.5f, 8f);
-    this.player.add(new Camera());
-    this.player.add(new AudioListener());
+    this.player.transform().position().set(0f, -0.09f, 8f); // feet on the ground at y = -1
+    this.player.add(new CapsuleCollider(0.3f, 0.6f));
+    this.walker = this.player.add(new CharacterController());
+    this.walker.layerMask = ~PhysicsSystem.layers(LAYER_DEBRIS); // walks through the small debris
+    this.head = new Entity("head");
+    this.head.transform().position().set(0f, 0.7f, 0f); // eyes 1.6 m above the feet
+    this.head.transform().setParent(this.player.transform());
+    this.head.add(new Camera());
+    this.head.add(new AudioListener());
     final var controller = this.player.add(new FirstPersonController(engine.input()));
+    controller.head = this.head;
     this.controller = controller;
-    // -Ddemo.camera=x,y,z,yaw,pitch starts somewhere else (handy for screenshots)
+    // -Ddemo.camera=x,y,z,yaw,pitch starts somewhere else, flying (handy for screenshots)
     final var start = System.getProperty("demo.camera");
     if (start != null) {
       final var v = start.split(",");
-      this.player.transform().position().set(Float.parseFloat(v[0]), Float.parseFloat(v[1]), Float.parseFloat(v[2]));
+      this.player.transform().position().set(Float.parseFloat(v[0]), Float.parseFloat(v[1]) - 0.7f,
+          Float.parseFloat(v[2]));
       controller.setLook(v.length > 3 ? Float.parseFloat(v[3]) : 0f, v.length > 4 ? Float.parseFloat(v[4]) : 0f);
+      this.walker.setEnabled(false);
     }
-    this.player.add(new SphereCollider(0.4f));
-    final var playerBody = this.player.add(new Rigidbody());
-    playerBody.kinematic = true;
     scene.add(this.player);
+    scene.add(this.head);
 
     final var ground = new Entity("ground");
     ground.transform().setEulerDegrees(-90f, 0f, 0f);
@@ -137,6 +165,20 @@ public class DemoGame implements Game {
     grass.normalScale = 0.8f;
     ground.add(new MeshRenderer(res.mesh(MeshFactory.quad(60f, 60f, 24f, 24f)), grass)).setStaticGeometry(true);
     scene.add(ground);
+
+    // hills behind the field: a heightfield terrain (chunks with levels of detail and colliders), flat where it meets
+    // the ground at z = -30 and rising with distance
+    final var hills = Heightfield.generate(121, 71, 1f, (x, z) -> {
+      final float rise = Math.max(0f, 70f - z); // metres from the field's edge
+      final float noise = Heightfield.fbm(x, z, 0.03f, 5, 11L);
+      return Math.min(1f, rise / 12f) * (0.18f * rise * (0.7f + 0.3f * noise) + 3f * noise);
+    });
+    final var hillMaterial = new Material().color(0.33f, 0.5f, 0.27f, 1f);
+    hillMaterial.specular = 0f;
+    hillMaterial.normalMap = grass.normalMap;
+    hillMaterial.normalScale = 0.8f;
+    Terrain.build(scene, res, hills, hillMaterial, new Terrain.Settings(), "hills").transform().position()
+        .set(-60f, -1f, -100f);
 
     final var groundBody = new Entity("ground-collider");
     groundBody.transform().position().set(0f, -1.5f, 0f);
@@ -259,6 +301,8 @@ public class DemoGame implements Game {
     this.sparks.lifetimeMin = 0.3f;
     this.sparks.lifetimeMax = 0.7f;
     this.sparks.acceleration.set(0f, -9.81f, 0f);
+    this.sparks.collider = engine.physics().particleCollider(scene, ~0); // they bounce off what they hit
+    this.sparks.bounce = 0.35f;
     this.sparks.drag = 1f;
     this.sparks.softness = 0f;
     scene.add(sparkEntity);
@@ -299,7 +343,11 @@ public class DemoGame implements Game {
     }
 
     // physically based materials: rougher from left to right, the back row metallic (gold)
-    final var sphereMesh = res.mesh(MeshFactory.sphere(0.35f, 32, 16));
+    // with coarser levels of detail from 12 and 30 m on (a quarter, then a tenth of the triangles)
+    final var sphereData = MeshFactory.sphere(0.35f, 32, 16);
+    final var sphereMesh = res.mesh(sphereData);
+    final var sphereMid = res.mesh(MeshSimplifier.simplify(sphereData, 0.25f));
+    final var sphereLow = res.mesh(MeshSimplifier.simplify(sphereData, 0.1f));
     for (int i = 0; i < 5; i++) {
       for (int row = 0; row < 2; row++) {
         final var m = new Material();
@@ -310,7 +358,8 @@ public class DemoGame implements Game {
         }
         final var ball = new Entity("pbr-sphere");
         ball.transform().position().set(-2f + i, -0.6f, 4.5f - row);
-        ball.add(new MeshRenderer(sphereMesh, m)).setStaticGeometry(true);
+        ball.add(new MeshRenderer(sphereMesh, m)).setStaticGeometry(true)
+            .addLod(12f, sphereMid).addLod(30f, sphereLow);
         scene.add(ball);
       }
     }
@@ -333,7 +382,7 @@ public class DemoGame implements Game {
       scene.add(pane);
     }
 
-    // a kinematic turntable turned by code (see update): the crates on it ride along
+    // a kinematic turntable turned by code (see update): the crates on it ride along, and so does the player
     this.turntable = new Entity("turntable");
     this.turntable.transform().position().set(9f, -0.75f, -6f);
     this.turntable.transform().scale().set(2.5f, 0.25f, 2.5f);
@@ -344,6 +393,8 @@ public class DemoGame implements Game {
     for (int i = 0; i < 3; i++) {
       spawnCrate(engine, new Vector3f(9f + 1.6f * (i - 1), 0f, -5f + (i == 1 ? -1.2f : 0f)), new Vector3f());
     }
+
+    buildRoom(engine, new Vector3f(15f, -1f, 6f));
 
     // a compound body: two spheres and a bar on one rigidbody, turning about their common centre of mass
     final var ballMesh = res.mesh(MeshFactory.sphere(1f, 24, 12));
@@ -376,7 +427,8 @@ public class DemoGame implements Game {
     scene.add(small);
     scene.add(bar);
 
-    // a chain of capsules hanging from a fixed point by ball joints; push it with E
+    // a chain of capsules hanging from a fixed point by ball joints; push it with E. Its links are on the debris
+    // layer, which the player's controller ignores
     final var linkMesh = res.mesh(MeshFactory.cube(1f));
     final var linkMaterial = new Material().color(0.85f, 0.85f, 0.9f, 1f).pbr(1f, 0.3f);
     Entity previous = null;
@@ -386,7 +438,7 @@ public class DemoGame implements Game {
       link.transform().setEulerDegrees(0f, 0f, 90f);
       link.transform().scale().set(0.12f, 0.5f, 0.12f);
       link.add(new MeshRenderer(linkMesh, linkMaterial));
-      link.add(new CapsuleCollider(0.5f, 0.5f));
+      link.add(new CapsuleCollider(0.5f, 0.5f)).layer = LAYER_DEBRIS; // the player walks through it
       link.add(new Rigidbody()).linearDamping = 0.3f;
       scene.add(link);
       final var joint = link.add(new BallJoint());
@@ -450,6 +502,9 @@ public class DemoGame implements Game {
         if (Math.abs(x) < 4 && z > -6 && z < 4) {
           continue; // keep the play area free
         }
+        if (x * 4 > 11 && x * 4 < 19 && z * 4 > 2 && z * 4 < 10) {
+          continue; // and the room with the reflection probe
+        }
         final var pillar = new Entity("pillar");
         pillar.transform().position().set(x * 4f, 0f + ((x * 7 + z * 13) & 3) * 0.5f, z * 4f);
         pillar.transform().scale().set(1f, 4f + ((x * 3 + z * 5) & 3), 1f);
@@ -479,6 +534,19 @@ public class DemoGame implements Game {
       saveScene(engine, Path.of(System.getProperty("demo.saveScene")));
     }
 
+    // a companion that walks after the player round obstacles (its navigation grid is baked at the first update)
+    this.companion = new Entity("companion");
+    this.companion.transform().position().set(-4f, -0.09f, 10f);
+    this.companion.add(new CapsuleCollider(0.3f, 0.6f));
+    this.companion.add(new CharacterController());
+    final var look = new Entity("companion-body");
+    look.transform().setParent(this.companion.transform());
+    look.transform().scale().set(0.6f, 1.8f, 0.6f);
+    look.add(new MeshRenderer(res.mesh(MeshFactory.sphere(0.5f, 20, 12)),
+        new Material().color(0.95f, 0.55f, 0.15f, 1f).pbr(0f, 0.5f)));
+    scene.add(this.companion);
+    scene.add(look);
+
     loadSettings(engine);
     if (Boolean.getBoolean("demo.paused")) { // -Ddemo.paused=true: start in the pause menu (screenshots)
       engine.states().push(new PauseState());
@@ -486,8 +554,9 @@ public class DemoGame implements Game {
 
     // a settings panel while the mouse is free (Esc); clicks on it do not recapture the mouse
     this.gui = new Gui(engine.input());
+    this.rebinder = new Rebinder(engine.input());
     engine.setClickCapturesMouse(() -> !this.gui.wantsMouse());
-    engine.addOverlay((ui, width, height) -> drawPanel(engine, ui, width));
+    engine.addOverlay((ui, width, height) -> drawPanel(engine, ui, width, height));
   }
 
   private void loadSettings(Engine engine) {
@@ -505,6 +574,7 @@ public class DemoGame implements Game {
     for (AudioBus bus : AudioBus.values()) {
       mixer.setVolume(bus, this.settings.getFloat("audio." + bus.name().toLowerCase(Locale.ROOT), mixer.volume(bus)));
     }
+    engine.input().loadBindings(this.settings, "input."); // the player's own keys over the defaults
   }
 
   @Override
@@ -514,6 +584,7 @@ public class DemoGame implements Game {
     for (AudioBus bus : AudioBus.values()) {
       this.settings.set("audio." + bus.name().toLowerCase(Locale.ROOT), mixer.volume(bus));
     }
+    engine.input().saveBindings(this.settings, "input.");
     try {
       this.settings.save();
     } catch (IOException e) {
@@ -541,7 +612,36 @@ public class DemoGame implements Game {
     }
   }
 
-  private void drawPanel(Engine engine, UiCanvas ui, int width) {
+  /**
+   * Bottom left, beside the settings: every action with its keys and buttons, and a button to change them (the next
+   * key or gamepad button pressed replaces the keys, or the buttons; Esc cancels). Saved with the settings.
+   */
+  private void drawControls(Engine engine, int height) {
+    final var g = this.gui;
+    final var input = engine.input();
+    g.beginPanel("Controls", 10f, height - 250f, 330f);
+    if (this.rebinder.isWaiting()) {
+      g.label("Press a key or button for " + this.rebinder.action() + " (Esc cancels)");
+    } else if (!this.rebinder.lastConflicts().isEmpty()) {
+      g.label("Also used by " + String.join(", ", this.rebinder.lastConflicts()));
+    } else {
+      g.label("Click an action to change its keys");
+    }
+    g.beginScroll("controls", 160f);
+    for (String action : input.actions()) {
+      if (action.equals("release_mouse") || action.equals("toggle_debug")) {
+        continue; // the engine's own
+      }
+      final var keys = input.describe(action);
+      if (g.button(action + ": " + (keys.isEmpty() ? "-" : keys) + "##" + action)) {
+        this.rebinder.start(action, true);
+      }
+    }
+    g.endScroll();
+    g.endPanel();
+  }
+
+  private void drawPanel(Engine engine, UiCanvas ui, int width, int height) {
     final boolean free = !engine.isMouseCaptured();
     this.gui.begin(ui, width, 0, free);
     if (free) {
@@ -551,9 +651,9 @@ public class DemoGame implements Game {
       g.label("Grüße, " + this.playerName + "! – Ünïcödé ½ € ✓");
       g.row(2);
       if (g.button("Throw crate")) {
-        final var t = this.player.transform();
-        final var forward = t.forward(new Vector3f());
-        spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), forward.mul(10f));
+        final var t = this.head.transform();
+        final var forward = t.worldRotation(new Quaternionf()).transform(new Vector3f(0f, 0f, -1f));
+        spawnCrate(engine, t.worldPosition(new Vector3f()).fma(1.5f, forward), forward.mul(10f));
         engine.audio().play2D(this.click, 0.6f, AudioBus.UI);
       }
       if (g.button("Wake all")) {
@@ -563,6 +663,7 @@ public class DemoGame implements Game {
       settings.occlusionCulling = g.checkbox("Occlusion culling", settings.occlusionCulling);
       settings.maxPointShadows = g.checkbox("Point light shadows", settings.maxPointShadows > 0) ? 4 : 0;
       settings.debugCascades = g.checkbox("Tint shadow cascades", settings.debugCascades);
+      settings.ambientOcclusion = g.checkbox("Ambient occlusion", settings.ambientOcclusion);
       g.row(2);
       settings.antiAliasing = g.checkbox("FXAA", settings.antiAliasing);
       settings.orderIndependentTransparency = g.checkbox("OIT", settings.orderIndependentTransparency);
@@ -597,6 +698,7 @@ public class DemoGame implements Game {
       }
       g.endScroll();
       g.endPanel();
+      drawControls(engine, height);
     }
     this.gui.end();
   }
@@ -658,6 +760,8 @@ public class DemoGame implements Game {
     sparks.shapeRadius = 0.15f;
     sparks.acceleration.set(0f, -1.2f, 0f);
     sparks.drag = 0.6f;
+    sparks.collider = engine.physics().particleCollider(scene, ~0);
+    sparks.dieOnCollision = true; // embers that come down go out on the ground
     sparks.sizeStart = 0.05f;
     sparks.sizeEnd = 0.03f;
     sparks.colorStart.set(1f, 0.7f, 0.3f, 1f);
@@ -682,6 +786,7 @@ public class DemoGame implements Game {
     smoke.shapeRadius = 0.15f;
     smoke.acceleration.set(0.15f, 0.1f, 0f); // a light breeze
     smoke.drag = 0.2f;
+    smoke.lit = 1f; // grey by daylight, orange near the fire
     smoke.sizeStart = 0.4f;
     smoke.sizeEnd = 2.2f;
     smoke.sizeVariation = 0.2f;
@@ -731,8 +836,79 @@ public class DemoGame implements Game {
     }
   }
 
+  /**
+   * A small room open to -x with a polished floor and a glowing panel, and a reflection probe that matches its walls:
+   * inside, the floor mirrors the room (box-projected) instead of the sky, and the sky's ambient light is replaced by
+   * the room's own. A reverb zone of the same size makes it sound like a room.
+   */
+  private void buildRoom(Engine engine, Vector3f floorCentre) {
+    final var res = engine.resources();
+    final var scene = engine.scene();
+    final var cube = res.mesh(MeshFactory.cube(0.5f)); // a unit cube, scaled to each part's size
+    final float w = 6f;
+    final float h = 3f;
+    final var plaster = new Material().color(0.85f, 0.82f, 0.75f, 1f).pbr(0f, 0.8f);
+    final var red = new Material().color(0.7f, 0.12f, 0.1f, 1f).pbr(0f, 0.6f);
+    final var floor = new Material().color(0.2f, 0.22f, 0.25f, 1f).pbr(0f, 0.08f);
+    // floor, ceiling and three walls: {centre offset x, y, z, size x, y, z}
+    final float[][] parts = { { 0, 0.05f, 0, w, 0.1f, w }, { 0, h, 0, w, 0.1f, w }, { w / 2, h / 2, 0, 0.2f, h, w },
+        { 0, h / 2, -w / 2, w, h, 0.2f }, { 0, h / 2, w / 2, w, h, 0.2f } };
+    for (int i = 0; i < parts.length; i++) {
+      final float[] q = parts[i];
+      final var part = new Entity("room-" + i);
+      part.transform().position().set(floorCentre.x + q[0], floorCentre.y + q[1], floorCentre.z + q[2]);
+      part.transform().scale().set(q[3], q[4], q[5]);
+      part.add(new MeshRenderer(cube, i == 0 ? floor : i == 3 ? red : plaster)).setStaticGeometry(true);
+      part.add(new BoxCollider(0.5f, 0.5f, 0.5f));
+      scene.add(part);
+    }
+    final var panel = new Entity("room-panel");
+    panel.transform().position().set(floorCentre.x + w / 2 - 0.15f, floorCentre.y + 1.6f, floorCentre.z);
+    panel.transform().scale().set(0.05f, 1.2f, 2.4f);
+    final var glow = new Material().color(0.2f, 0.6f, 1f, 1f);
+    glow.emissive.set(0.4f, 1.2f, 2.5f);
+    panel.add(new MeshRenderer(cube, glow)).setStaticGeometry(true);
+    scene.add(panel);
+    final var probe = new Entity("room-probe");
+    probe.transform().position().set(floorCentre.x, floorCentre.y + h / 2, floorCentre.z);
+    final var p = probe.add(new ReflectionProbe(w, h, w));
+    p.fade = 0.6f;
+    p.setEnabled(!"false".equals(System.getProperty("demo.probe"))); // -Ddemo.probe=false: compare without it
+    scene.add(probe);
+    // and it sounds like a room: positioned sounds reverberate while the listener is inside
+    probe.add(new ReverbZone(ReverbPreset.ROOM, w, h, w)).fade = 0.6f;
+  }
+
+  /** The companion keeps within a few metres of the player, planning its way on the navigation grid. */
+  private void followPlayer(Engine engine) {
+    if (this.navigation == null) {
+      final long t0 = System.nanoTime();
+      final var settings = new NavGrid.Settings();
+      settings.layerMask = ~PhysicsSystem.layers(LAYER_DEBRIS);
+      this.navigation = NavGrid.bake(engine.physics(), engine.scene(), settings, -30f, -2f, -30f, 30f, 8f, 30f);
+      log.info("Baked a navigation grid of {} x {} cells ({} walkable) in {} ms", this.navigation.width(),
+          this.navigation.depth(), this.navigation.walkableCount(), (System.nanoTime() - t0) / 1_000_000);
+      final var agent = this.companion.add(new NavAgent(this.navigation));
+      agent.speed = 3.5f;
+      agent.stopDistance = 2.5f;
+    }
+    final var agent = this.companion.get(NavAgent.class);
+    final var target = this.player.transform().worldPosition(new Vector3f()).sub(0f, 0.9f, 0f);
+    final var at = this.companion.transform().position();
+    final boolean far = Math.hypot(target.x - at.x, target.z - at.z) > 3.5f;
+    if (far && (!agent.hasDestination() || agent.path().isEmpty()
+        || agent.path().get(agent.path().size() - 1).distance(target) > 1.5f)) {
+      agent.setDestination(target); // plans again only when the player moved on
+    }
+  }
+
   @Override
   public void update(Engine engine, double dt) {
+    // typing a name, or choosing a key for an action, must not walk around or trigger anything
+    this.controller.setEnabled(!this.gui.wantsKeyboard() && !this.rebinder.isWaiting());
+    if (this.rebinder.update() || this.rebinder.isWaiting()) {
+      return; // a key that was just bound does not act in the same step
+    }
     if (engine.input().wasActionPressed("fullscreen")) {
       engine.setFullscreen(!engine.isFullscreen());
     }
@@ -744,6 +920,7 @@ public class DemoGame implements Game {
       return;
     }
     this.turntable.transform().rotation().rotateY((float) dt * this.turntableSpeed);
+    followPlayer(engine);
     this.danceTime += (float) dt;
     if (this.danceTime > 3f) { // every three seconds the right tube changes its dance, blending over half a second
       this.danceTime = 0f;
@@ -753,24 +930,29 @@ public class DemoGame implements Game {
       this.dancer.remove(pulse); // keep the pulse on top, at its weight
       this.dancer.blend(this.dancer.clip("pulse"), 0.5f, AnimationLayer.Loop.PING_PONG);
     }
-    this.controller.setEnabled(!this.gui.wantsKeyboard()); // typing a name must not walk around
-    final var t = this.player.transform();
-    final var forward = t.forward(new Vector3f());
+    if (engine.input().wasActionPressed("fly")) { // V: fly through everything, or walk again
+      this.walker.setEnabled(!this.walker.isEnabled());
+    }
+    final var t = this.head.transform();
+    final var forward = t.worldRotation(new Quaternionf()).transform(new Vector3f(0f, 0f, -1f));
     if (engine.input().wasActionPressed("save_scene")) { // F5: everything with a serializer, as JSON
       saveScene(engine, Path.of("demo-scene.json"));
     }
     if (engine.input().wasActionPressed("spawn")) {
-      spawnCrate(engine, t.position().fma(1.5f, forward, new Vector3f()), new Vector3f(forward).mul(18f));
-      engine.audio().play(this.whoosh, t.position().fma(0.8f, forward, new Vector3f()), 0.7f, 1f, AudioBus.EFFECTS, 1);
+      engine.input().rumble(0.2f, 0.5f, 0.12f); // a light kick on gamepads that have motors
+      final var eye = t.worldPosition(new Vector3f());
+      spawnCrate(engine, new Vector3f(eye).fma(1.5f, forward), new Vector3f(forward).mul(18f));
+      engine.audio().play(this.whoosh, eye.fma(0.8f, forward), 0.7f, 1f, AudioBus.EFFECTS, 1);
     }
 
     // what is the crosshair pointing at? E pushes it (wakes sleeping bodies)
-    final var origin = t.position();
+    final var origin = t.worldPosition(new Vector3f());
     final var hit = engine.physics().raycast(engine.scene(), origin, forward, 60f,
         c -> c.entity() != this.player && !c.trigger);
     if (hit.isPresent()) {
       this.aim = String.format(Locale.ROOT, "%s  %.1f m", hit.get().entity().name(), hit.get().distance());
       if (engine.input().wasActionPressed("poke")) {
+        engine.input().rumble(0.6f, 0.3f, 0.2f);
         hit.get().entity().find(Rigidbody.class).ifPresent(body -> {
           body.wakeUp();
           body.velocity.fma(8f, forward);
@@ -793,7 +975,7 @@ public class DemoGame implements Game {
       ui.drawText(this.aim, cx + 15f, cy + 9f, 1.25f, 0f, 0f, 0f, 0.8f);
       ui.drawText(this.aim, cx + 14f, cy + 8f, 1.25f, 1f, 1f, 1f, 1f);
     }
-    final var help = "WASD move  Space/Shift up/down  F throw crate  E push  F3 debug  F5 save scene  P pause  F11 fullscreen  Esc settings"
+    final var help = "WASD walk  Space jump  V fly (Space/Shift up/down)  F throw crate  E push  F3 debug  F5 save scene  P pause  F11 fullscreen  Esc settings"
         + (engine.input().firstGamepad() != null ? "  Pad: sticks, triggers, RB throw, A push" : "");
     ui.drawText(help, 11f, height - ui.lineHeight(1f) - 9f, 1f, 0f, 0f, 0f, 0.8f);
     ui.drawText(help, 10f, height - ui.lineHeight(1f) - 10f, 1f, 1f, 1f, 1f, 1f);

@@ -75,6 +75,18 @@ class ResourceTest {
       return () -> this.disposed++;
     }
 
+    final List<Object> updated = new ArrayList<>();
+
+    @Override
+    public void updateTexture(GpuTexture texture, ImageData image) {
+      this.updated.add(image);
+    }
+
+    @Override
+    public void updateMesh(GpuMesh mesh, MeshData data) {
+      this.updated.add(data);
+    }
+
     @Override
     public GpuTexture whiteTexture() {
       return this.white;

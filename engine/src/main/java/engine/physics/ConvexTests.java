@@ -1017,6 +1017,22 @@ final class ConvexTests {
     return m;
   }
 
+  /**
+   * Gap between the surfaces of A and B (shape casts): fills {@code normal} (unit, from A towards B) and
+   * {@code pointOnB} (the closest point of B's surface). Negative when the surfaces overlap but the cores do not;
+   * {@code -Float.MAX_VALUE} when the cores overlap (then neither vector is set).
+   */
+  static float surfaceDistance(Shape a, Shape b, Vector3f normal, Vector3f pointOnB) {
+    final var sc = SCRATCH.get();
+    final float dist = gjk(a, b, sc);
+    if (dist <= 1e-6f) {
+      return -Float.MAX_VALUE;
+    }
+    normal.set(sc.cb).sub(sc.ca).div(dist);
+    pointOnB.set(sc.cb).fma(-b.radius(), normal);
+    return dist - a.radius() - b.radius();
+  }
+
   /** True if the shape overlaps the ball (overlapSphere queries). */
   static boolean overlapsBall(Shape s, Vector3f c, float r) {
     final var sc = SCRATCH.get();

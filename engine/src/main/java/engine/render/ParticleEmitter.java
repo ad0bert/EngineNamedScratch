@@ -125,6 +125,24 @@ public class ParticleEmitter extends Component {
    * {@link #acceleration} is local too.
    */
   public boolean localSpace;
+  /**
+   * How much the scene's light colours the particles: 0 (the default) draws them in their own colour, as light
+   * (sparks, fire); 1 lights them like smoke or dust, by the lights and the ambient or sky light at the emitter's
+   * centre (no shadows, one value for the whole emitter).
+   */
+  public float lit;
+  /**
+   * Collides the particles with the world (world-space emitters only): each step's motion is tested along its
+   * segment, and a particle that hits bounces ({@link #bounce}, {@link #collisionFriction}) or dies
+   * ({@link #dieOnCollision}). {@code PhysicsSystem.particleCollider} makes one; null (the default) passes through.
+   */
+  public ParticleCollider collider;
+  /** Share of the speed into a surface kept after a hit (0: stops on it, 1: perfect bounce). */
+  public float bounce = 0.3f;
+  /** Share of the speed along a surface lost at a hit. */
+  public float collisionFriction = 0.2f;
+  /** Particles die where they hit something (rain, sparks that should not skid). */
+  public boolean dieOnCollision;
 
   private float[] data = new float[0];
   private int count;
@@ -147,6 +165,7 @@ public class ParticleEmitter extends Component {
   private final Vector4f linearStart = new Vector4f();
   private final Vector4f linearEnd = new Vector4f();
   private long[] order = new long[0];
+  private final float[] hit = new float[6];
 
   /** Fixes the random sequence, for effects that must look the same every time (and for tests). */
   public ParticleEmitter seed(long seed) {
@@ -227,8 +246,43 @@ public class ParticleEmitter extends Component {
       d[o + Y] += d[o + VY] * dt;
       d[o + Z] += d[o + VZ] * dt;
       d[o + ROT] += d[o + SPIN] * dt;
+      if (this.collider != null && !this.localSpace && collide(d, o)) {
+        this.count--;
+        System.arraycopy(d, this.count * STRIDE, d, o, STRIDE);
+        continue;
+      }
       i++;
     }
+  }
+
+  /** Tests the particle's last move against the world; true if it hit and must die. */
+  private boolean collide(float[] d, int o) {
+    final float[] h = this.hit;
+    if (!this.collider.collide(d[o + PX], d[o + PY], d[o + PZ], d[o + X], d[o + Y], d[o + Z], h)) {
+      return false;
+    }
+    if (this.dieOnCollision) {
+      return true;
+    }
+    final float nx = h[3];
+    final float ny = h[4];
+    final float nz = h[5];
+    // just off the surface, then the velocity reflected: its normal part by the bounce, the rest by the friction
+    d[o + X] = h[0] + nx * 1e-3f;
+    d[o + Y] = h[1] + ny * 1e-3f;
+    d[o + Z] = h[2] + nz * 1e-3f;
+    final float vn = d[o + VX] * nx + d[o + VY] * ny + d[o + VZ] * nz;
+    if (vn < 0f) {
+      final float keepAlong = 1f - Math.max(0f, Math.min(1f, this.collisionFriction));
+      final float tx = d[o + VX] - vn * nx;
+      final float ty = d[o + VY] - vn * ny;
+      final float tz = d[o + VZ] - vn * nz;
+      final float out = -vn * Math.max(0f, this.bounce);
+      d[o + VX] = tx * keepAlong + out * nx;
+      d[o + VY] = ty * keepAlong + out * ny;
+      d[o + VZ] = tz * keepAlong + out * nz;
+    }
+    return false;
   }
 
   private void spawn(float dt) {

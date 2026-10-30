@@ -23,16 +23,26 @@ final class GlMesh implements GpuMesh {
 
   @Getter private final int id = NEXT_ID.incrementAndGet();
   private final Supplier<GL3> glSupplier;
-  @Getter private final MeshData data;
-  private final int vao;
-  private final int vbo;
-  private final int ebo;
-  private final int skinVbo;
-  private final int instanceVbo;
-  private final int mode;
+  @Getter private MeshData data;
+  private int vao;
+  private int vbo;
+  private int ebo;
+  private int skinVbo;
+  private int instanceVbo;
+  private int mode;
 
   GlMesh(Supplier<GL3> glSupplier, MeshData data) {
     this.glSupplier = glSupplier;
+    build(data);
+  }
+
+  /** New vertices and indices for the same handle (hot reloading): the buffers are made again. */
+  void replace(MeshData newData) {
+    dispose();
+    build(newData);
+  }
+
+  private void build(MeshData data) {
     this.data = data;
     this.mode = data.drawMode() == MeshData.DrawMode.POINTS ? GL3.GL_POINTS : GL3.GL_TRIANGLES;
     final var gl = glSupplier.get();

@@ -1,10 +1,14 @@
 package engine.serialization;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import engine.animation.AnimationLayer;
+import engine.animation.Animator;
 import engine.audio.AudioListener;
 import engine.audio.AudioSource;
 import engine.audio.ImpactSound;
@@ -14,6 +18,7 @@ import engine.input.FirstPersonController;
 import engine.physics.BallJoint;
 import engine.physics.BoxCollider;
 import engine.physics.CapsuleCollider;
+import engine.physics.CharacterController;
 import engine.physics.DistanceJoint;
 import engine.physics.HingeJoint;
 import engine.physics.MeshCollider;
@@ -23,6 +28,7 @@ import engine.render.Camera;
 import engine.render.Light;
 import engine.render.MeshRenderer;
 import engine.render.ParticleEmitter;
+import engine.render.ReflectionProbe;
 
 /**
  * Which component types can be saved, and how. {@link #defaults()} knows the engine's own components; games register
@@ -32,22 +38,29 @@ public class ComponentRegistry {
   private final Map<String, ComponentSerializer<?>> byType = new LinkedHashMap<>();
   private final Map<Class<?>, ComponentSerializer<?>> byClass = new HashMap<>();
 
-  /** The engine's components: rendering, lights, camera, physics (colliders, bodies, joints), audio, controllers. */
+  /**
+   * The engine's components: rendering (skins included), lights, camera, physics (colliders, bodies, joints,
+   * characters), audio, animators, controllers.
+   */
   public static ComponentRegistry defaults() {
     final var r = new ComponentRegistry();
     r.register(new MeshRendererSerializer());
     r.register(new FieldSerializer<>("Camera", Camera.class, ctx -> new Camera()));
     r.register(new FieldSerializer<>("Light", Light.class, ctx -> new Light()));
+    r.register(new FieldSerializer<>("ReflectionProbe", ReflectionProbe.class, ctx -> new ReflectionProbe()));
     r.register(new FieldSerializer<>("ParticleEmitter", ParticleEmitter.class, ctx -> new ParticleEmitter()));
     r.register(new FieldSerializer<>("Rigidbody", Rigidbody.class, ctx -> new Rigidbody()));
     r.register(new FieldSerializer<>("BoxCollider", BoxCollider.class, ctx -> new BoxCollider()));
     r.register(new FieldSerializer<>("SphereCollider", SphereCollider.class, ctx -> new SphereCollider()));
     r.register(new FieldSerializer<>("CapsuleCollider", CapsuleCollider.class, ctx -> new CapsuleCollider()));
+    r.register(new FieldSerializer<>("CharacterController", CharacterController.class,
+        ctx -> new CharacterController()));
     r.register(new MeshColliderSerializer());
     r.register(new FieldSerializer<>("BallJoint", BallJoint.class, ctx -> new BallJoint()));
     r.register(new FieldSerializer<>("HingeJoint", HingeJoint.class, ctx -> new HingeJoint()));
     r.register(new FieldSerializer<>("DistanceJoint", DistanceJoint.class, ctx -> new DistanceJoint()));
-    r.register(new FieldSerializer<>("AudioSource", AudioSource.class, ctx -> new AudioSource()));
+    r.register(new AudioSourceSerializer());
+    r.register(new AnimatorSerializer());
     r.register(new FieldSerializer<>("AudioListener", AudioListener.class, ctx -> new AudioListener()));
     r.register(new FieldSerializer<>("ImpactSound", ImpactSound.class, ctx -> new ImpactSound()));
     r.register(new FieldSerializer<>("Spinner", Spinner.class, ctx -> new Spinner(0f, 0f, 0f)));
@@ -95,6 +108,28 @@ public class ComponentRegistry {
       out.put("material", ctx.materialId(r.material));
       out.put("castShadows", r.castShadows);
       out.put("staticGeometry", r.isStaticGeometry());
+      if (r.cullDistance > 0f) {
+        out.put("cullDistance", r.cullDistance);
+      }
+      final List<Object> lods = new ArrayList<>();
+      for (int i = 0; i < r.lodCount(); i++) {
+        final var key = ctx.key(r.lodMesh(i));
+        if (key != null) { // a level without a key is left out: the nearer one is drawn further
+          final Map<String, Object> lod = new LinkedHashMap<>();
+          lod.put("distance", r.lodDistance(i));
+          lod.put("mesh", key);
+          lods.add(lod);
+        }
+      }
+      if (!lods.isEmpty()) {
+        out.put("lods", lods);
+      }
+      if (r.skin != null) {
+        final var skin = ctx.skinId(r.skin);
+        if (skin != null) {
+          out.put("skin", skin);
+        }
+      }
       return out;
     }
 
@@ -107,6 +142,18 @@ public class ComponentRegistry {
       final var r = new MeshRenderer(mesh, ctx.material(data.get("material")));
       r.castShadows = !Boolean.FALSE.equals(data.get("castShadows"));
       r.setStaticGeometry(Boolean.TRUE.equals(data.get("staticGeometry")));
+      r.cullDistance = Json.asFloat(data.getOrDefault("cullDistance", 0.0));
+      for (final Object o : Json.asList(data.getOrDefault("lods", List.of()))) {
+        final var lod = Json.asObject(o);
+        final var m = ctx.mesh((String) lod.get("mesh"));
+        if (m == null) {
+          throw new IllegalArgumentException("mesh " + lod.get("mesh") + " not found");
+        }
+        r.addLod(Json.asFloat(lod.get("distance")), m);
+      }
+      if (data.get("skin") != null) {
+        ctx.afterRead(() -> r.skin = ctx.skin(data.get("skin"))); // the joints may come later in the file
+      }
       return r;
     }
   }
@@ -137,6 +184,94 @@ public class ComponentRegistry {
       final var c = new MeshCollider(Json.asFloats(data.get("positions")), Json.asInts(data.get("indices")));
       Fields.read(c, data, ctx);
       return c;
+    }
+  }
+
+  /**
+   * The settings, and whether it is playing or paused and where: a loaded source carries on from there ({@code
+   * playOnStart} does not restart it).
+   */
+  static final class AudioSourceSerializer extends FieldSerializer<AudioSource> {
+    AudioSourceSerializer() {
+      super("AudioSource", AudioSource.class, ctx -> new AudioSource());
+    }
+
+    @Override
+    protected void writeExtra(AudioSource s, Map<String, Object> out, SerializationContext ctx) {
+      if (s.isPlaying() || s.isPaused()) {
+        out.put(s.isPaused() ? "paused" : "playing", true);
+        out.put("time", s.time());
+      }
+    }
+
+    @Override
+    protected void readExtra(AudioSource s, Map<String, Object> data, SerializationContext ctx) {
+      final boolean paused = Boolean.TRUE.equals(data.get("paused"));
+      if ((paused || Boolean.TRUE.equals(data.get("playing"))) && s.clip != null) {
+        s.play(Json.asFloat(data.getOrDefault("time", 0.0)));
+        if (paused) {
+          s.pause();
+        }
+      }
+    }
+  }
+
+  /**
+   * The clip library and the layers playing, each with its clip, loop mode, speed, weight, clock and fade; clips are
+   * written once per file and shared (see {@link SerializationContext#clipId}).
+   */
+  static final class AnimatorSerializer implements ComponentSerializer<Animator> {
+    @Override
+    public String type() {
+      return "Animator";
+    }
+
+    @Override
+    public Class<Animator> componentClass() {
+      return Animator.class;
+    }
+
+    @Override
+    public Map<String, Object> write(Animator a, SerializationContext ctx) {
+      final Map<String, Object> out = new LinkedHashMap<>();
+      out.put("speed", a.speed);
+      final List<Object> library = new ArrayList<>();
+      for (final var clip : a.clips().values()) {
+        library.add(ctx.clipId(clip));
+      }
+      out.put("clips", library);
+      final List<Object> layers = new ArrayList<>();
+      for (final var l : a.layers()) {
+        final Map<String, Object> m = new LinkedHashMap<>();
+        m.put("clip", ctx.clipId(l.clip()));
+        m.put("loop", l.loop().name());
+        m.put("speed", l.speed);
+        m.put("weight", l.weight);
+        m.put("time", l.time());
+        m.put("fade", l.fade());
+        m.put("fadeSpeed", l.fadeSpeed());
+        layers.add(m);
+      }
+      out.put("layers", layers);
+      return out;
+    }
+
+    @Override
+    public Animator read(Map<String, Object> data, SerializationContext ctx) {
+      final var a = new Animator();
+      a.speed = Json.asFloat(data.getOrDefault("speed", 1.0));
+      for (final Object id : Json.asList(data.getOrDefault("clips", List.of()))) {
+        a.addClip(ctx.clip(id));
+      }
+      for (final Object o : Json.asList(data.getOrDefault("layers", List.of()))) {
+        final var m = Json.asObject(o);
+        final var layer = a.blend(ctx.clip(m.get("clip")), Json.asFloat(m.getOrDefault("weight", 1.0)),
+            AnimationLayer.Loop.valueOf((String) m.getOrDefault("loop", "LOOP")));
+        layer.speed = Json.asFloat(m.getOrDefault("speed", 1.0));
+        layer.setTime(Json.asFloat(m.getOrDefault("time", 0.0)));
+        layer.setFade(Json.asFloat(m.getOrDefault("fade", 1.0)), Json.asFloat(m.getOrDefault("fadeSpeed", 0.0)));
+      }
+      return a;
     }
   }
 

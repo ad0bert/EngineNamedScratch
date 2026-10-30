@@ -22,11 +22,12 @@ java -jar demo/target/dist/demo.jar
 mvn -q package -Pjpackage     # also: demo/target/jpackage, the demo with its own Java runtime
 ```
 
-Demo controls: mouse look, `WASD`/arrows move, `Space`/`Shift` up/down, `F` throws a crate, `E` pushes the body
+Demo controls: mouse look, `WASD`/arrows walk, `Space` jumps, `V` switches between walking and flying (`Space`/`Shift`
+fly up/down), `F` throws a crate, `E` pushes the body
 under the crosshair (with sparks), `F3` toggles the on-screen debug text, `F5` saves the scene to
-`demo-scene.json`, `Esc` frees the mouse and shows a settings panel with volume sliders (click outside it to look around again, `Tab` moves between
+`demo-scene.json`, `Esc` frees the mouse and shows a settings panel with volume sliders and a controls panel to change the keys (click outside it to look around again, `Tab` moves between
 its widgets), `P` pauses, `F11` switches to fullscreen. With a gamepad: left stick moves, right stick looks,
-triggers fly up and down, `RB`/`X` throws, `A` pushes, `Start` pauses. Volumes, fullscreen and vsync are saved in the
+`Y` jumps, triggers fly up and down, `RB`/`X` throws, `A` pushes, `Start` pauses. Volumes, fullscreen and vsync are saved in the
 user's config directory (`~/.config/enginenamedscratch-demo` on Linux).
 
 System properties:
@@ -42,16 +43,20 @@ System properties:
 | `engine.debugCascades=true` | tint the shadow cascades |
 | `engine.exposure=1`, `engine.bloomStrength=0.08`, `engine.bloomThreshold=1` | HDR tone mapping and bloom |
 | `engine.antiAliasing=false`, `engine.orderIndependentTransparency=false` | turn off FXAA / weighted blended OIT |
+| `engine.ambientOcclusion=false`, `engine.aoRadius=0.8`, `engine.aoStrength=2` | screen-space ambient occlusion; `engine.debugAmbientOcclusion=true` shows it in grey |
 | `engine.skyIntensity=1` | brightness of the sky and its lighting |
 | `engine.audio=false` | no sound (also automatic without a sound device) |
 | `engine.gamepads=false` | do not look for gamepads |
 | `engine.fullscreen=true`, `engine.vsync=false` | override the config's `app.fullscreen` / `app.vsync` |
 | `engine.debugOverlay=false` | start with the debug text (`F3`) hidden; games can also call `engine.setDebugOverlayVisible(false)` |
+| `engine.hotReload=true` | watch the asset directories and apply changed shaders, textures and meshes while running (`Engine.setHotReload`) |
 | `engine.userDir=dir` | keep settings and saves under `dir/<app id>` instead of the platform's user directories |
-| `demo.camera=x,y,z,yaw,pitch` | demo only: start somewhere else |
+| `demo.camera=x,y,z,yaw,pitch` | demo only: start flying with the eyes somewhere else |
 | `demo.sky=file.hdr` or `demo.sky=none` | demo only: an HDR environment image instead of the procedural sky, or no sky |
 | `demo.saveScene=file.json` | demo only: save the scene at start (what `F5` does) |
 | `demo.paused=true` | demo only: start in the pause menu |
+| `demo.probe=false` | demo only: the room by the field without its reflection probe |
+| `demo.assets=dir` | demo only: an asset directory whose files replace the demo's and the engine's shaders (`dir/shaders/tonemap.frag`) |
 
 The render settings can also be changed at run time through `engine.backend().settings()`.
 
@@ -82,7 +87,7 @@ with the demo (a runnable jar, and packaged for each platform). The release's ti
   <dependency>
     <groupId>io.github.ad0bert</groupId>
     <artifactId>engine-named-scratch</artifactId>
-    <version>0.8.0</version>
+    <version>0.9.0</version>
   </dependency>
   <!-- the engine logs through SLF4J only; pick a backend -->
   <dependency>
@@ -158,7 +163,8 @@ class PauseMenu implements GameState {
 
 ## Features
 
-- **Rendering:** GL3 core forward renderer into an HDR target, then bloom, ACES tone mapping and FXAA; linear
+- **Rendering:** GL3 core forward renderer into an HDR target, then screen-space ambient occlusion (it darkens only
+  the ambient and sky light, which the opaque pass writes to a second target), bloom, ACES tone mapping and FXAA; linear
   lighting (colour textures and colours are sRGB, data maps are linear). GPU-instanced draw calls batched by (mesh,
   material), frustum culling (sphere, then box for long or flat objects), occlusion culling of static geometry, up to 8
   lights (directional, point and spot), up to 4 cascaded shadow maps with soft edges and cascade blending for the first
@@ -167,12 +173,16 @@ class PauseMenu implements GameState {
   (or back-to-front sorting), alpha cut-outs (with matching holes in the shadows), points. A sky behind the scene
   (`RenderSettings.sky`: a procedural gradient with a sun disc, or an equirectangular HDR image) that also lights it:
   image-based lighting baked once on the GPU (diffuse irradiance, GGX-prefiltered reflections per roughness, split-sum
-  BRDF table), with intensity and rotation settings.
+  BRDF table), with intensity and rotation settings. Local `ReflectionProbe`s capture the scene into cube maps
+  (blurred per roughness like the sky); inside their boxes surfaces take box-projected reflections and ambient light
+  from them instead of the sky, so rooms reflect their own walls and are not lit by the open sky.
 - **Particles:** `ParticleEmitter` components spawn camera-facing quads by rate or in bursts, inside a sphere and a
   cone, with acceleration, drag, size, colour and spin over their life, texture atlases (animated or one random frame
   each), additive or alpha blending (sorted back to front) and soft edges where they meet geometry; simulated at the
   fixed step in flat arrays, spread along the emitter's path when it moves, in world or local space, and drawn with
-  one instanced call per emitter.
+  one instanced call per emitter. Smoke and dust can be lit (`lit`: the lights and the ambient or sky light at the
+  emitter), and particles can collide with the physics world (`collider = physics.particleCollider(scene, mask)`):
+  they bounce with `bounce` and `collisionFriction`, or die where they hit.
 - **Materials:** Blinn-Phong or physically based (GGX, metallic/roughness, glTF-style metal-rough maps); colour or
   texture, tangent-space normal maps (meshes carry tangents with handedness, so mirrored uvs work), specular maps,
   emissive colour and maps, height maps with parallax occlusion mapping, uv scale/offset and clamping; with a sky,
@@ -182,7 +192,10 @@ class PauseMenu implements GameState {
   (height), texture options `-s -o -clamp -bm`; one part per `usemtl`. glTF 2.0 (`.gltf` with embedded or external
   data, `.glb`): node hierarchy, meshes, metallic-roughness materials with base colour, metal-rough, normal and
   emissive textures, alpha modes, skins and animations (`ResourceManager.gltf(path).instantiate(scene)`). Generated
-  meshes: cube, quad, sphere, points, and shape specs such as `cube:0.5` that scene files can refer to.
+  meshes: cube, quad, sphere, points, and shape specs such as `cube:0.5` that scene files can refer to. Levels of
+  detail: `MeshRenderer.addLod(distance, mesh)` switches to coarser meshes with the camera distance (times
+  `RenderSettings.lodBias`, `-Dengine.lodBias`), `cullDistance` stops drawing far away, and `MeshSimplifier` makes
+  coarser meshes by vertex clustering (keeping hard edges apart).
   Radiance `.hdr` images (`HdrLoader`) for skies.
 - **Animation:** keyframe tracks (step, linear with 16 easing curves, slerped rotations, cubic splines) for transform
   properties of an entity or its named descendants and for any float values (material colours, volumes...), as
@@ -193,10 +206,16 @@ class PauseMenu implements GameState {
   volume, pitch, loop, three distance curves, min/max distance, priority, play/pause/stop, play on start) and an
   `AudioListener` (or the camera), Doppler from rigidbody velocities, one-shots (`engine.audio().play(clip, pos)`),
   mixer buses (master, music, effects, UI), a voice limit with priority- and loudness-based stealing (sounds without
-  a voice keep time and come back), impact sounds scaled by the collision impulse (`ImpactSound`). WAV/AIFF/AU and
+  a voice keep time and come back), impact sounds scaled by the collision impulse (`ImpactSound`). Effects through
+  OpenAL's EFX: `ReverbZone`s (boxes with a reverb preset, a wet mix and an optional low-pass that muffles everything
+  heard inside, e.g. under water) give positioned sounds the acoustics of where the listener is, and sounds behind
+  solid colliders are muffled and quieter (occlusion by physics rays from the listener, smoothed; `AudioSource.
+  occlusion` turns it off per source). WAV/AIFF/AU and
   Ogg Vorbis (JOrbis), long music streamed from the compressed file.
 - **Scenes and prefabs:** entities, their hierarchy and components saved to and loaded from JSON
-  (`SceneSerializer`); materials are shared by index and resources referred to by key; any component with public
+  (`SceneSerializer`); materials, animation clips and skins are shared by index and resources referred to by key;
+  animators keep their clips and the layers playing (clock, speed, weight, fade) and sound sources whether they play
+  and where, so a saved glTF instance moves on where it was; any component with public
   fields can opt in with one line (`FieldSerializer`), others with a `ComponentSerializer`. A `Prefab` is such a file
   used as a template, instantiated as often as needed (the instances share materials, so they still batch).
 - **UI:** immediate-mode drawing with any number of fonts (any installed or logical Java font, proportional or fixed,
@@ -214,12 +233,35 @@ class PauseMenu implements GameState {
   multi-point contact manifolds solved as a block with friction at their centre, warm-started impulses and
   speculative contacts (40-crate stacks stand), moving platforms (kinematic or static colliders moved by code carry
   what rests on them), triggers, enter/exit `CollisionEvent`s, grid broadphase, sleeping, parented bodies,
-  grid-accelerated `raycast` and `overlapSphere` queries (`syncQueries` makes them see colliders moved since the last
-  step), `Camera.viewRay` for picking.
+  grid-accelerated `raycast`, `sphereCast`, `capsuleCast`, `overlapSphere` and `overlapCapsule` queries (the casts
+  are exact for every shape: conservative advancement on the GJK distance; `syncQueries` makes them see colliders
+  moved since the last step), collision layers (`Collider.layer`, `setLayersCollide`, query filters by layer mask
+  with `PhysicsSystem.solid(mask)`), `Camera.viewRay` for picking.
+- **Characters:** `CharacterController` walks a capsule by sweeping it (collide and slide, creases, step up ledges,
+  slope limit, ground snapping down slopes and steps, jumps with coyote time, ceilings), rides moving and turning
+  ground, pushes dynamic bodies by its mass, is pushed out of things that move into it, and is a collider other bodies
+  rest on. `FirstPersonController` walks with it when the entity has one (pitch on a `head` child) and flies
+  otherwise.
+- **Terrain:** a `Heightfield` (from a function, an image or the built-in fractal noise `Heightfield.fbm`) becomes
+  chunked `Terrain` entities: smooth-normal meshes in metres-based uvs for tiling textures, coarser levels of detail
+  every second and fourth sample with skirts against cracks, and full-detail `MeshCollider`s, so physics, character
+  controllers and navigation walk on it.
+- **Navigation:** `NavGrid` bakes where an agent of a given radius, height, step and slope can walk from the static
+  colliders (up to four floors per cell, so bridges and storeys work), finds paths with A* (no corner cutting) and
+  straightens them; regions can be baked again and cells blocked at run time. A `NavAgent` walks its entity along
+  the path, through its `CharacterController` if it has one, and plans again when the goal moves or it gets stuck.
 - **Loop:** fixed-timestep updates with render interpolation between the last two steps.
 - **Input:** keys, mouse, text and up to four gamepads (JInput; radial stick and trigger dead zones, connect and
-  disconnect), with actions bound to keys, gamepad buttons and gamepad axes at once; a first-person controller that
-  takes both.
+  disconnect, rumble where JInput finds motors), with actions bound to keys, gamepad buttons and gamepad axes at
+  once; bindings can be listed, changed, written as text (`W, UP, pad:Y`) and saved in `Settings`
+  (`saveBindings`/`loadBindings`), and a `Rebinder` binds the next key or button pressed (for a controls menu); a
+  first-person controller that takes both.
+- **Hot reloading and profiling:** with `Engine.setHotReload(true)` the asset directories are watched; changed
+  shaders are compiled again (one that does not compile keeps its old version), textures and OBJ meshes loaded again
+  in place, and `Engine.onAssetChanged` listeners hear of every changed path (to reload a level or a prefab). Shader
+  files in an asset directory replace the built-in ones of the same path. `Engine.profiler()` times every system, the
+  game's update and rendering per frame over the last 240 frames; games add sections with `begin`/`end`. F3 shows a
+  frame-time graph and the slowest sections.
 - **ECS, message queues, resource caching, screenshots** (see below).
 
 ## Performance notes
@@ -280,22 +322,24 @@ How it works:
 
 | Package | Purpose |
 |---|---|
-| `engine.core` | `Engine` (window, GL loop, lifecycle, pause, window options, screenshots), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
+| `engine.core` | `Engine` (window, GL loop, lifecycle, pause, window options, screenshots, hot reloading), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
-| `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer`, `ParticleEmitter`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
+| `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
 | `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, particles, sky and image-based lighting, post-processing, UI batching) |
 | `engine.animation` | `Track`, `Easing`, `Channel`, `AnimationClip`, `Animator` (layers, blending), `AnimationSystem` |
 | `engine.audio` | Backend-agnostic: `AudioBackend`, `AudioClip`/`AudioVoice` handles, `AudioSource`, `AudioListener`, `ImpactSound`, `AudioMixer`/`AudioBus`, `Rolloff`, `VoiceAllocator`, `AudioSystem`, `NullAudioBackend` |
 | `engine.audio.al` | The OpenAL (JOAL) implementation of `AudioBackend` (buffers, sources, streaming) |
 | `engine.serialization` | `Json`, `SceneSerializer`, `Prefab`, `ComponentRegistry`, `ComponentSerializer`/`FieldSerializer`, `SerializationContext` |
 | `engine.ui` | `Gui`: immediate-mode widgets on any `UiCanvas`; `TextEdit` (text editing model), `Clipboard` (system or in-memory), `TextWrap` |
-| `engine.resources` | `Assets` (asset directories, then the classpath), `ResourceManager` (cached meshes/textures/models/sounds, generated resources, keys for scene files, scopes that release a level's resources), `ObjLoader`, `MtlLoader`, `GltfLoader`/`GltfModel`, `ImageLoader` (ImageIO), `HdrLoader` (Radiance `.hdr`), `AudioLoader`/`VorbisDecoder`, `NormalMaps` (height field to normal map), `Model` |
+| `engine.resources` | `Assets` (asset directories, then the classpath), `AssetWatcher` (changed files), `ResourceManager` (cached meshes/textures/models/sounds, generated resources, keys for scene files, scopes that release a level's resources), `ObjLoader`, `MtlLoader`, `GltfLoader`/`GltfModel`, `ImageLoader` (ImageIO), `HdrLoader` (Radiance `.hdr`), `AudioLoader`/`VorbisDecoder`, `NormalMaps` (height field to normal map), `Model` |
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
-| `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `PhysicsSystem` (+ raycasts) |
-| `engine.debug` | `DebugOverlay` |
+| `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
+| `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |
+| `engine.navigation` | `NavGrid` (baked walkable grid, A*, path straightening, blocking), `NavAgent` (path following) |
+| `engine.debug` | `DebugOverlay` (F3 text and frame graph), `Profiler` |
 | `game` (demo module) | Demo scene (`DemoGame`, `Main`) |
 
 Everything — fixed-step update, message dispatch, rendering — runs on the GL thread, so scene state needs no locks.
@@ -333,30 +377,50 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   contacts, and a hull stops at its vertex cap (an inner approximation). Hinge limits are angles in -180..180 degrees
   (no multi-turn limits) and a ball joint's cone is circular. Continuous collision sweeps the largest sphere inside a
   body, so a fast box can still clip a corner, and it stops the body at the first hit instead of solving the rest of
-  the step.
+  the step. A `CharacterController` stays upright (it turns only about Y), takes the ground's motion at the point it
+  stands on but not its turn, and is seen by bodies as a static collider moved by code, so it pushes them only
+  through `mass`, while bodies that run into it meet an immovable wall.
+- Terrain chunks use one material (no splatting of several textures by slope or height) and are generated meshes
+  without resource keys, so scene files leave them out: build the terrain again when loading. Its colliders are
+  triangle meshes (no dedicated heightfield shape), which costs more memory than the heights themselves.
+- Navigation grids are 2.5D: walkable heights are sampled at cell centres (a cell is walkable if its centre is and
+  the agent fits there), so narrow gaps smaller than a cell may close, and jumps or drops are not links in the graph.
+  Baking is synchronous and costs about a millisecond per 10 cells (1.6 s for the demo's 120 x 120 cells in the CI
+  container); agents do not avoid each other.
 - At most 8 lights per frame in a forward renderer; only the first directional light has cascaded shadows and at most
-  4 point or spot lights cast shadows. Image-based lighting comes from the sky only (no local reflection probes, no
-  ambient occlusion), so the insides of rooms get the sky's ambient light too.
+  4 point or spot lights cast shadows. Reflection probes need a sky (they replace its light), are captured once
+  (or every `refreshFrames`), at most one per frame, see only opaque surfaces, and at most four apply per frame
+  (the nearest to the camera); their diffuse light is the roughest reflection level, not a separate irradiance map.
+  Ambient occlusion is screen-space only: it sees what is on screen and fades out from 30 to 60 m.
 - Occlusion culling only skips static geometry, in whole grid cells, and is one frame late: an object coming out from
   behind a wall can appear a frame after it should. A moved static renderer is re-registered at the next fixed step,
   so it can be drawn at its old place for a frame unless `invalidate()` is called. Order-independent transparency is
   an approximation: overlapping layers of very different opacity blend a little differently from exact sorting.
-- Particles are unlit (no shadows received or cast, no lights on smoke) and drawn after all other transparent
+- Lit particles take one light value per emitter (at its centre, without shadows) and cast no shadows; colliding
+  particles cost a ray per particle and step. Particles are drawn after all other transparent
   surfaces, so a particle behind a glass pane is not dimmed by it. Alpha particles are sorted per emitter and the
-  emitters by their centres, so two smoke clouds that overlap can sort wrongly; no collisions with the world.
+  emitters by their centres, so two smoke clouds that overlap can sort wrongly.
 - The UI has no input method support, and text areas do not wrap (only `Gui.paragraph` does).
 - Sound: positioned sounds should be mono (OpenAL does not pan stereo clips). A streaming clip that loses its voice
-  starts from the beginning when it gets one again (whole clips resume where their clock is). No effects (reverb,
-  filters, occlusion). Impact sounds estimate the impulse from the body's change of velocity in the step the contact
+  starts from the beginning when it gets one again (whole clips resume where their clock is). One reverb at a time
+  (the zone the listener is deepest in; zones do not blend their presets), occlusion is all or nothing per ray (no
+  partial or diffracted paths), and backends without EFX (the silent one, OpenAL without the extension) play
+  everything dry. Impact sounds estimate the impulse from the body's change of velocity in the step the contact
   began. Without a sound device the ALSA library may print a few lines while OpenAL looks for one.
 - Gamepads: JInput finds pads at start-up and on a rescan (window focus or `Engine.rescanGamepads()`), not the
-  moment they are plugged in; buttons are mapped by name for Xbox-style pads and guessed for others; no rumble. On
+  moment they are plugged in; buttons are mapped by name for Xbox-style pads and guessed for others. Rumble goes
+  through JInput's rumblers, which many pads and platforms do not offer (`GamepadState.canRumble()`); gamepad axis
+  bindings are not part of the saved text. On
   Linux the user needs read access to `/dev/input/event*`.
 - Scene files keep resources by key: meshes and textures generated without a key (`res.mesh(data)`) are left out,
-  and generated ones with a key must be generated again before loading. Animators and skins are not saved (a loaded
-  glTF instance stands still), nor is whether a sound is playing (use `playOnStart`).
+  and generated ones with a key must be generated again before loading. Animation channels with a custom target
+  (code) are not saved, nor are one-shot sounds (`engine.audio().play`).
 - glTF: no morph targets, sparse accessors, cameras, lights, texture transforms or occlusion maps; only the first uv
   set; the file's tangents are recomputed. Skinned meshes are culled with a generous sphere around their bind pose
   and are drawn one by one.
+- Hot reloading covers shaders, textures and meshes loaded by path; textures derived from several files (bump maps
+  converted to normal maps, combined metal/roughness, alpha masks), OBJ models with their materials, glTF models and
+  sounds are not reloaded (listeners can rebuild them). On macOS the JDK polls for file changes, so they take a few
+  seconds to show.
 - MTL statements the renderer has no use for (`Ps`, `Pc`, `aniso`, reflection maps) and the texture options other than
   `-s -o -clamp -bm` are ignored; one uv transform is used for all of a material's maps.

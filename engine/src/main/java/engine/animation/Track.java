@@ -64,6 +64,20 @@ public final class Track {
     return new Track(this.times, this.values, this.width, this.interpolation, easing);
   }
 
+  /** The key times (a copy). */
+  public float[] times() {
+    return this.times.clone();
+  }
+
+  /** The key values, {@link #width} per key (three times that for cubic splines; a copy). */
+  public float[] values() {
+    return this.values.clone();
+  }
+
+  public Easing easing() {
+    return this.easing;
+  }
+
   public int width() {
     return this.width;
   }

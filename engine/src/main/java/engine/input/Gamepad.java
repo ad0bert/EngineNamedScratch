@@ -33,7 +33,25 @@ public final class Gamepad {
   public static final int AXIS_RIGHT_TRIGGER = 5;
   public static final int AXIS_COUNT = 6;
 
+  private static final String[] BUTTON_NAMES = { "A", "B", "X", "Y", "LB", "RB", "BACK", "START", "LS", "RS",
+      "GUIDE", "DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT" };
+
   private Gamepad() {
+  }
+
+  /** Short name of a button: A, B, X, Y, LB, RB, BACK, START, LS, RS, GUIDE, DPAD_UP... */
+  public static String buttonName(int button) {
+    return button >= 0 && button < BUTTON_COUNT ? BUTTON_NAMES[button] : "?";
+  }
+
+  /** The button with this {@link #buttonName name} (any case), or -1. */
+  public static int button(String name) {
+    for (int b = 0; b < BUTTON_COUNT; b++) {
+      if (BUTTON_NAMES[b].equalsIgnoreCase(name)) {
+        return b;
+      }
+    }
+    return -1;
   }
 
   /**

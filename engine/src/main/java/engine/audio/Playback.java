@@ -2,6 +2,8 @@ package engine.audio;
 
 import org.joml.Vector3f;
 
+import engine.ecs.Entity;
+
 /** One sound that wants to be heard: an {@link AudioSource}'s state or a one-shot. Owned by {@link AudioSystem}. */
 final class Playback {
   enum State {
@@ -32,6 +34,14 @@ final class Playback {
   /** Play was requested while holding a voice: start the clip again. */
   boolean restart;
   boolean oneShot;
+  /** Whether solid things between it and the listener muffle it, and how much they do now (0..1, smoothed). */
+  boolean occludable;
+  float occlusion;
+  float occlusionTarget;
+  /** False until tested after a start: the first test applies at once, not smoothed. */
+  boolean occlusionKnown;
+  /** The entity it follows (null for one-shots): occlusion tests ignore its own colliders. */
+  Entity entity;
   /** Final gain (bus, volume, distance) and ranking score of the current step. */
   float gain;
   float score;
@@ -41,6 +51,7 @@ final class Playback {
   }
 
   void start() {
+    this.occlusionKnown = false;
     this.state = State.PLAYING;
     this.time = 0f;
     this.restart = true;

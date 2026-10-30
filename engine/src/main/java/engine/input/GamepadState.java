@@ -24,6 +24,10 @@ public class GamepadState {
   private final AtomicIntegerArray presses = new AtomicIntegerArray(Gamepad.BUTTON_COUNT);
   private final AtomicIntegerArray axes = new AtomicIntegerArray(Gamepad.AXIS_COUNT); // float bits
   private final AtomicInteger connections = new AtomicInteger();
+  private volatile boolean canRumble;
+  private volatile float rumbleStrong;
+  private volatile float rumbleWeak;
+  private volatile long rumbleUntil;
 
   void setConnected(boolean connected, String name) {
     if (connected && !this.connected) {
@@ -32,6 +36,8 @@ public class GamepadState {
     this.connected = connected;
     this.name = name != null ? name : "";
     if (!connected) {
+      this.canRumble = false;
+      this.rumbleUntil = 0L;
       for (int b = 0; b < Gamepad.BUTTON_COUNT; b++) {
         this.buttons.set(b, 0);
       }
@@ -59,6 +65,38 @@ public class GamepadState {
 
   void endFrame() {
     this.pressed.set(0);
+  }
+
+  /**
+   * Shakes the pad for {@code seconds}: {@code strong} drives the heavy (low-frequency) motor, {@code weak} the light
+   * one, each 0..1. A new call replaces the one running; pads without motors ignore it.
+   */
+  public void rumble(float strong, float weak, float seconds) {
+    this.rumbleStrong = Math.max(0f, Math.min(1f, strong));
+    this.rumbleWeak = Math.max(0f, Math.min(1f, weak));
+    this.rumbleUntil = System.nanoTime() + (long) (Math.max(0f, seconds) * 1e9);
+  }
+
+  public void stopRumble() {
+    this.rumbleUntil = 0L;
+  }
+
+  /** The strong motor's level the backend should apply at {@code nanoTime} (0 once the rumble is over). */
+  public float rumbleStrong(long nanoTime) {
+    return nanoTime < this.rumbleUntil ? this.rumbleStrong : 0f;
+  }
+
+  public float rumbleWeak(long nanoTime) {
+    return nanoTime < this.rumbleUntil ? this.rumbleWeak : 0f;
+  }
+
+  /** True if the backend found rumble motors on this pad. */
+  public boolean canRumble() {
+    return this.canRumble;
+  }
+
+  void setCanRumble(boolean value) {
+    this.canRumble = value;
   }
 
   public boolean isConnected() {

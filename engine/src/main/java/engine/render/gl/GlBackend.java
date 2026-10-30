@@ -1,6 +1,7 @@
 package engine.render.gl;
 
 import java.util.List;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import com.jogamp.opengl.GL3;
@@ -56,6 +57,26 @@ public final class GlBackend implements RenderBackend {
   }
 
   @Override
+  public void updateTexture(GpuTexture texture, ImageData image) {
+    ((GlTexture) texture).upload(this.glSupplier.get(), image);
+  }
+
+  @Override
+  public void updateMesh(GpuMesh mesh, MeshData data) {
+    ((GlMesh) mesh).replace(data);
+  }
+
+  @Override
+  public void setShaderSource(Function<String, String> source) {
+    ShaderProgram.setSource(source);
+  }
+
+  @Override
+  public int reloadShaders(String resource) {
+    return ShaderProgram.reloadAll(this.glSupplier.get(), resource);
+  }
+
+  @Override
   public GpuTexture whiteTexture() {
     return this.white;
   }
@@ -89,6 +110,7 @@ public final class GlBackend implements RenderBackend {
   @Override
   public void dispose() {
     final var gl = this.glSupplier.get();
+    ShaderProgram.forgetAll();
     this.scene.dispose(gl);
     this.ui.dispose(gl);
     if (this.white != null) {

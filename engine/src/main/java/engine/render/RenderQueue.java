@@ -39,7 +39,7 @@ public final class RenderQueue {
     MAIN, SHADOW
   }
 
-  private static final Comparator<MeshRenderer> BY_MESH = Comparator.comparingInt((MeshRenderer r) -> r.mesh.id());
+  private static final Comparator<MeshRenderer> BY_MESH = Comparator.comparingInt((MeshRenderer r) -> r.drawn.id());
   private static final Comparator<MeshRenderer> BY_MESH_MATERIAL = BY_MESH
       .thenComparingInt((MeshRenderer r) -> r.material.sortKey);
   private static final Comparator<MeshRenderer> FAR_TO_NEAR = (a, b) -> Float.compare(b.distSq, a.distSq);
@@ -104,6 +104,7 @@ public final class RenderQueue {
   /** Renderers skipped by the last main-pass cull because their cells were occluded. */
   @Getter private int occluded;
   private int framesSinceValidation;
+  private float lodBias = 1f;
   private long frame;
 
   public RenderQueue() {
@@ -422,6 +423,9 @@ public final class RenderQueue {
       }
     }
     r.distSq = r.center.distanceSquared(this.cameraPos);
+    if (!r.chooseLod((float) Math.sqrt(r.distSq) / this.lodBias)) {
+      return; // beyond its cull distance
+    }
     out.add(r);
   }
 
@@ -436,7 +440,7 @@ public final class RenderQueue {
 
   /** True if both renderers can be drawn by one instanced call (never for skinned ones: each has its own pose). */
   public static boolean sameBatch(MeshRenderer a, MeshRenderer b, boolean byMaterial) {
-    return a.mesh == b.mesh && (!byMaterial || a.material == b.material) && a.skin == null && b.skin == null;
+    return a.drawn == b.drawn && (!byMaterial || a.material == b.material) && a.skin == null && b.skin == null;
   }
 
   /** Writes model + normal matrix of {@code r} at instance slot {@code index} (absolute puts, position unchanged). */
@@ -453,6 +457,14 @@ public final class RenderQueue {
   /** Changes whenever a settled renderer's transform (or an ancestor's) changed. */
   public static long version(MeshRenderer r) {
     return r.cacheVersion;
+  }
+
+  /**
+   * Multiplies the distances at which levels of detail and distance culling switch: above 1 keeps detail further
+   * out, below 1 switches earlier.
+   */
+  public void setLodBias(float bias) {
+    this.lodBias = Math.max(1e-3f, bias);
   }
 
   public static Matrix4f modelMatrix(MeshRenderer r) {

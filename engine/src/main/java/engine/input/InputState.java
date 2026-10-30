@@ -1,13 +1,23 @@
 package engine.input;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import engine.core.Settings;
 
 /**
  * Thread-safe polled input state, written by the window thread and read by the update thread. The writing methods
@@ -21,6 +31,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
  * buttons and gamepad axes at the same time; an action is down if any of its bindings is.
  */
 public class InputState {
+  private static final Logger log = LoggerFactory.getLogger(InputState.class);
   public static final int MAX_GAMEPADS = 4;
   /** Mouse buttons are numbered from 1 (left, middle, right, ...) up to this. */
   public static final int MAX_BUTTONS = 8;
@@ -216,6 +227,22 @@ public class InputState {
     }
   }
 
+  /** The backend found rumble motors on the pad (see {@link GamepadState#rumble}). */
+  public void gamepadCanRumble(int pad, boolean value) {
+    if (pad >= 0 && pad < MAX_GAMEPADS) {
+      this.gamepads[pad].setCanRumble(value);
+    }
+  }
+
+  /** Rumbles every connected pad (see {@link GamepadState#rumble}). */
+  public void rumble(float strong, float weak, float seconds) {
+    for (GamepadState g : this.gamepads) {
+      if (g.isConnected()) {
+        g.rumble(strong, weak, seconds);
+      }
+    }
+  }
+
   /** The gamepad slot (connected or not). */
   public GamepadState gamepad(int pad) {
     return this.gamepads[pad];
@@ -324,6 +351,185 @@ public class InputState {
       }
     }
     return false;
+  }
+
+  // ---- bindings as data: menus that change them, settings files that keep them
+
+  /** Every action bound to keys or gamepad buttons, sorted. */
+  public SortedSet<String> actions() {
+    final var out = new TreeSet<>(this.bindings.keySet());
+    out.addAll(this.padBindings.keySet());
+    return out;
+  }
+
+  /** The keys bound to an action (a copy; empty if none). */
+  public short[] keys(String action) {
+    final short[] k = this.bindings.get(action);
+    return k != null ? k.clone() : new short[0];
+  }
+
+  /** The gamepad buttons bound to an action (a copy; empty if none). */
+  public int[] gamepadButtons(String action) {
+    final int[] b = this.padBindings.get(action);
+    return b != null ? b.clone() : new int[0];
+  }
+
+  /** Removes an action's key and button bindings (axis bindings stay). */
+  public void unbind(String action) {
+    this.bindings.remove(action);
+    this.padBindings.remove(action);
+  }
+
+  /** Adds a key to an action's keys (if it is not there yet). */
+  public void addKey(String action, short key) {
+    final short[] old = keys(action);
+    for (short k : old) {
+      if (k == key) {
+        return;
+      }
+    }
+    final short[] keys = Arrays.copyOf(old, old.length + 1);
+    keys[old.length] = key;
+    this.bindings.put(action, keys);
+  }
+
+  /** Adds a gamepad button to an action's buttons (if it is not there yet). */
+  public void addGamepadButton(String action, int button) {
+    final int[] old = gamepadButtons(action);
+    for (int b : old) {
+      if (b == button) {
+        return;
+      }
+    }
+    final int[] buttons = Arrays.copyOf(old, old.length + 1);
+    buttons[old.length] = button;
+    this.padBindings.put(action, buttons);
+  }
+
+  /** The actions a key is bound to (to warn about a key used twice), sorted. */
+  public List<String> actionsUsingKey(short key) {
+    final List<String> out = new ArrayList<>();
+    for (final var e : this.bindings.entrySet()) {
+      for (short k : e.getValue()) {
+        if (k == key) {
+          out.add(e.getKey());
+          break;
+        }
+      }
+    }
+    Collections.sort(out);
+    return out;
+  }
+
+  /** The actions a gamepad button is bound to, sorted. */
+  public List<String> actionsUsingGamepadButton(int button) {
+    final List<String> out = new ArrayList<>();
+    for (final var e : this.padBindings.entrySet()) {
+      for (int b : e.getValue()) {
+        if (b == button) {
+          out.add(e.getKey());
+          break;
+        }
+      }
+    }
+    Collections.sort(out);
+    return out;
+  }
+
+  /**
+   * An action's bindings as text, keys first: {@code "W, UP, pad:Y"}. Key names are those of NEWT's {@code VK_}
+   * constants without the prefix, buttons those of {@link Gamepad#buttonName}.
+   */
+  public String describe(String action) {
+    final var sb = new StringBuilder();
+    for (short k : keys(action)) {
+      sb.append(sb.isEmpty() ? "" : ", ").append(KeyNames.name(k));
+    }
+    for (int b : gamepadButtons(action)) {
+      sb.append(sb.isEmpty() ? "" : ", ").append("pad:").append(Gamepad.buttonName(b));
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Replaces an action's key and button bindings by those {@link #describe} wrote; unknown names are skipped (and
+   * logged). An empty text leaves the action unbound.
+   */
+  public void bindFromText(String action, String text) {
+    final List<Short> keys = new ArrayList<>();
+    final List<Integer> buttons = new ArrayList<>();
+    for (String token : text.split(",")) {
+      token = token.trim();
+      if (token.isEmpty()) {
+        continue;
+      }
+      if (token.regionMatches(true, 0, "pad:", 0, 4)) {
+        final int b = Gamepad.button(token.substring(4));
+        if (b >= 0) {
+          buttons.add(b);
+        } else {
+          log.warn("Unknown gamepad button {} for {}", token, action);
+        }
+      } else {
+        final int k = KeyNames.code(token);
+        if (k >= 0) {
+          keys.add((short) k);
+        } else {
+          log.warn("Unknown key {} for {}", token, action);
+        }
+      }
+    }
+    unbind(action);
+    if (!keys.isEmpty()) {
+      final short[] k = new short[keys.size()];
+      for (int i = 0; i < k.length; i++) {
+        k[i] = keys.get(i);
+      }
+      this.bindings.put(action, k);
+    }
+    if (!buttons.isEmpty()) {
+      this.padBindings.put(action, buttons.stream().mapToInt(Integer::intValue).toArray());
+    }
+  }
+
+  /** Writes every action's bindings into the settings as {@code prefix + action} (call {@code save()} after). */
+  public void saveBindings(Settings settings, String prefix) {
+    for (String action : actions()) {
+      settings.set(prefix + action, describe(action));
+    }
+  }
+
+  /**
+   * Replaces the bindings of the actions known now (bind the defaults first) by those kept in the settings; actions
+   * the settings do not mention keep their defaults.
+   */
+  public void loadBindings(Settings settings, String prefix) {
+    for (String action : actions()) {
+      final String text = settings.get(prefix + action, null);
+      if (text != null) {
+        bindFromText(action, text);
+      }
+    }
+  }
+
+  /** A key pressed since the last {@link #endFrame()} (any one, if several), or -1. */
+  public short anyKeyPressed() {
+    for (Short k : this.keysPressedThisFrame) {
+      return k;
+    }
+    return -1;
+  }
+
+  /** A gamepad button pressed on any pad since the last {@link #endFrame()}, or -1. */
+  public int anyGamepadButtonPressed() {
+    for (GamepadState g : this.gamepads) {
+      for (int b = 0; b < Gamepad.BUTTON_COUNT; b++) {
+        if (g.wasButtonPressed(b)) {
+          return b;
+        }
+      }
+    }
+    return -1;
   }
 
   /** Mouse movement since the last call, in pixels; resets the accumulator. */

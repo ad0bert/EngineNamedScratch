@@ -54,6 +54,32 @@ public class AudioSystem implements ISystem, IMessageReceiver {
   private final Vector3f up = new Vector3f(0f, 1f, 0f);
   private final Quaternionf rotation = new Quaternionf();
   private final Vector3f tmp = new Vector3f();
+  /** Tells whether something solid is between the listener and a sound (for {@link AudioSource#occlusion}). */
+  @FunctionalInterface
+  public interface OcclusionTest {
+    /**
+     * @param listener       the listener's entity (its own colliders and its ancestors' should not count), or null
+     * @param sourceEntity   the sound's entity (likewise), or null for a one-shot
+     */
+    boolean blocked(Vector3f from, Vector3f to, Entity listener, Entity sourceEntity);
+  }
+
+  private OcclusionTest occlusionTest;
+  /** Gain of a fully occluded sound (behind a wall). */
+  public float occludedGain = 0.6f;
+  /** Treble kept of a fully occluded sound, 0..1. */
+  public float occludedTreble = 0.15f;
+  /** Seconds a sound takes to become fully muffled or clear when something comes between or goes. */
+  public float occlusionTime = 0.2f;
+  /** Fixed steps between the occlusion tests of one sound (they are spread over the steps). */
+  public int occlusionInterval = 4;
+  private int steps;
+  private Entity listenerEntity;
+  // the acoustics at the listener: reverb zone, its mix, and the treble kept of everything heard
+  private ReverbPreset reverb;
+  private float reverbWet = -1f;
+  private float listenerTreble = 1f;
+  private final Vector3f zoneScratch = new Vector3f();
   private float lastDoppler = Float.NaN;
   private float lastSpeed = Float.NaN;
 
@@ -112,6 +138,8 @@ public class AudioSystem implements ISystem, IMessageReceiver {
   }
 
   private void setUp(Playback p, AudioClip clip, float volume, float pitch, AudioBus bus, int priority) {
+    p.occludable = true;
+    p.entity = null;
     p.clip = clip;
     p.volume = volume;
     p.pitch = pitch;
@@ -168,7 +196,9 @@ public class AudioSystem implements ISystem, IMessageReceiver {
   @Override
   public void update(Scene scene, double dtD) {
     final float dt = (float) dtD;
+    this.steps++;
     updateListener(scene, dt);
+    updateZones(scene);
     if (this.dopplerFactor != this.lastDoppler || this.speedOfSound != this.lastSpeed) {
       this.backend.setDoppler(this.dopplerFactor, this.speedOfSound);
       this.lastDoppler = this.dopplerFactor;
@@ -182,7 +212,7 @@ public class AudioSystem implements ISystem, IMessageReceiver {
       final var s = sources.get(i);
       if (!s.seen) {
         s.seen = true;
-        if (s.playOnStart && s.clip != null) {
+        if (s.playOnStart && s.clip != null && !s.playback.active()) { // not over a state loaded from a file
           s.play();
         }
       }
@@ -197,6 +227,9 @@ public class AudioSystem implements ISystem, IMessageReceiver {
       if (p.active()) {
         this.active.add(p);
       }
+    }
+    for (int i = 0; i < this.active.size(); i++) {
+      occlude(this.active.get(i), i, dt);
     }
 
     // sounds whose voice finished playing, or whose clock ran out while virtual
@@ -269,6 +302,79 @@ public class AudioSystem implements ISystem, IMessageReceiver {
     this.backend.update(dtD);
   }
 
+  /**
+   * How sounds hear the listener's surroundings: the reverb zone the listener is deepest in (its reverberation, mixed
+   * by how deep), and the muffling of all zones it is in.
+   */
+  private void updateZones(Scene scene) {
+    final var zones = scene.components(ReverbZone.class);
+    ReverbPreset best = null;
+    float bestWeight = 0f;
+    float treble = 1f;
+    float wet = 0f;
+    for (int i = 0; i < zones.size(); i++) {
+      final var z = zones.get(i);
+      if (!z.isEnabled()) {
+        continue;
+      }
+      final float w = z.weight(this.listenerPosition, this.zoneScratch);
+      if (w <= 0f) {
+        continue;
+      }
+      treble = Math.min(treble, 1f - (1f - Math.max(0f, Math.min(1f, z.lowPass))) * w);
+      if (w > bestWeight && z.preset != null) {
+        bestWeight = w;
+        best = z.preset;
+        wet = Math.max(0f, Math.min(1f, z.wet)) * w;
+      }
+    }
+    this.listenerTreble = treble;
+    if (best != this.reverb || Math.abs(wet - this.reverbWet) > 1e-3f) {
+      this.reverb = best;
+      this.reverbWet = wet;
+      this.backend.setReverb(best, wet);
+    }
+  }
+
+  /** Moves a sound's occlusion towards whether something is between it and the listener (tested every few steps). */
+  private void occlude(Playback p, int index, float dt) {
+    if (!p.spatial || !p.occludable || this.occlusionTest == null) {
+      p.occlusion = 0f;
+      p.occlusionTarget = 0f;
+      return;
+    }
+    if (!p.occlusionKnown || (this.steps + index) % Math.max(1, this.occlusionInterval) == 0) {
+      p.occlusionTarget = this.occlusionTest.blocked(this.listenerPosition, p.position, this.listenerEntity,
+          p.entity) ? 1f : 0f;
+      if (!p.occlusionKnown) { // a sound that starts behind a wall starts muffled
+        p.occlusionKnown = true;
+        p.occlusion = p.occlusionTarget;
+        return;
+      }
+    }
+    final float rate = this.occlusionTime > 0f ? dt / this.occlusionTime : 1f;
+    p.occlusion += Math.max(-rate, Math.min(rate, p.occlusionTarget - p.occlusion));
+  }
+
+  /** Lets positioned sounds be muffled by what is between them and the listener (null turns occlusion off). */
+  public void setOcclusionTest(OcclusionTest test) {
+    this.occlusionTest = test;
+  }
+
+  /** The reverb preset in use at the listener (null for none) and its mix. */
+  public ReverbPreset reverb() {
+    return this.reverb;
+  }
+
+  public float reverbWet() {
+    return Math.max(0f, this.reverbWet);
+  }
+
+  /** Treble kept of everything heard, from the zones the listener is in (1: none muffles). */
+  public float listenerTreble() {
+    return this.listenerTreble;
+  }
+
   private void ensureCapacity(int n) {
     if (this.scores.length < n) {
       final int size = Math.max(n, this.scores.length * 2);
@@ -299,6 +405,7 @@ public class AudioSystem implements ISystem, IMessageReceiver {
   private void apply(AudioVoice voice, Playback p) {
     voice.setGainAndPitch(p.gain, p.pitch);
     voice.setSpatial(p.spatial);
+    voice.setFilter(this.listenerTreble * (1f - (1f - this.occludedTreble) * p.occlusion), p.spatial ? 1f : 0f);
     if (p.spatial) {
       voice.setPosition(p.position.x, p.position.y, p.position.z);
       voice.setVelocity(p.velocity.x, p.velocity.y, p.velocity.z);
@@ -309,6 +416,7 @@ public class AudioSystem implements ISystem, IMessageReceiver {
     float g = p.volume * this.mixer.gain(p.bus);
     if (p.spatial && g > 0f) {
       g *= attenuation(p.position, p.minDistance, p.maxDistance, p.rolloff, p.rolloffMode);
+      g *= 1f - (1f - this.occludedGain) * p.occlusion;
     }
     return g;
   }
@@ -342,6 +450,7 @@ public class AudioSystem implements ISystem, IMessageReceiver {
     if (e == null) {
       return; // keep the last listener
     }
+    this.listenerEntity = e;
     e.transform().worldPosition(this.listenerPosition);
     e.transform().worldRotation(this.rotation);
     this.rotation.transform(this.forward.set(0f, 0f, -1f));

@@ -33,6 +33,15 @@ public class RenderSettings {
   /** Smooth jagged edges with FXAA. */
   public boolean antiAliasing = Boolean.parseBoolean(System.getProperty("engine.antiAliasing", "true"));
   /**
+   * Screen-space ambient occlusion: the ambient (sky) light is darkened in creases, corners and under objects, where
+   * little of the sky is in view. Direct light is not changed.
+   */
+  public boolean ambientOcclusion = Boolean.parseBoolean(System.getProperty("engine.ambientOcclusion", "true"));
+  /** How far (metres) ambient occlusion looks around each point. */
+  public float aoRadius = floatProperty("engine.aoRadius", 0.8f);
+  /** Exponent on the unoccluded share: 1 as measured, higher darker. */
+  public float aoStrength = floatProperty("engine.aoStrength", 2f);
+  /**
    * Blend transparent surfaces without sorting (weighted blended order-independent transparency): intersecting and
    * overlapping transparent objects look right. Off: sorted back to front per object.
    */
@@ -50,7 +59,14 @@ public class RenderSettings {
   /** Turns the sky about the vertical axis, degrees. */
   public float skyRotation;
   /** Tint the shadow cascades (debugging). */
+  /**
+   * Multiplies the distances at which meshes switch to coarser levels of detail and are culled
+   * ({@link MeshRenderer#addLod}): above 1 keeps detail further out.
+   */
+  public float lodBias = floatProperty("engine.lodBias", 1f);
   public boolean debugCascades = Boolean.getBoolean("engine.debugCascades");
+  /** Shows the ambient occlusion (white: open, black: occluded) instead of the scene's opaque surfaces. */
+  public boolean debugAmbientOcclusion = Boolean.getBoolean("engine.debugAmbientOcclusion");
 
   private static float floatProperty(String name, float fallback) {
     final var v = System.getProperty(name);

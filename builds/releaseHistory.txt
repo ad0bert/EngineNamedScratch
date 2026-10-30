@@ -1,3 +1,19 @@
+Version 0.9.0
+Characters, navigation and a richer world. Contains:
+- Physics: CharacterController (collide and slide, steps, slope limit, ground snapping, jumps with coyote time,
+  moving platforms, pushing bodies); sphereCast, capsuleCast, overlapCapsule; collision layers and layer-mask query
+  filters; fix: rays along a face of a mesh collider's bounding box no longer miss it
+- Navigation: NavGrid (baked from static colliders, several floors per cell, A*, straightened paths, re-baking and
+  blocking) and NavAgent
+- Tools: hot reloading of shaders, textures and meshes (Engine.setHotReload, onAssetChanged; shader overrides from
+  asset directories); Profiler per system with a frame graph in the F3 overlay
+- Scene files: animators (clips and playing layers), skins, and the play state of sounds
+- Input: bindings as text, saved in Settings, Rebinder for controls menus; gamepad rumble
+- Rendering: screen-space ambient occlusion (on by default), local reflection probes, mesh levels of detail with
+  MeshSimplifier and cull distances, heightfield terrain, lit and colliding particles
+- Sound: reverb zones with presets and low-pass, occlusion behind walls (OpenAL EFX)
+- Demo: walking player and a following companion, controls panel, hills, a reflective room with reverb
+
 Version 0.8.1
 A small update for games built on the engine. Contains:
 - Engine.setDebugOverlayVisible / isDebugOverlayVisible, and -Dengine.debugOverlay=false: a game can start with the

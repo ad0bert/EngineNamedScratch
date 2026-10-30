@@ -1,6 +1,7 @@
 package engine.physics;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Predicate;
@@ -16,6 +17,8 @@ import engine.ecs.Transform;
 import engine.messaging.IMessageService;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
+import engine.render.ParticleCollider;
+import engine.render.ParticleEmitter;
 import engine.spatial.SpatialGrid;
 import lombok.Getter;
 
@@ -84,6 +87,8 @@ public class PhysicsSystem implements ISystem {
   public float sleepTime = 0.5f;
 
   @Getter private final PhysicsStats stats = new PhysicsStats();
+  /** Per layer, the bits of the layers it collides with. */
+  private final int[] layerMasks = new int[32];
   private final IMessageService messages;
   private PairTable active = new PairTable();
   private PairTable now = new PairTable();
@@ -127,6 +132,7 @@ public class PhysicsSystem implements ISystem {
   boolean bruteForceBroadphase;
 
   public PhysicsSystem(IMessageService messages) {
+    Arrays.fill(this.layerMasks, ~0);
     this.messages = messages;
   }
 
@@ -212,6 +218,13 @@ public class PhysicsSystem implements ISystem {
     final var colliders = scene.components(Collider.class);
     for (int i = 0; i < bodies.size(); i++) {
       bodies.get(i).touchedThisStep = false;
+    }
+    // characters move first, against the world as the last step left it; bodies then see them as moved colliders
+    final var characters = scene.components(CharacterController.class);
+    for (int i = 0; i < characters.size(); i++) {
+      if (characters.get(i).isEnabled()) {
+        characters.get(i).step(this, scene, dt);
+      }
     }
     if (this.warmStarting) {
       this.contactCache.swap();
@@ -511,9 +524,11 @@ public class PhysicsSystem implements ISystem {
     }
     final var e = b.entity();
     float inner = Float.MAX_VALUE;
+    int mask = 0;
     for (int i = 0; i < e.componentCount(); i++) {
       if (e.componentAt(i) instanceof Collider c && c.isEnabled() && !c.trigger) {
         inner = Math.min(inner, c.cachedInnerRadius());
+        mask |= this.layerMasks[c.layer & 31];
       }
     }
     if (inner == Float.MAX_VALUE || inner <= 0f || !b.continuous && dist <= inner) {
@@ -524,6 +539,7 @@ public class PhysicsSystem implements ISystem {
     }
     final var q = this.sweepQuery;
     q.reset(this.sweepOrigin, this.sweepDir.set(delta).div(dist), dist, 0.9f * inner, e);
+    q.mask = mask;
     if (gridMatches(colliders)) {
       final int stamp = nextQueryStamp();
       this.sweepStamp = stamp;
@@ -873,6 +889,9 @@ public class PhysicsSystem implements ISystem {
     }
     if (a.entity() == b.entity()) {
       return;
+    }
+    if ((this.layerMasks[a.layer & 31] & b.layerBit()) == 0) {
+      return; // layers that do not collide (neither contacts nor trigger events)
     }
     if (this.jointPairs.size() > 0 && this.jointPairs.contains(key(a.entity(), b.entity()))) {
       return; // joined bodies do not collide unless the joint says so
@@ -1453,6 +1472,52 @@ public class PhysicsSystem implements ISystem {
   }
 
 
+  /** Makes colliders on layers {@code a} and {@code b} (0 to 31) collide or pass through each other. */
+  public void setLayersCollide(int a, int b, boolean collide) {
+    checkLayer(a);
+    checkLayer(b);
+    if (collide) {
+      this.layerMasks[a] |= 1 << b;
+      this.layerMasks[b] |= 1 << a;
+    } else {
+      this.layerMasks[a] &= ~(1 << b);
+      this.layerMasks[b] &= ~(1 << a);
+    }
+  }
+
+  public boolean layersCollide(int a, int b) {
+    checkLayer(a);
+    checkLayer(b);
+    return (this.layerMasks[a] & 1 << b) != 0;
+  }
+
+  /** The bits of the layers that layer {@code layer} collides with (a mask for queries made on its behalf). */
+  public int collisionMask(int layer) {
+    checkLayer(layer);
+    return this.layerMasks[layer];
+  }
+
+  private static void checkLayer(int layer) {
+    if (layer < 0 || layer > 31) {
+      throw new IllegalArgumentException("layer " + layer + " is not between 0 and 31");
+    }
+  }
+
+  /** A query filter: colliders that are not triggers and whose layer is in {@code layerMask}. */
+  public static Predicate<Collider> solid(int layerMask) {
+    return c -> !c.trigger && (layerMask & c.layerBit()) != 0;
+  }
+
+  /** Bit mask of the given layers, for {@link #solid(int)}. */
+  public static int layers(int... layers) {
+    int mask = 0;
+    for (final int l : layers) {
+      checkLayer(l);
+      mask |= 1 << l;
+    }
+    return mask;
+  }
+
   /** Nearest non-trigger collider hit by the ray within {@code maxDistance}; {@code dir} need not be normalized. */
   public Optional<RayHit> raycast(Scene scene, Vector3f origin, Vector3f dir, float maxDistance) {
     return raycast(scene, origin, dir, maxDistance, c -> !c.trigger);
@@ -1485,6 +1550,51 @@ public class PhysicsSystem implements ISystem {
   }
 
   /**
+   * Particle collisions against this system's colliders (not triggers; those on the layers in {@code layerMask}),
+   * for {@link ParticleEmitter#collider}: one ray per particle and step along its move, through the broadphase grid
+   * of the last step. Allocates only when a particle hits something. One instance per emitter or shared, on the
+   * update thread.
+   */
+  public ParticleCollider particleCollider(Scene scene, int layerMask) {
+    final var q = new RayQuery();
+    final var origin = new Vector3f();
+    final var dir = new Vector3f();
+    return (x0, y0, z0, x1, y1, z1, hit) -> {
+      dir.set(x1 - x0, y1 - y0, z1 - z0);
+      final float len = dir.length();
+      if (len < 1e-6f) {
+        return false;
+      }
+      dir.div(len);
+      q.reset(origin.set(x0, y0, z0), dir, len, 0f, null);
+      q.mask = layerMask;
+      final var all = scene.components(Collider.class);
+      if (!gridMatches(all)) {
+        for (int i = 0; i < all.size(); i++) {
+          q.test(all.get(i));
+        }
+      } else {
+        final int stamp = nextQueryStamp();
+        final var large = this.grid.large();
+        for (int k = 0; k < large.size(); k++) {
+          testOnce(q, large.get(k), stamp);
+        }
+        walkGrid(q, stamp);
+      }
+      if (q.bestCollider == null) {
+        return false;
+      }
+      hit[0] = x0 + dir.x * q.best;
+      hit[1] = y0 + dir.y * q.best;
+      hit[2] = z0 + dir.z * q.best;
+      hit[3] = q.bestNormal.x;
+      hit[4] = q.bestNormal.y;
+      hit[5] = q.bestNormal.z;
+      return true;
+    };
+  }
+
+  /**
    * The nearest hit so far of one raycast, or of a sphere sweep when {@code inflate > 0} (the ray against every
    * shape grown by that radius; starting inside a shape, or moving away from it, does not count then).
    */
@@ -1493,6 +1603,8 @@ public class PhysicsSystem implements ISystem {
     final Vector3f dir = new Vector3f();
     Predicate<Collider> accept;
     Entity skip;
+    /** Layers a sweep (no filter) stops at. */
+    int mask = ~0;
     float inflate;
     final Narrowphase.Sphere bounds = new Narrowphase.Sphere(new Vector3f(), 0f);
     float best;
@@ -1516,12 +1628,14 @@ public class PhysicsSystem implements ISystem {
       this.inflate = inflate;
       this.skip = skip;
       this.accept = null;
+      this.mask = ~0;
       this.bestCollider = null;
       this.bestNormal = null;
     }
 
     void test(Collider c) {
-      if (this.accept != null ? !this.accept.test(c) : c.trigger || c.entity() == this.skip) {
+      if (this.accept != null ? !this.accept.test(c)
+          : c.trigger || c.entity() == this.skip || (this.mask & c.layerBit()) == 0) {
         return;
       }
       c.worldCenter(this.bounds.c());
@@ -1688,6 +1802,129 @@ public class PhysicsSystem implements ISystem {
     final var c = this.colliders.get(index);
     if (accept.test(c) && Narrowphase.overlapsSphere(c, s)) {
       out.add(c);
+    }
+  }
+
+  /**
+   * Nearest non-trigger collider a sphere of {@code radius} touches when moved from {@code origin} along {@code dir}
+   * (need not be normalized) by up to {@code maxDistance}. The hit's distance is how far the sphere travels, its point
+   * where it touches and its normal faces the sphere. A sphere that already touches something counts as a hit at
+   * distance 0 if it moves into it and is not stopped by it if it moves away.
+   */
+  public Optional<RayHit> sphereCast(Scene scene, Vector3f origin, float radius, Vector3f dir, float maxDistance) {
+    return capsuleCast(scene, origin, origin, radius, dir, maxDistance, c -> !c.trigger);
+  }
+
+  /** Like {@link #sphereCast(Scene, Vector3f, float, Vector3f, float)} for the colliders accepted by the filter. */
+  public Optional<RayHit> sphereCast(Scene scene, Vector3f origin, float radius, Vector3f dir, float maxDistance,
+      Predicate<Collider> accept) {
+    return capsuleCast(scene, origin, origin, radius, dir, maxDistance, accept);
+  }
+
+  /**
+   * Like {@link #sphereCast} for a capsule: the segment {@code a}-{@code b} grown by {@code radius}, moved as a whole
+   * (it does not turn). Exact for every shape, including the corners of boxes and hulls and the triangles of meshes
+   * (one-sided triangles stop it only from the front).
+   */
+  public Optional<RayHit> capsuleCast(Scene scene, Vector3f a, Vector3f b, float radius, Vector3f dir,
+      float maxDistance, Predicate<Collider> accept) {
+    if (dir.lengthSquared() < 1e-12f || maxDistance < 0f) {
+      return Optional.empty();
+    }
+    final var cast = this.shapeCast;
+    if (!cast(scene, cast, a, b, radius, new Vector3f(dir).normalize(), maxDistance, accept)) {
+      return Optional.empty();
+    }
+    return Optional.of(new RayHit(cast.bestCollider, new Vector3f(cast.bestPoint), new Vector3f(cast.bestNormal),
+        cast.best));
+  }
+
+  /**
+   * The cast behind {@link #capsuleCast}, into a caller's {@link ShapeCast} (the hit is left in its best fields);
+   * {@code dir} must be normalized. Does not allocate.
+   */
+  boolean cast(Scene scene, ShapeCast cast, Vector3f a, Vector3f b, float radius, Vector3f dir, float maxDistance,
+      Predicate<Collider> accept) {
+    cast.reset(a, b, radius, maxDistance);
+    final float r = radius + PAIR_MARGIN;
+    final float ex = dir.x * maxDistance;
+    final float ey = dir.y * maxDistance;
+    final float ez = dir.z * maxDistance;
+    final var found = cast.candidates;
+    collect(scene.components(Collider.class), Math.min(a.x, b.x) + Math.min(0f, ex) - r,
+        Math.min(a.y, b.y) + Math.min(0f, ey) - r, Math.min(a.z, b.z) + Math.min(0f, ez) - r,
+        Math.max(a.x, b.x) + Math.max(0f, ex) + r, Math.max(a.y, b.y) + Math.max(0f, ey) + r,
+        Math.max(a.z, b.z) + Math.max(0f, ez) + r, found);
+    for (int i = 0; i < found.size(); i++) {
+      final var c = found.get(i);
+      if (c.isEnabled() && accept.test(c)) {
+        cast.test(c, dir);
+      }
+    }
+    found.clear();
+    return cast.bestCollider != null;
+  }
+
+  /** All colliders (including triggers) that overlap the capsule {@code a}-{@code b} of {@code radius}. */
+  public List<Collider> overlapCapsule(Scene scene, Vector3f a, Vector3f b, float radius,
+      Predicate<Collider> accept) {
+    final List<Collider> out = new ArrayList<>();
+    near(scene, a, b, radius, this.candidates);
+    final var cast = this.shapeCast;
+    cast.reset(a, b, radius, 0f);
+    for (int i = 0; i < this.candidates.size(); i++) {
+      final var c = this.candidates.get(i);
+      if (c.isEnabled() && accept.test(c) && cast.overlaps(c)) {
+        out.add(c);
+      }
+    }
+    this.candidates.clear();
+    return out;
+  }
+
+  /** The colliders that may touch the capsule {@code a}-{@code b} of {@code radius} (by the grid of the last step). */
+  void near(Scene scene, Vector3f a, Vector3f b, float radius, List<Collider> out) {
+    final float r = radius + PAIR_MARGIN;
+    collect(scene.components(Collider.class), Math.min(a.x, b.x) - r, Math.min(a.y, b.y) - r,
+        Math.min(a.z, b.z) - r, Math.max(a.x, b.x) + r, Math.max(a.y, b.y) + r, Math.max(a.z, b.z) + r, out);
+  }
+
+  private final ShapeCast shapeCast = new ShapeCast();
+  private final List<Collider> candidates = new ArrayList<>();
+
+  /**
+   * The colliders whose grid cells overlap the box (all colliders before the first step or when the scene's colliders
+   * changed since), each once.
+   */
+  private void collect(List<Collider> all, float x0, float y0, float z0, float x1, float y1, float z1,
+      List<Collider> out) {
+    out.clear();
+    if (!gridMatches(all)) {
+      out.addAll(all);
+      return;
+    }
+    this.collectStamp = nextQueryStamp();
+    this.collectOut = out;
+    this.grid.forEachCellInBox(x0, y0, z0, x1, y1, z1, this.collectVisitor);
+    this.collectOut = null;
+    final var large = this.grid.large();
+    for (int k = 0; k < large.size(); k++) {
+      collectOnce(large.get(k), this.collectStamp, out);
+    }
+  }
+
+  private int collectStamp;
+  private List<Collider> collectOut;
+  private final SpatialGrid.CellVisitor collectVisitor = (ids, x0, y0, z0, x1, y1, z1) -> {
+    for (int k = 0; k < ids.size(); k++) {
+      collectOnce(ids.get(k), this.collectStamp, this.collectOut);
+    }
+  };
+
+  private void collectOnce(int index, int stamp, List<Collider> out) {
+    if (this.queryStamps[index] != stamp) {
+      this.queryStamps[index] = stamp;
+      out.add(this.colliders.get(index));
     }
   }
 }

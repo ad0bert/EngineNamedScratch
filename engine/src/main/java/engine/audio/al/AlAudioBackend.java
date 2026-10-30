@@ -11,6 +11,8 @@ import com.jogamp.openal.ALC;
 import com.jogamp.openal.ALCcontext;
 import com.jogamp.openal.ALCdevice;
 import com.jogamp.openal.ALConstants;
+import com.jogamp.openal.ALExt;
+import com.jogamp.openal.ALExtConstants;
 import com.jogamp.openal.ALFactory;
 
 import engine.audio.AudioBackend;
@@ -18,11 +20,16 @@ import engine.audio.AudioClip;
 import engine.audio.AudioData;
 import engine.audio.AudioVoice;
 import engine.audio.PcmStream;
+import engine.audio.ReverbPreset;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * The OpenAL implementation of {@link AudioBackend} (JOAL, which ships OpenAL Soft). Distance attenuation is done by
  * the engine, so OpenAL's distance model is off: it only pans the spatial voices and applies the Doppler shift.
+ *
+ * <p>
+ * With the EFX extension (OpenAL Soft has it) there is one reverb in an auxiliary effect slot that every voice can
+ * send to, and each voice has a low-pass filter on its direct path (occlusion, muffling zones).
  */
 @Slf4j
 public final class AlAudioBackend implements AudioBackend {
@@ -35,6 +42,10 @@ public final class AlAudioBackend implements AudioBackend {
   private final List<AlClip> clips = new ArrayList<>();
   private final float[] orientation = new float[6];
   private boolean disposed;
+  /** EFX, or null without it. */
+  ALExt efx;
+  int effectSlot;
+  private int reverbEffect;
 
   private AlAudioBackend(AL al, ALC alc, ALCdevice device, ALCcontext context, int maxVoices) {
     this.al = al;
@@ -45,6 +56,24 @@ public final class AlAudioBackend implements AudioBackend {
     this.name = specifier != null ? specifier : "OpenAL";
     al.alDistanceModel(ALConstants.AL_NONE);
     final int[] id = new int[1];
+    if (alc.alcIsExtensionPresent(device, "ALC_EXT_EFX")) {
+      try {
+        final var ext = ALFactory.getALExt();
+        al.alGetError();
+        ext.alGenAuxiliaryEffectSlots(1, id, 0);
+        this.effectSlot = id[0];
+        ext.alGenEffects(1, id, 0);
+        this.reverbEffect = id[0];
+        ext.alEffecti(this.reverbEffect, ALExtConstants.AL_EFFECT_TYPE, ALExtConstants.AL_EFFECT_REVERB);
+        if (al.alGetError() == ALConstants.AL_NO_ERROR) {
+          this.efx = ext;
+        } else {
+          log.info("EFX is present but its reverb could not be set up; no sound effects");
+        }
+      } catch (RuntimeException | LinkageError e) {
+        log.info("EFX is not usable ({}); no sound effects", e.getMessage());
+      }
+    }
     for (int i = 0; i < maxVoices; i++) {
       al.alGetError();
       al.alGenSources(1, id, 0);
@@ -83,7 +112,8 @@ public final class AlAudioBackend implements AudioBackend {
         log.info("The sound device has no voices; sound is off");
         return null;
       }
-      log.info("Sound: {} with {} voices", backend.name, backend.voices.size());
+      log.info("Sound: {} with {} voices{}", backend.name, backend.voices.size(),
+          backend.efx != null ? ", reverb and filters (EFX)" : "");
       return backend;
     } catch (RuntimeException | LinkageError e) {
       log.info("OpenAL is not available ({}); sound is off", e.getMessage());
@@ -150,6 +180,35 @@ public final class AlAudioBackend implements AudioBackend {
   }
 
   @Override
+  public boolean supportsEffects() {
+    return this.efx != null;
+  }
+
+  @Override
+  public void setReverb(ReverbPreset preset, float wet) {
+    if (this.efx == null || this.disposed) {
+      return;
+    }
+    final var ext = this.efx;
+    if (preset == null || wet <= 0f) {
+      ext.alAuxiliaryEffectSloti(this.effectSlot, ALExtConstants.AL_EFFECTSLOT_EFFECT, ALExtConstants.AL_EFFECT_NULL);
+      return;
+    }
+    final int e = this.reverbEffect;
+    ext.alEffectf(e, ALExtConstants.AL_REVERB_DENSITY, preset.density);
+    ext.alEffectf(e, ALExtConstants.AL_REVERB_DIFFUSION, preset.diffusion);
+    ext.alEffectf(e, ALExtConstants.AL_REVERB_GAIN, preset.gain);
+    ext.alEffectf(e, ALExtConstants.AL_REVERB_GAINHF, preset.gainHF);
+    ext.alEffectf(e, ALExtConstants.AL_REVERB_DECAY_TIME, preset.decayTime);
+    ext.alEffectf(e, ALExtConstants.AL_REVERB_DECAY_HFRATIO, preset.decayHFRatio);
+    ext.alEffectf(e, ALExtConstants.AL_REVERB_REFLECTIONS_GAIN, preset.reflectionsGain);
+    ext.alEffectf(e, ALExtConstants.AL_REVERB_LATE_REVERB_GAIN, preset.lateReverbGain);
+    // a slot copies the effect when it is attached: attach it again after changing it
+    ext.alAuxiliaryEffectSloti(this.effectSlot, ALExtConstants.AL_EFFECTSLOT_EFFECT, e);
+    ext.alAuxiliaryEffectSlotf(this.effectSlot, ALExtConstants.AL_EFFECTSLOT_GAIN, Math.min(1f, wet));
+  }
+
+  @Override
   public void update(double dt) {
     if (this.disposed) {
       return;
@@ -157,6 +216,11 @@ public final class AlAudioBackend implements AudioBackend {
     for (int i = 0; i < this.voices.size(); i++) {
       this.voices.get(i).update();
     }
+  }
+
+  /** The last OpenAL error (and clears it): for tests. */
+  int error() {
+    return this.al.alGetError();
   }
 
   boolean disposed() {
@@ -186,6 +250,10 @@ public final class AlAudioBackend implements AudioBackend {
     }
     for (AlVoice v : this.voices) {
       v.dispose();
+    }
+    if (this.efx != null) {
+      this.efx.alDeleteAuxiliaryEffectSlots(1, new int[] { this.effectSlot }, 0);
+      this.efx.alDeleteEffects(1, new int[] { this.reverbEffect }, 0);
     }
     this.disposed = true;
     this.alc.alcMakeContextCurrent(null);

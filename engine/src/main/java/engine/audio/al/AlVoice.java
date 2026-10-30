@@ -4,6 +4,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 import com.jogamp.openal.ALConstants;
+import com.jogamp.openal.ALExtConstants;
 
 import engine.audio.AudioClip;
 import engine.audio.AudioVoice;
@@ -27,6 +28,11 @@ final class AlVoice implements AudioVoice {
   private float gain = Float.NaN;
   private float pitch = Float.NaN;
   private final int[] one = new int[1];
+  // EFX: a low-pass on the direct path and the send into the reverb, made on first use
+  private int directFilter;
+  private int sendFilter;
+  private float directHF = Float.NaN;
+  private float send = Float.NaN;
 
   // streaming
   private PcmStream stream;
@@ -212,8 +218,42 @@ final class AlVoice implements AudioVoice {
     return this.clip;
   }
 
+  @Override
+  public void setFilter(float directHF, float send) {
+    final var ext = this.backend.efx;
+    if (ext == null) {
+      return;
+    }
+    final float hf = Math.max(0f, Math.min(1f, directHF));
+    final float s = Math.max(0f, Math.min(1f, send));
+    if (this.directFilter == 0) {
+      final int[] ids = new int[2];
+      ext.alGenFilters(2, ids, 0);
+      this.directFilter = ids[0];
+      this.sendFilter = ids[1];
+      ext.alFilteri(this.directFilter, ALExtConstants.AL_FILTER_TYPE, ALExtConstants.AL_FILTER_LOWPASS);
+      ext.alFilteri(this.sendFilter, ALExtConstants.AL_FILTER_TYPE, ALExtConstants.AL_FILTER_LOWPASS);
+      ext.alFilterf(this.directFilter, ALExtConstants.AL_LOWPASS_GAIN, 1f);
+      ext.alFilterf(this.sendFilter, ALExtConstants.AL_LOWPASS_GAINHF, 1f);
+    }
+    if (hf != this.directHF) {
+      this.directHF = hf;
+      ext.alFilterf(this.directFilter, ALExtConstants.AL_LOWPASS_GAINHF, hf);
+      this.backend.al.alSourcei(this.source, ALExtConstants.AL_DIRECT_FILTER, this.directFilter); // copies it
+    }
+    if (s != this.send) {
+      this.send = s;
+      ext.alFilterf(this.sendFilter, ALExtConstants.AL_LOWPASS_GAIN, s);
+      this.backend.al.alSource3i(this.source, ALExtConstants.AL_AUXILIARY_SEND_FILTER,
+          s > 0f ? this.backend.effectSlot : ALExtConstants.AL_EFFECTSLOT_NULL, 0, this.sendFilter);
+    }
+  }
+
   void dispose() {
     stop();
+    if (this.directFilter != 0) {
+      this.backend.efx.alDeleteFilters(2, new int[] { this.directFilter, this.sendFilter }, 0);
+    }
     this.backend.al.alDeleteSources(1, new int[] { this.source }, 0);
     if (this.buffers != null) {
       this.backend.al.alDeleteBuffers(STREAM_BUFFERS, this.buffers, 0);

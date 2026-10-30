@@ -26,6 +26,8 @@ import lombok.extern.slf4j.Slf4j;
  * <pre>
  * { "format": "engine-scene", "version": 1,
  *   "materials": [ { "color": [1, 1, 1, 1], "texture": "textures/cubeFace.png", ... } ],
+ *   "clips": [ { "name": "walk", "channels": [ { "node": "hip", "property": "ROTATION", "times": [...], ... } ] } ],
+ *   "skins": [ { "joints": [3, 4, 5], "inverseBind": [16 floats per joint] } ],
  *   "entities": [
  *     { "name": "crate", "parent": null,
  *       "transform": { "position": [0, 1, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
@@ -115,6 +117,12 @@ public class SceneSerializer {
     root.put("format", FORMAT);
     root.put("version", VERSION);
     root.put("materials", new ArrayList<Object>(ctx.materialData()));
+    if (!ctx.clipData().isEmpty()) {
+      root.put("clips", new ArrayList<Object>(ctx.clipData()));
+    }
+    if (!ctx.skinData().isEmpty()) {
+      root.put("skins", new ArrayList<Object>(ctx.skinData()));
+    }
     root.put("entities", list);
     return root;
   }
@@ -168,7 +176,9 @@ public class SceneSerializer {
     if (version > VERSION) {
       throw new IllegalArgumentException("scene file version " + version + " is newer than " + VERSION);
     }
-    ctx.beginRead(root.containsKey("materials") ? Json.asList(root.get("materials")) : List.of(), materialCache);
+    ctx.beginRead(root.containsKey("materials") ? Json.asList(root.get("materials")) : List.of(), materialCache,
+        root.containsKey("clips") ? Json.asList(root.get("clips")) : List.of(),
+        root.containsKey("skins") ? Json.asList(root.get("skins")) : List.of());
     final var list = Json.asList(root.get("entities"));
     final List<Entity> out = new ArrayList<>(list.size());
     for (int i = 0; i < list.size(); i++) {

@@ -1,5 +1,7 @@
 package engine.render;
 
+import java.util.Arrays;
+
 import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -29,8 +31,15 @@ public class MeshRenderer extends Component {
    */
   public Skin skin;
   private boolean staticGeometry;
+  /** Coarser meshes and the camera distances from which they are drawn instead, nearest first. */
+  private GpuMesh[] lodMeshes = new GpuMesh[0];
+  private float[] lodDistances = new float[0];
+  /** Not drawn (nor casting shadows) beyond this camera distance; 0 always draws. */
+  public float cullDistance;
 
   // render state, owned by RenderQueue
+  /** The mesh chosen for the camera distance this frame. */
+  GpuMesh drawn;
   final Matrix4f model = new Matrix4f();
   final Matrix3f normal = new Matrix3f();
   final Vector3f center = new Vector3f();
@@ -49,6 +58,57 @@ public class MeshRenderer extends Component {
   public MeshRenderer(GpuMesh mesh, Material material) {
     this.mesh = mesh;
     this.material = material;
+    this.drawn = mesh;
+  }
+
+  /**
+   * Draws {@code coarser} instead of the mesh (or of the last level added) when the camera is at least
+   * {@code distance} away (times {@link RenderSettings#lodBias}). Levels must be added nearest first; bounds and
+   * culling stay those of the full mesh, and {@link MeshSimplifier} makes such meshes.
+   */
+  public MeshRenderer addLod(float distance, GpuMesh coarser) {
+    final int n = this.lodMeshes.length;
+    if (n > 0 && distance <= this.lodDistances[n - 1]) {
+      throw new IllegalArgumentException("levels of detail must be added nearest first");
+    }
+    if (coarser.data().drawMode() != this.mesh.data().drawMode()) {
+      throw new IllegalArgumentException("a level of detail must have the mesh's draw mode");
+    }
+    this.lodMeshes = Arrays.copyOf(this.lodMeshes, n + 1);
+    this.lodDistances = Arrays.copyOf(this.lodDistances, n + 1);
+    this.lodMeshes[n] = coarser;
+    this.lodDistances[n] = distance;
+    return this;
+  }
+
+  public int lodCount() {
+    return this.lodMeshes.length;
+  }
+
+  public GpuMesh lodMesh(int level) {
+    return this.lodMeshes[level];
+  }
+
+  public float lodDistance(int level) {
+    return this.lodDistances[level];
+  }
+
+  /** The mesh drawn in the last frame: the mesh itself or one of its levels of detail. */
+  public GpuMesh drawnMesh() {
+    return this.drawn;
+  }
+
+  /** Picks the level for a camera {@code distance} (already divided by the bias); false if culled by distance. */
+  boolean chooseLod(float distance) {
+    if (this.cullDistance > 0f && distance > this.cullDistance) {
+      return false;
+    }
+    GpuMesh m = this.mesh;
+    for (int i = 0; i < this.lodDistances.length && distance >= this.lodDistances[i]; i++) {
+      m = this.lodMeshes[i];
+    }
+    this.drawn = m;
+    return true;
   }
 
   public boolean isStaticGeometry() {
