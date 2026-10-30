@@ -224,6 +224,10 @@ class PauseMenu implements GameState {
   ground, pushes dynamic bodies by its mass, is pushed out of things that move into it, and is a collider other bodies
   rest on. `FirstPersonController` walks with it when the entity has one (pitch on a `head` child) and flies
   otherwise.
+- **Navigation:** `NavGrid` bakes where an agent of a given radius, height, step and slope can walk from the static
+  colliders (up to four floors per cell, so bridges and storeys work), finds paths with A* (no corner cutting) and
+  straightens them; regions can be baked again and cells blocked at run time. A `NavAgent` walks its entity along
+  the path, through its `CharacterController` if it has one, and plans again when the goal moves or it gets stuck.
 - **Loop:** fixed-timestep updates with render interpolation between the last two steps.
 - **Input:** keys, mouse, text and up to four gamepads (JInput; radial stick and trigger dead zones, connect and
   disconnect), with actions bound to keys, gamepad buttons and gamepad axes at once; a first-person controller that
@@ -303,6 +307,7 @@ How it works:
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
+| `engine.navigation` | `NavGrid` (baked walkable grid, A*, path straightening, blocking), `NavAgent` (path following) |
 | `engine.debug` | `DebugOverlay` |
 | `game` (demo module) | Demo scene (`DemoGame`, `Main`) |
 
@@ -344,6 +349,10 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   the step. A `CharacterController` stays upright (it turns only about Y), takes the ground's motion at the point it
   stands on but not its turn, and is seen by bodies as a static collider moved by code, so it pushes them only
   through `mass`, while bodies that run into it meet an immovable wall.
+- Navigation grids are 2.5D: walkable heights are sampled at cell centres (a cell is walkable if its centre is and
+  the agent fits there), so narrow gaps smaller than a cell may close, and jumps or drops are not links in the graph.
+  Baking is synchronous and costs about a millisecond per 10 cells (1.6 s for the demo's 120 x 120 cells in the CI
+  container); agents do not avoid each other.
 - At most 8 lights per frame in a forward renderer; only the first directional light has cascaded shadows and at most
   4 point or spot lights cast shadows. Image-based lighting comes from the sky only (no local reflection probes, no
   ambient occlusion), so the insides of rooms get the sky's ambient light too.

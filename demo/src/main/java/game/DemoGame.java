@@ -30,6 +30,8 @@ import engine.ecs.Spinner;
 import engine.input.FirstPersonController;
 import engine.input.Gamepad;
 import engine.messaging.IMessageReceiver;
+import engine.navigation.NavAgent;
+import engine.navigation.NavGrid;
 import engine.messaging.MessageObject;
 import engine.messaging.MessageQueue;
 import engine.physics.BallJoint;
@@ -83,6 +85,8 @@ public class DemoGame implements Game {
   private Gui gui;
   private FirstPersonController controller;
   private CharacterController walker;
+  private Entity companion;
+  private NavGrid navigation;
   /** Child of the player with the camera and the listener. */
   private Entity head;
   /** Small bodies the player walks through instead of being blocked by. */
@@ -496,6 +500,19 @@ public class DemoGame implements Game {
       saveScene(engine, Path.of(System.getProperty("demo.saveScene")));
     }
 
+    // a companion that walks after the player round obstacles (its navigation grid is baked at the first update)
+    this.companion = new Entity("companion");
+    this.companion.transform().position().set(-4f, -0.09f, 10f);
+    this.companion.add(new CapsuleCollider(0.3f, 0.6f));
+    this.companion.add(new CharacterController());
+    final var look = new Entity("companion-body");
+    look.transform().setParent(this.companion.transform());
+    look.transform().scale().set(0.6f, 1.8f, 0.6f);
+    look.add(new MeshRenderer(res.mesh(MeshFactory.sphere(0.5f, 20, 12)),
+        new Material().color(0.95f, 0.55f, 0.15f, 1f).pbr(0f, 0.5f)));
+    scene.add(this.companion);
+    scene.add(look);
+
     loadSettings(engine);
     if (Boolean.getBoolean("demo.paused")) { // -Ddemo.paused=true: start in the pause menu (screenshots)
       engine.states().push(new PauseState());
@@ -748,6 +765,29 @@ public class DemoGame implements Game {
     }
   }
 
+  /** The companion keeps within a few metres of the player, planning its way on the navigation grid. */
+  private void followPlayer(Engine engine) {
+    if (this.navigation == null) {
+      final long t0 = System.nanoTime();
+      final var settings = new NavGrid.Settings();
+      settings.layerMask = ~PhysicsSystem.layers(LAYER_DEBRIS);
+      this.navigation = NavGrid.bake(engine.physics(), engine.scene(), settings, -30f, -2f, -30f, 30f, 8f, 30f);
+      log.info("Baked a navigation grid of {} x {} cells ({} walkable) in {} ms", this.navigation.width(),
+          this.navigation.depth(), this.navigation.walkableCount(), (System.nanoTime() - t0) / 1_000_000);
+      final var agent = this.companion.add(new NavAgent(this.navigation));
+      agent.speed = 3.5f;
+      agent.stopDistance = 2.5f;
+    }
+    final var agent = this.companion.get(NavAgent.class);
+    final var target = this.player.transform().worldPosition(new Vector3f()).sub(0f, 0.9f, 0f);
+    final var at = this.companion.transform().position();
+    final boolean far = Math.hypot(target.x - at.x, target.z - at.z) > 3.5f;
+    if (far && (!agent.hasDestination() || agent.path().isEmpty()
+        || agent.path().get(agent.path().size() - 1).distance(target) > 1.5f)) {
+      agent.setDestination(target); // plans again only when the player moved on
+    }
+  }
+
   @Override
   public void update(Engine engine, double dt) {
     if (engine.input().wasActionPressed("fullscreen")) {
@@ -761,6 +801,7 @@ public class DemoGame implements Game {
       return;
     }
     this.turntable.transform().rotation().rotateY((float) dt * this.turntableSpeed);
+    followPlayer(engine);
     this.danceTime += (float) dt;
     if (this.danceTime > 3f) { // every three seconds the right tube changes its dance, blending over half a second
       this.danceTime = 0f;
