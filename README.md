@@ -45,6 +45,7 @@ System properties:
 | `engine.antiAliasing=false`, `engine.orderIndependentTransparency=false` | turn off FXAA / weighted blended OIT |
 | `engine.ambientOcclusion=false`, `engine.aoRadius=0.8`, `engine.aoStrength=2` | screen-space ambient occlusion; `engine.debugAmbientOcclusion=true` shows it in grey |
 | `engine.skyIntensity=1` | brightness of the sky and its lighting |
+| `engine.headless=true` | `Engine.run()` runs without a window, sound or gamepads (`Engine.runHeadless`); with `engine.exitAfterFrames=N` it stops after N steps |
 | `engine.audio=false` | no sound (also automatic without a sound device) |
 | `engine.gamepads=false` | do not look for gamepads |
 | `engine.fullscreen=true`, `engine.vsync=false` | override the config's `app.fullscreen` / `app.vsync` |
@@ -155,6 +156,14 @@ class PauseMenu implements GameState {
   updates stop; sound keeps playing (`engine.audio().mixer().setMuted(true)` silences it). Systems that should keep
   going return true from `ISystem.runsWhilePaused`.
 - **Window:** `engine.setFullscreen`, `setVsync`, `setWindowSize`, `monitorResolutions()` for a settings menu.
+- **Without a window:** `engine.runHeadless()` runs the same game in real time with nothing drawn, no sound and no
+  gamepads (resources still load, meshes keep their data for colliders): for servers and tools. For tests and
+  simulations faster than real time, `engine.startHeadless()`, then `engine.runTicks(n)` and `engine.stop()`, all on
+  one thread. `engine.isHeadless()` tells the game.
+- **Steps:** `engine.tick()` is the number of the current fixed step (1, 2, …, also counted while paused).
+  `engine.addStepHook(hook)` runs code before the systems (`beforeSystems`) and after the game's update (`afterStep`)
+  of every step, paused or not; networking is built on this. `engine.setTimeScale(1.01)` runs steps slightly more
+  often in wall time without changing their length (clock corrections).
 - **Assets and user files:** `engine.assets()` looks in added directories, then on the classpath;
   `engine.userDirs().config()` / `.data()` are the platform's per-user directories; `Settings.load(file)` reads and
   safely writes a properties file of player settings.
@@ -322,9 +331,9 @@ How it works:
 
 | Package | Purpose |
 |---|---|
-| `engine.core` | `Engine` (window, GL loop, lifecycle, pause, window options, screenshots, hot reloading), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
+| `engine.core` | `Engine` (window, GL loop or headless loop, lifecycle, pause, step numbers, window options, screenshots, hot reloading), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `StepHook`, `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
-| `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
+| `engine.render` | Backend-agnostic: `RenderBackend` (and `NullRenderBackend`, which draws nothing), `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
 | `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, particles, sky and image-based lighting, post-processing, UI batching) |
 | `engine.animation` | `Track`, `Easing`, `Channel`, `AnimationClip`, `Animator` (layers, blending), `AnimationSystem` |
 | `engine.audio` | Backend-agnostic: `AudioBackend`, `AudioClip`/`AudioVoice` handles, `AudioSource`, `AudioListener`, `ImpactSound`, `AudioMixer`/`AudioBus`, `Rolloff`, `VoiceAllocator`, `AudioSystem`, `NullAudioBackend` |

@@ -1,7 +1,11 @@
 # Networking: design notes
 
-Status: proposal, nothing implemented yet. This note looks at how a network stack would fit the engine as it is
-(0.9.0), what it would cost, and in which order to build it.
+Status: phase 1 done (headless engine, step numbers, step hooks); the rest is a proposal. This note looks at how a
+network stack would fit the engine as it was at 0.9.0, what it would cost, and in which order to build it.
+
+Decided: the target is **co-op games on listen servers** (one player hosts inside their game), with **no new
+dependencies**. Lockstep and lag compensation for competitive play are not goals; a dedicated server stays possible
+(phase 1 gives the headless engine it needs) but is not the focus.
 
 ## What the engine already gives us
 
@@ -185,7 +189,7 @@ The engine's tests run without a GPU, and the network stack should too:
 
 | Phase | Content | Usable for |
 |---|---|---|
-| 1 | Headless engine, tick counter, step hooks | Dedicated simulation, server tests |
+| 1 (done) | Headless engine (`Engine.runHeadless`, `startHeadless` + `runTicks`, `NullRenderBackend`), tick counter (`Engine.tick()`), step hooks (`StepHook`), time scale for clock sync | Dedicated simulation, server tests |
 | 2 | `engine.net.io` + `transport` (UDP, loopback, channels, acks, fragmentation) + session (connect, timeout, version) | Turn-based games, chat, lobbies, lockstep games with their own simulation |
 | 3 | Replication: `NetworkIdentity`, spawn/despawn, transform snapshots, interpolation of remote entities, RPCs | Server-authoritative games where a little input delay is fine |
 | 4 | Input commands, client prediction and reconciliation of `CharacterController`, clock sync | First/third-person action games |
