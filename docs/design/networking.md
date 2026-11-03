@@ -1,6 +1,7 @@
 # Networking: design notes
 
-Status: phase 1 done (headless engine, step numbers, step hooks); the rest is a proposal. This note looks at how a
+Status: phases 1 (headless engine, step numbers, step hooks) and 2 (transport and sessions, package `engine.net`)
+are done; the rest is a proposal. This note looks at how a
 network stack would fit the engine as it was at 0.9.0, what it would cost, and in which order to build it.
 
 Decided: the target is **co-op games on listen servers** (one player hosts inside their game), with **no new
@@ -97,8 +98,12 @@ messages; a lockstep game uses session + its own input exchange.
 - Fragmentation for the rare large reliable message (initial level state), with a cap.
 - A `BitWriter`/`BitReader` with quantisation helpers: positions to fixed point within level bounds, quaternions as
   "smallest three" (~29 bits), velocities clamped, booleans as single bits. This is where most bandwidth is won.
-- One I/O thread per socket does the blocking receive and the sends; the game thread never touches the socket. It
-  receives through a lock-free queue drained at the start of the step and enqueues outgoing packets at its end.
+- ~~One I/O thread per socket~~ *As built:* no I/O thread. The socket is non-blocking; the server and client read
+  everything waiting at the start of the step and send at its end, on the update thread. The operating system's
+  receive buffer (made 1 MiB) plays the part of the queue, the latency is the same (a packet waits at most one step
+  either way), and there is no locking. Round-trip times are therefore measured to about a step.
+- *As built:* two deliveries, `UNRELIABLE` and `RELIABLE` (ordered). A sequenced channel was not needed yet: snapshots
+  will carry their tick and can drop old ones themselves.
 - Security, first version: a connect handshake with a server-issued challenge (stops spoofed-address amplification),
   size limits on everything read, and a protocol version check. Encryption (the JDK has DTLS through `SSLEngine`)
   and authentication tokens are a later, optional step; they belong behind the same `Transport` interface.
@@ -111,7 +116,10 @@ messages; a lockstep game uses session + its own input exchange.
   *ahead* of it (RTT/2 + a jitter margin), so its input for tick N arrives before the server simulates N. The
   estimate is corrected by gently speeding up or slowing down the client's `FixedTimestep`, not by jumping.
 - Events for the game: `onConnected`, `onDisconnected(reason)`, `onMessage` — delivered on the game thread through the
-  existing message service (a new `MessageQueue.NETWORK`).
+  existing message service (a new `MessageQueue.NETWORK`). *As built:* a typed `NetListener` instead (connected,
+  disconnected with a `DisconnectReason`, received); it is called on the update thread already, so the message
+  service would only have added a cast. `NetServer` and `NetClient` are `StepHook`s themselves rather than being
+  driven by a `NetworkSystem`.
 
 ### Replication
 
@@ -190,7 +198,7 @@ The engine's tests run without a GPU, and the network stack should too:
 | Phase | Content | Usable for |
 |---|---|---|
 | 1 (done) | Headless engine (`Engine.runHeadless`, `startHeadless` + `runTicks`, `NullRenderBackend`), tick counter (`Engine.tick()`), step hooks (`StepHook`), time scale for clock sync | Dedicated simulation, server tests |
-| 2 | `engine.net.io` + `transport` (UDP, loopback, channels, acks, fragmentation) + session (connect, timeout, version) | Turn-based games, chat, lobbies, lockstep games with their own simulation |
+| 2 (done) | `engine.net`: `UdpTransport`, `LoopbackNetwork` (latency, jitter, loss, duplicates), `Connection` (acks, reliable ordered messages, fragmentation, RTT/loss/bandwidth), `NetServer`/`NetClient` (cookie handshake, version check, full/denied, timeouts, kick/leave/close), `BitWriter`/`BitReader` | Turn-based games, chat, lobbies, lockstep games with their own simulation |
 | 3 | Replication: `NetworkIdentity`, spawn/despawn, transform snapshots, interpolation of remote entities, RPCs | Server-authoritative games where a little input delay is fine |
 | 4 | Input commands, client prediction and reconciliation of `CharacterController`, clock sync | First/third-person action games |
 | 5 | Delta compression, quantisation tuning, interest management, bandwidth budgets | Larger levels, more players |

@@ -164,6 +164,28 @@ class PauseMenu implements GameState {
   `engine.addStepHook(hook)` runs code before the systems (`beforeSystems`) and after the game's update (`afterStep`)
   of every step, paused or not; networking is built on this. `engine.setTimeScale(1.01)` runs steps slightly more
   often in wall time without changing their length (clock corrections).
+- **Networking** (`engine.net`, UDP, no extra libraries): the host runs a `NetServer`, players a `NetClient`; both
+  are step hooks. Messages are byte arrays (build them with `BitWriter`, read with `BitReader`), sent `UNRELIABLE`
+  (positions, inputs) or `RELIABLE` (in order, exactly once, split and joined when large). Replicating entities is
+  not there yet; see `docs/design/networking.md`.
+
+  ```java
+  var server = new NetServer(UdpTransport.bind(27015), NetConfig.forGame(engine.config()));
+  server.setListener(new NetListener() {
+    public void connected(Connection c) { c.send(welcome, Delivery.RELIABLE); }
+    public void received(Connection c, byte[] data, Delivery d) { server.broadcastExcept(c, data, d); }
+  });
+  engine.addStepHook(server);
+
+  var client = new NetClient(UdpTransport.open(), new InetSocketAddress(host, 27015), NetConfig.forGame(engine.config()));
+  client.setListener(...);                     // connected, disconnected(reason, message), received
+  client.connect(name.getBytes(UTF_8));        // the server's ConnectionFilter can refuse it
+  engine.addStepHook(client);
+  ```
+
+  `NetConfig.forGame` only lets the same game and version connect. A connection reports `rtt()`, `packetLoss()` and
+  bytes per second. For tests, `LoopbackNetwork` connects servers and clients in memory with a clock you drive and
+  chosen latency, jitter, loss and duplication.
 - **Assets and user files:** `engine.assets()` looks in added directories, then on the classpath;
   `engine.userDirs().config()` / `.data()` are the platform's per-user directories; `Settings.load(file)` reads and
   safely writes a properties file of player settings.
@@ -344,6 +366,7 @@ How it works:
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
+| `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig`, `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Transport` with `UdpTransport` and `LoopbackNetwork` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |

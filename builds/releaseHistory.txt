@@ -3,6 +3,10 @@ Unreleased
   -Dengine.headless=true; NullRenderBackend
 - Engine.tick(): the number of the current fixed step; StepHook (beforeSystems / afterStep, also while paused);
   Engine.setTimeScale and FixedTimestep.setTimeScale / nanosUntilNextStep
+- Networking (engine.net): NetServer / NetClient over UDP (or LoopbackNetwork in memory, with latency, jitter, loss
+  and duplicates), handshake with cookies, version check, server full / denied, timeouts, kick / leave / close;
+  reliable ordered messages (large ones split and joined) and unreliable ones; RTT, loss and bandwidth per
+  connection; BitWriter / BitReader
 
 Version 0.9.0
 Characters, navigation and a richer world. Contains:
