@@ -7,6 +7,7 @@ import java.util.List;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
+import org.joml.Vector3fc;
 import lombok.Getter;
 
 /**
@@ -63,6 +64,15 @@ public class Transform {
     this.prevPosition.set(this.position);
     this.prevRotation.set(this.rotation);
     this.prevScale.set(this.scale);
+  }
+
+  /**
+   * Moves the previous position used for render interpolation by {@code offset}, the current one staying where it is.
+   * After wrapping an entity around the edge of a world that wraps (moving it by a whole world's width), shift the
+   * previous position by the same amount: it keeps moving smoothly instead of sweeping across the world for a frame.
+   */
+  public void shiftPrevious(Vector3fc offset) {
+    this.prevPosition.add(offset);
   }
 
   /**

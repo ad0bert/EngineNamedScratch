@@ -60,6 +60,7 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
   private final Set<String> warned = new HashSet<>();
   NetListener listener = new NetListener() {
   };
+  Wraparound wraparound;
 
   Replication(Engine engine) {
     this.engine = engine;
@@ -90,6 +91,24 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
   /** Receives connections, disconnections and the game's own messages (see {@code send}). */
   public void setListener(NetListener listener) {
     this.listener = listener;
+  }
+
+  /**
+   * The box the game's world wraps around in, or null (the default) for open space: copies crossing an edge then
+   * blend the short way, across it, and so do corrections of predicted players and lag compensation. Set the same on
+   * the host and on clients.
+   */
+  public void setWraparound(Wraparound wraparound) {
+    this.wraparound = wraparound;
+  }
+
+  public Wraparound wraparound() {
+    return this.wraparound;
+  }
+
+  /** The point {@code t} of the way from {@code a} to {@code b}: straight, or the short way in a wraparound world. */
+  Vector3f blend(Vector3f a, Vector3f b, float t, Vector3f dest) {
+    return this.wraparound == null ? a.lerp(b, t, dest) : this.wraparound.lerp(a, b, t, dest);
   }
 
   /** The replicated entity with this network number, or null. */

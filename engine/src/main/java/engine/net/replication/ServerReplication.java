@@ -23,7 +23,6 @@ import engine.net.DisconnectReason;
 import engine.net.NetDataException;
 import engine.net.NetListener;
 import engine.net.NetServer;
-import engine.physics.CharacterController;
 import engine.physics.Collider;
 import engine.physics.PhysicsSystem;
 import engine.physics.RayHit;
@@ -67,6 +66,8 @@ public final class ServerReplication extends Replication {
     boolean removed;
     boolean alwaysRelevant;
     float priority = 1f;
+    /** How often the game said it jumped ({@link #teleported}). */
+    int jumps;
     /** Where it was after recent steps, oldest first, for lag compensation (entities with colliders only). */
     final java.util.ArrayDeque<Pose> poses = new java.util.ArrayDeque<>();
 
@@ -105,7 +106,7 @@ public final class ServerReplication extends Replication {
   private record SentEntry(int netId, QState state) {
   }
 
-  private record Pose(long tick, Vector3f position, Quaternionf rotation) {
+  private record Pose(long tick, Vector3f position, Quaternionf rotation, int jumps) {
   }
 
   private static final int POSE_HISTORY = 64;
@@ -146,7 +147,6 @@ public final class ServerReplication extends Replication {
   private final Map<Integer, Pilot> pilots = new java.util.HashMap<>();
   private Entity localPlayer;
   private CommandSource localSource;
-  private final CharacterController.State characterScratch = new CharacterController.State();
 
   @Getter private final NetServer server;
   private final Map<Entity, Tracked> tracked = new LinkedHashMap<>();
@@ -334,7 +334,7 @@ public final class ServerReplication extends Replication {
   }
 
   /** Where {@code t} was at {@code tick}, between the recorded steps around it; false if that is unknown. */
-  private static boolean poseAt(Tracked t, double tick, Vector3f position, Quaternionf rotation) {
+  private boolean poseAt(Tracked t, double tick, Vector3f position, Quaternionf rotation) {
     Pose before = null;
     for (Pose p : t.poses) {
       if (p.tick() <= tick) {
@@ -344,9 +344,12 @@ public final class ServerReplication extends Replication {
       if (before == null) {
         position.set(p.position());
         rotation.set(p.rotation());
+      } else if (before.jumps() != p.jumps()) {
+        position.set(before.position()); // it jumped in between: it was in one place or the other, never between
+        rotation.set(before.rotation());
       } else {
         final float f = (float) ((tick - before.tick()) / (p.tick() - before.tick()));
-        before.position().lerp(p.position(), f, position);
+        blend(before.position(), p.position(), f, position);
         before.rotation().slerp(p.rotation(), f, rotation);
       }
       return true;
@@ -365,7 +368,8 @@ public final class ServerReplication extends Replication {
         continue;
       }
       final var transform = t.entity.transform();
-      t.poses.addLast(new Pose(tick, new Vector3f(transform.position()), new Quaternionf(transform.rotation())));
+      t.poses.addLast(new Pose(tick, new Vector3f(transform.position()), new Quaternionf(transform.rotation()),
+          t.jumps));
       while (t.poses.size() > POSE_HISTORY) {
         t.poses.removeFirst();
       }
@@ -378,8 +382,8 @@ public final class ServerReplication extends Replication {
   }
 
   /**
-   * The host's own player: every step its {@link CharacterMotor} gets the next command from {@code source}. Null
-   * stops it. (Clients' players get theirs from the clients.)
+   * The host's own player: every step its {@link PredictedMotor} (e.g. a {@link CharacterMotor}) gets the next command
+   * from {@code source}. Null stops it. (Clients' players get theirs from the clients.)
    */
   public void setLocalPlayer(Entity player, CommandSource source) {
     this.localPlayer = player;
@@ -409,6 +413,19 @@ public final class ServerReplication extends Replication {
     this.tracked.put(entity, t);
     this.outbox.add(new Announce(t));
     return entity;
+  }
+
+  /**
+   * Tells clients that the entity jumped this step instead of moving there (a teleport, a respawn, a hyperspace jump):
+   * their copies go straight to the new place when they get to this step instead of sliding across the world to it,
+   * and lag compensation does not put it anywhere in between. Call it on the host, in the step the game moved it. A
+   * client's own predicted player is corrected at once either way.
+   */
+  public void teleported(Entity entity) {
+    final var t = this.tracked.get(entity);
+    if (t != null) {
+      t.jumps = (t.jumps + 1) & 0xFF;
+    }
   }
 
   /** Removes the entity from the scene here and on every client. Removing it from the scene does the same. */
@@ -444,9 +461,9 @@ public final class ServerReplication extends Replication {
   public void beforeSystems(Engine e, long tick, double dt) {
     this.server.receive();
     if (this.localPlayer != null && this.localSource != null) {
-      final var motor = this.localPlayer.findOrNull(CharacterMotor.class);
+      final var motor = this.localPlayer.findOrNull(PredictedMotor.class);
       if (motor != null && this.engine.scene().contains(this.localPlayer)) {
-        motor.apply(this.localSource.sample(tick, dt).quantized());
+        motor.drive(this.localSource.sample(tick, dt).quantized(), (float) dt);
       }
     }
     for (Pilot p : this.pilots.values()) {
@@ -463,9 +480,9 @@ public final class ServerReplication extends Replication {
       final int owner = t.identity.owner();
       if (owner >= 0) {
         final var pilot = this.pilots.get(owner);
-        final var motor = pilot == null ? null : t.entity.findOrNull(CharacterMotor.class);
+        final var motor = pilot == null ? null : t.entity.findOrNull(PredictedMotor.class);
         if (motor != null) {
-          motor.apply(pilot.last);
+          motor.drive(pilot.last, (float) dt);
         }
       }
     }
@@ -561,8 +578,8 @@ public final class ServerReplication extends Replication {
         if (t.identity.owner() != c.id() || !t.announced) {
           continue;
         }
-        final var controller = t.entity.findOrNull(CharacterController.class);
-        if (controller == null || t.entity.findOrNull(CharacterMotor.class) == null) {
+        final var motor = t.entity.findOrNull(PredictedMotor.class);
+        if (motor == null || !motor.canPredict()) {
           continue;
         }
         if (out == null) {
@@ -570,7 +587,7 @@ public final class ServerReplication extends Replication {
               .writeFloat(pilot.newest - tick);
         }
         out.writeVarInt(t.identity.netId());
-        writeCharacter(out, controller.save(this.characterScratch));
+        out.writeBytes(motor.savePredicted());
         out.align();
       }
       if (out != null) {
@@ -715,6 +732,7 @@ public final class ServerReplication extends Replication {
         .writeLong(tick)
         .writeVector(transform.position())
         .writeRotation(transform.rotation())
+        .writeBits(t.jumps, QState.JUMP_BITS)
         .writeBytes(t.identity.spawnData())
         .writeBytes(stateOf(t.entity))
         .toByteArray();
@@ -734,7 +752,7 @@ public final class ServerReplication extends Replication {
     final Map<Tracked, QState> current = new java.util.HashMap<>();
     for (Tracked t : this.tracked.values()) {
       if (t.announced) {
-        current.put(t, QState.of(t.entity));
+        current.put(t, QState.of(t.entity, t.jumps));
       }
     }
     final int budget = (int) Math.max(1, this.bandwidthLimit * this.engine.config().updateStep()

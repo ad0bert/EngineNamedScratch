@@ -247,6 +247,30 @@ messages; a lockstep game uses session + its own input exchange.
   AI). It would be a lot of fragile machinery for a result that fails in practice where it matters most. Co-op games
   are better served by saving the world when the host leaves (`SceneSerializer`) so that anyone can host it again.
 
+*As built (phase 7), for games that are not about walking:*
+
+- Prediction no longer knows about characters. A `PredictedMotor` component turns a command into movement
+  (`move(command, dt)`, before the systems), writes and reads the state that movement depends on
+  (`writePredicted`/`readPredicted`, which the host sends the owner instead of a character `State`), says whether two
+  such states agree (`matches`, byte for byte unless overridden) and does in a replay what the systems would do
+  (`replayStep`). `CharacterMotor` is now one (state: the character `State`, replay: `replayCharacter`, the same 1 mm
+  tolerance); `FlightMotor` is another (state: position and velocity, moves itself, no physics). The command
+  bookkeeping (`pressed`, `isDown`) and the visual's correction offset moved to the base class.
+- `InputCommand` gained `moveY` and an optional `aim` (a whole orientation, 47 bits): yaw and pitch cannot describe a
+  ship upside down in a loop. Each costs one bit while unused, so walking commands stay the size they were.
+- A `Wraparound` (a box whose faces join their opposites) set on both replications makes copies blend the short way
+  between snapshots, measures prediction errors and lag compensation the short way, and gives
+  `RelevanceFilter.byDistance` a wrap-aware variant. When a copy (or the client's own player after a replay) wraps,
+  `Transform.shiftPrevious` moves its previous position by the same amount so render interpolation does not sweep
+  across the world for a frame.
+- `ServerReplication.teleported(entity)` counts the entity's jumps (8 bits, in `QState`, sent when it changes and in
+  the spawn message). A copy does not blend between two samples with different counts: it stays at the first until
+  the second's moment, then goes there and resets render interpolation (`Transform.snapshot`). Lag compensation does
+  not blend across a jump either. A correction of the client's own player by more than 2 m is treated as a jump: no
+  slide of the visual, no smear.
+- The wire format of commands, snapshot entries and spawns changed; old and new builds of a game must not connect
+  (`NetConfig.forGame` keys on the game's version, so bump it).
+
 ## Changes to the existing engine
 
 In the order they would be needed:
@@ -293,6 +317,7 @@ The engine's tests run without a GPU, and the network stack should too:
 | 4 (done) | `InputCommand`, `CommandSource`/`ActionCommandSource`, `CharacterMotor`, `CharacterController` save/restore and `PhysicsSystem.replayCharacter`, prediction and reconciliation in `ClientReplication`, command buffering on the host, clock sync by time scale | First/third-person action games |
 | 5 (done) | Per-client snapshots as changes from acknowledged baselines, `Quantize`d positions and rotations, `RelevanceFilter` (by distance, always relevant), bandwidth limit with priorities | Larger levels, more players |
 | 6 (done, partly) | Lag compensation (`raycastAsSeenBy`, `raycastAt`), encryption by default (X25519 + AES-256-GCM), passwords; not auth tokens or host migration (see above) | Public games, shooting |
+| 7 (done) | `PredictedMotor` (prediction for any movement; `CharacterMotor` is one), `FlightMotor` (free flight with drift), flying `InputCommand`s (`moveY`, a full `aim` orientation), `Wraparound` worlds (short-way interpolation, corrections, lag compensation and relevance), `ServerReplication.teleported` (jumps that copies do not slide across), `Transform.shiftPrevious` | Space and flight games, arenas that wrap around |
 
 Phases 1 and 2 are a self-contained first release; each later phase is usable on its own.
 

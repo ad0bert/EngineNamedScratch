@@ -12,6 +12,7 @@ import org.joml.Vector3f;
 
 import engine.core.Engine;
 import engine.ecs.Entity;
+import engine.ecs.Transform;
 import engine.net.BitReader;
 import engine.net.BitWriter;
 import engine.net.Connection;
@@ -41,19 +42,24 @@ import lombok.extern.slf4j.Slf4j;
  * character controllers are turned off: the host moves them.
  *
  * <p>
- * <b>Prediction.</b> This client's own characters (owned by it, with a {@link CharacterMotor} and a
- * {@link CharacterController}) are not copies: with a {@link #setCommandSource command source}, every step makes an
- * {@link InputCommand} for a host step a little ahead of the host, applies it here at once and sends it to the host,
- * which applies it when it gets to that step. When the host's result for a step differs from what was predicted, the
- * character is put where the host had it and the commands since are replayed ({@link #corrections()}). The client
- * keeps its commands arriving about two steps early by running its engine slightly faster or slower
- * ({@link Engine#setTimeScale}).
+ * <b>Jumps and wraparound.</b> Where the host said an entity jumped ({@link ServerReplication#teleported}) its copy
+ * goes straight to the new place instead of sliding there. In a world that wraps around
+ * ({@link #setWraparound}) copies blend the short way, across the edge.
+ *
+ * <p>
+ * <b>Prediction.</b> This client's own players (owned by it, with a {@link PredictedMotor} such as a
+ * {@link CharacterMotor} or a {@link FlightMotor}) are not copies: with a {@link #setCommandSource command source},
+ * every step makes an {@link InputCommand} for a host step a little ahead of the host, applies it here at once and
+ * sends it to the host, which applies it when it gets to that step. When the host's result for a step differs from
+ * what was predicted, the player is put where the host had it and the commands since are replayed
+ * ({@link #corrections()}). The client keeps its commands arriving about two steps early by running its engine
+ * slightly faster or slower ({@link Engine#setTimeScale}).
  */
 @Slf4j
 public final class ClientReplication extends Replication {
   private static final int MAX_SAMPLES = 64;
 
-  private record Sample(long tick, Vector3f position, Quaternionf rotation, byte[] state) {
+  private record Sample(long tick, Vector3f position, Quaternionf rotation, int jumps, byte[] state) {
   }
 
   private static final class Copy {
@@ -61,6 +67,8 @@ public final class ClientReplication extends Replication {
     final List<Sample> samples = new ArrayList<>();
     long appliedStateTick;
     byte[] lastState = new byte[0];
+    /** The jump count of the place shown. */
+    int shownJumps;
 
     Copy(Entity entity) {
       this.entity = entity;
@@ -68,11 +76,14 @@ public final class ClientReplication extends Replication {
   }
 
   private static final double TARGET_LEAD = 2.0;
+  /** Corrections further than this (metres) are jumps, not prediction errors: shown at once. */
+  private static final float JUMP_DISTANCE = 2f;
   private static final int HISTORY = 256;
 
   private static final class Step {
     final InputCommand command;
-    CharacterController.State state;
+    /** The motor's state after the step ({@link PredictedMotor#writePredicted}), once it has run. */
+    byte[] state;
 
     Step(InputCommand command) {
       this.command = command;
@@ -81,22 +92,20 @@ public final class ClientReplication extends Replication {
 
   private static final class Predicted {
     final Entity entity;
-    final CharacterMotor motor;
-    final CharacterController controller;
+    final PredictedMotor motor;
     final TreeMap<Long, Step> history = new TreeMap<>();
     long reconciledTick = -1;
     byte[] lastState = new byte[0];
 
-    Predicted(Entity entity, CharacterMotor motor, CharacterController controller) {
+    Predicted(Entity entity, PredictedMotor motor) {
       this.entity = entity;
       this.motor = motor;
-      this.controller = controller;
     }
   }
 
   /** Received states by entity and host step: the baselines snapshots refer to. */
   private static final int HISTORY_TICKS = 180;
-  private static final QState MISSING = new QState(0, 0, 0, 0, new byte[0]);
+  private static final QState MISSING = new QState(0, 0, 0, 0, 0, new byte[0]);
 
   private final NetClient client;
   private final Map<Integer, Copy> copies = new HashMap<>();
@@ -120,6 +129,9 @@ public final class ClientReplication extends Replication {
   private double offset;
   private boolean clockKnown;
   private final Quaternionf scratchRotation = new Quaternionf();
+  private final Vector3f scratchPosition = new Vector3f();
+  private final Vector3f scratchOld = new Vector3f();
+  private final Vector3f scratchOffset = new Vector3f();
 
   /** Takes over {@code client}'s listener; set the game's on this instead. */
   public ClientReplication(Engine engine, NetClient client) {
@@ -173,7 +185,7 @@ public final class ClientReplication extends Replication {
 
   /**
    * Where this player's input comes from (usually an {@link ActionCommandSource}); null stops predicting. It drives
-   * the characters this client owns that have a {@link CharacterMotor}.
+   * the entities this client owns that have a {@link PredictedMotor}.
    */
   public void setCommandSource(CommandSource source) {
     this.commandSource = source;
@@ -222,7 +234,7 @@ public final class ClientReplication extends Replication {
       for (Predicted p : this.predicted.values()) {
         final var step = p.history.get(this.lastCommandTick);
         if (step != null && step.state == null) {
-          step.state = p.controller.save(new CharacterController.State());
+          step.state = p.motor.savePredicted();
         }
       }
       sendCommands();
@@ -242,9 +254,8 @@ public final class ClientReplication extends Replication {
       this.predicting = true;
     }
     final long commandTick = Math.max(this.lastCommandTick + 1, Math.round(tick + this.predictionOffset));
-    var command = this.commandSource.sample(commandTick, dt);
-    command = new InputCommand(commandTick, command.moveX(), command.moveZ(), command.yaw(), command.pitch(),
-        command.buttons(), this.renderTick).quantized();
+    final var command = this.commandSource.sample(commandTick, dt).withTickAndView(commandTick, this.renderTick)
+        .quantized();
     this.lastCommandTick = commandTick;
     this.recentCommands.addFirst(command);
     while (this.recentCommands.size() > REDUNDANT_COMMANDS) {
@@ -252,7 +263,7 @@ public final class ClientReplication extends Replication {
     }
     for (Predicted p : this.predicted.values()) {
       p.motor.fadeCorrection(dt);
-      p.motor.apply(command);
+      p.motor.drive(command, (float) dt);
       p.history.put(commandTick, new Step(command));
       while (p.history.size() > HISTORY) {
         p.history.pollFirstEntry();
@@ -285,7 +296,7 @@ public final class ClientReplication extends Replication {
     adjustClock(reportedLead);
     while (in.hasMoreBytes()) {
       final int netId = in.readVarInt();
-      final var hostState = readCharacter(in);
+      final byte[] hostState = in.readBytes(MAX_DATA);
       in.align();
       final var p = this.predicted.get(netId);
       if (p == null || hostTick <= p.reconciledTick) {
@@ -296,40 +307,66 @@ public final class ClientReplication extends Replication {
     }
   }
 
-  private void reconcile(Predicted p, long hostTick, CharacterController.State hostState) {
+  private void reconcile(Predicted p, long hostTick, byte[] hostState) {
     final var mine = p.history.get(hostTick);
     p.history.headMap(hostTick).clear();
-    if (mine != null && mine.state != null && matches(mine.state, hostState)) {
+    if (mine != null && mine.state != null && p.motor.matches(mine.state, hostState)) {
       return;
     }
     if (mine == null && hostTick > this.lastCommandTick && this.lastCommandTick >= 0) {
       return; // the host is ahead of what was predicted (the clock is about to be fixed): nothing to compare
     }
     this.corrections++;
-    this.before.set(p.entity.transform().position());
-    p.controller.restore(hostState);
-    if (mine != null) {
-      p.motor.restoreLast(mine.command);
-    }
-    final float dt = (float) this.engine.config().updateStep();
-    for (var entry : p.history.tailMap(hostTick, false).entrySet()) {
-      final var step = entry.getValue();
-      if (step.state == null) {
-        break; // not stepped yet
+    final var transform = p.entity.transform();
+    this.before.set(transform.position());
+    p.motor.setReplaying(true);
+    try {
+      p.motor.restorePredicted(hostState);
+      if (mine != null) {
+        p.motor.restoreLast(mine.command);
       }
-      p.motor.apply(step.command);
-      this.engine.physics().replayCharacter(this.engine.scene(), p.controller, dt);
-      p.controller.save(step.state);
+      final float dt = (float) this.engine.config().updateStep();
+      for (var entry : p.history.tailMap(hostTick, false).entrySet()) {
+        final var step = entry.getValue();
+        if (step.state == null) {
+          break; // not stepped yet
+        }
+        p.motor.drive(step.command, dt);
+        p.motor.replayStep(this.engine, dt);
+        step.state = p.motor.savePredicted();
+      }
+    } finally {
+      p.motor.setReplaying(false);
     }
     if (mine != null) {
-      mine.state = new CharacterController.State().set(hostState);
+      mine.state = hostState.clone();
     }
-    p.motor.addCorrection(this.before.sub(p.entity.transform().position()));
+    final var after = transform.position();
+    final var error = this.wraparound == null ? this.scratchOffset.set(this.before).sub(after)
+        : this.wraparound.delta(after, this.before, this.scratchOffset);
+    if (error.lengthSquared() > JUMP_DISTANCE * JUMP_DISTANCE) {
+      transform.snapshot(); // the host moved it on purpose (a teleport): show it there, no smear
+      p.motor.addCorrection(error); // too far to slide: the visual goes home
+      return;
+    }
+    p.motor.addCorrection(error);
+    keepSmooth(transform, this.before);
   }
 
-  private static boolean matches(CharacterController.State a, CharacterController.State b) {
-    return a.position.distanceSquared(b.position) < 1e-6f && a.velocity.distanceSquared(b.velocity) < 1e-4f
-        && a.grounded == b.grounded;
+  /**
+   * In a wraparound world, after moving {@code transform} from {@code old}: if it went the long way (wrapped around an
+   * edge), moves its previous position for render interpolation along, so that it does not sweep across the world.
+   */
+  private void keepSmooth(Transform transform, Vector3f old) {
+    if (this.wraparound == null) {
+      return;
+    }
+    final var now = transform.position();
+    this.wraparound.delta(old, now, this.scratchOffset); // the short way
+    this.scratchOffset.add(old).negate().add(now); // what wrapping added to it
+    if (this.scratchOffset.lengthSquared() > 0f) {
+      transform.shiftPrevious(this.scratchOffset);
+    }
   }
 
   /** Keeps the commands arriving {@link #TARGET_LEAD} steps early: a jump if far off, else a slightly faster clock. */
@@ -385,6 +422,7 @@ public final class ClientReplication extends Replication {
     final long tick = in.readLong();
     final var position = in.readVector(new Vector3f());
     final var rotation = in.readRotation(new Quaternionf());
+    final int jumps = (int) in.readBits(QState.JUMP_BITS);
     final byte[] data = in.readBytes(MAX_DATA);
     final byte[] state = in.readBytes(MAX_DATA);
     if (this.copies.containsKey(netId)) {
@@ -398,12 +436,11 @@ public final class ClientReplication extends Replication {
     if (older != null) {
       older.headMap(tick).clear(); // from an earlier life of this entity here
     }
-    final var motor = entity.findOrNull(CharacterMotor.class);
-    final var controller = entity.findOrNull(CharacterController.class);
-    if (owner == this.client.id() && motor != null && controller != null) {
+    final var motor = entity.findOrNull(PredictedMotor.class);
+    if (owner == this.client.id() && motor != null && motor.canPredict()) {
       motor.setPredictedHere(true); // this client moves it itself
       applyState(entity, state);
-      this.predicted.put(netId, new Predicted(entity, motor, controller));
+      this.predicted.put(netId, new Predicted(entity, motor));
       observeHostTick(tick);
       return;
     }
@@ -417,8 +454,9 @@ public final class ClientReplication extends Replication {
     }
     applyState(entity, state);
     final var copy = new Copy(entity);
-    copy.samples.add(new Sample(tick, position, rotation, null));
+    copy.samples.add(new Sample(tick, position, rotation, jumps, null));
     copy.appliedStateTick = tick;
+    copy.shownJumps = jumps;
     copy.lastState = state;
     this.copies.put(netId, copy);
     observeHostTick(tick);
@@ -460,7 +498,8 @@ public final class ClientReplication extends Replication {
       history.headMap(tick - HISTORY_TICKS).clear();
       final var copy = this.copies.get(netId);
       if (copy != null) {
-        insert(copy, new Sample(tick, q.position(new Vector3f()), q.orientation(new Quaternionf()), q.state()));
+        insert(copy, new Sample(tick, q.position(new Vector3f()), q.orientation(new Quaternionf()), q.jumps(),
+            q.state()));
       } else if (this.predicted.containsKey(netId)) {
         final var own = this.predicted.get(netId);
         if (!java.util.Arrays.equals(own.lastState, q.state())) {
@@ -563,27 +602,39 @@ public final class ClientReplication extends Replication {
           copy.appliedStateTick = s.tick;
         }
       }
-      final var transform = copy.entity.transform();
       if (before < 0) {
         final var first = samples.getFirst();
-        transform.position().set(first.position);
-        transform.rotation().set(first.rotation);
+        place(copy, first.position, first.rotation, first.jumps);
         continue;
       }
       final var a = samples.get(before);
-      if (before + 1 < samples.size()) {
+      if (before + 1 < samples.size() && samples.get(before + 1).jumps == a.jumps) {
         final var b = samples.get(before + 1);
         final float t = (float) ((renderTick - a.tick) / (b.tick - a.tick));
-        a.position.lerp(b.position, t, transform.position());
+        blend(a.position, b.position, t, this.scratchPosition);
         a.rotation.slerp(b.rotation, t, this.scratchRotation);
-        transform.rotation().set(this.scratchRotation);
+        place(copy, this.scratchPosition, this.scratchRotation, a.jumps);
       } else {
-        transform.position().set(a.position); // nothing newer yet: wait where the last snapshot was
-        transform.rotation().set(a.rotation);
+        // nothing newer yet, or it jumps before the next one: wait where the last snapshot was
+        place(copy, a.position, a.rotation, a.jumps);
       }
       if (before > 0) {
         samples.subList(0, before).clear();
       }
+    }
+  }
+
+  /** Shows a copy at a place: straight there after a jump, else smoothly (across an edge, in a wraparound world). */
+  private void place(Copy copy, Vector3f position, Quaternionf rotation, int jumps) {
+    final var transform = copy.entity.transform();
+    this.scratchOld.set(transform.position());
+    transform.position().set(position);
+    transform.rotation().set(rotation);
+    if (jumps != copy.shownJumps) {
+      copy.shownJumps = jumps;
+      transform.snapshot(); // no smear from where it jumped from
+    } else {
+      keepSmooth(transform, this.scratchOld);
     }
   }
 

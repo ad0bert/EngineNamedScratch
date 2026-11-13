@@ -222,6 +222,33 @@ class PauseMenu implements GameState {
   if (player.get(CharacterMotor.class).pressed(InputCommand.button(0))) shoot(player);
   ```
 
+  **Players that fly** (or move any other way): prediction works with any `PredictedMotor`, not only walking.
+  `FlightMotor` flies a ship that drifts in empty space: it turns to the command's orientation, pushes along its own
+  axes and keeps drifting (`thrust`, `maxSpeed`, `drag`, a `brakeButton`). Flying commands carry a whole orientation,
+  so ships can loop and roll: `InputCommand.flying(tick, moveX, moveY, moveZ, aim, buttons)`. For other movement,
+  extend `PredictedMotor`: `move(command, dt)`, `writePredicted`/`readPredicted` for the state the movement depends
+  on, and `replayStep` for what the engine's systems do to it in a step (nothing, if `move` moves it itself).
+
+  **Worlds that wrap around and things that jump:** `setWraparound(Wraparound.cube(20))` on the host's and the clients'
+  replication makes copies cross the edges of a world that wraps around the short way, and measures corrections, lag
+  compensation and `RelevanceFilter.byDistance(radius, wraparound)` that way too (give the same to
+  `FlightMotor.wraparound`). `hostReplication.teleported(entity)`, in the step the game moved it (a respawn, a
+  hyperspace jump), makes copies go straight to the new place instead of sliding there; a client's own player jumps
+  there as well. `transform.shiftPrevious(offset)` keeps the drawing smooth when game code wraps an entity itself.
+
+  ```java
+  Spawner ship = ctx -> {
+    var e = new Entity("ship");
+    var motor = e.add(new FlightMotor());
+    motor.wraparound = SPACE;                                  // the same Wraparound as the replication's
+    motor.brakeButton = InputCommand.button(1);
+    return e;
+  };
+  guestReplication.setCommandSource((tick, dt) -> InputCommand.flying(tick, 0, 0, thrust, aim, buttons));
+  hostShip.transform().position().set(somewhereElse);          // hyperspace, on the host
+  hostReplication.teleported(hostShip);
+  ```
+
   **Hit tests as the shooter saw them** (lag compensation): `hostReplication.raycastAsSeenBy(clientId, origin,
   direction, distance)` moves the replicated entities back to where that client saw them when it gave its current
   command (at most 0.5 s, `setMaxRewind`), tests the ray, and puts them back.
@@ -416,7 +443,7 @@ How it works:
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
 | `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig` (encryption, password), `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Quantize`, `Transport` with `UdpTransport` and `LoopbackNetwork` (with an `Interceptor` for tests) |
-| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand`, `CommandSource`/`ActionCommandSource` and `CharacterMotor`; `RelevanceFilter`; lag compensation (`raycastAsSeenBy`) |
+| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand`, `CommandSource`/`ActionCommandSource` and a `PredictedMotor` (`CharacterMotor`, `FlightMotor`, or the game's own); `Wraparound` worlds and `teleported` jumps; `RelevanceFilter`; lag compensation (`raycastAsSeenBy`) |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |
