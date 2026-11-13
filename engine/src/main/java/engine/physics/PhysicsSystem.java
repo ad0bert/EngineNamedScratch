@@ -1519,6 +1519,19 @@ public class PhysicsSystem implements ISystem {
   }
 
   /** Nearest non-trigger collider hit by the ray within {@code maxDistance}; {@code dir} need not be normalized. */
+  /**
+   * Steps one character again against the world as it is now, without riding its ground or pushing bodies: for
+   * replaying a networked player's inputs after a correction from the host ({@link CharacterController#restore}).
+   */
+  public void replayCharacter(Scene scene, CharacterController character, float dt) {
+    character.replaying = true;
+    try {
+      character.step(this, scene, dt);
+    } finally {
+      character.replaying = false;
+    }
+  }
+
   public Optional<RayHit> raycast(Scene scene, Vector3f origin, Vector3f dir, float maxDistance) {
     return raycast(scene, origin, dir, maxDistance, c -> !c.trigger);
   }
@@ -1547,6 +1560,36 @@ public class PhysicsSystem implements ISystem {
       return Optional.empty();
     }
     return Optional.of(new RayHit(q.bestCollider, new Vector3f(origin).fma(q.best, q.dir), q.bestNormal, q.best));
+  }
+
+  /**
+   * The nearest hit among {@code colliders} only (enabled ones that {@code accept} lets through), with their shapes
+   * taken from their entities' transforms as they are now rather than from the last step: for queries against entities
+   * moved somewhere for a moment, such as back in time for lag compensation. Tests each collider; meant for a few
+   * dozen, not a level.
+   */
+  public Optional<RayHit> raycast(List<? extends Collider> colliders, Vector3f origin, Vector3f dir, float maxDistance,
+      Predicate<Collider> accept) {
+    if (dir.lengthSquared() < 1e-12f) {
+      return Optional.empty();
+    }
+    final var q = new RayQuery(origin, new Vector3f(dir).normalize(), maxDistance, accept);
+    for (int i = 0; i < colliders.size(); i++) {
+      final var c = colliders.get(i);
+      if (c.isEnabled() && c.entity() != null) {
+        c.refresh();
+        q.test(c);
+      }
+    }
+    if (q.bestCollider == null) {
+      return Optional.empty();
+    }
+    return Optional.of(new RayHit(q.bestCollider, new Vector3f(origin).fma(q.best, q.dir), q.bestNormal, q.best));
+  }
+
+  /** Recomputes the world shapes of the entity's colliders from its transform now (after moving it for a query). */
+  public static void refreshShapes(Entity e) {
+    refreshColliders(e);
   }
 
   /**

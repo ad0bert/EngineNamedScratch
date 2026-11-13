@@ -1,3 +1,28 @@
+Version 0.10.0
+Networking for co-op games, and an engine without a window. Contains:
+- Engine without a window: Engine.runHeadless (real time), startHeadless + runTicks (as fast as wanted, for tests),
+  -Dengine.headless=true; NullRenderBackend
+- Engine.tick(): the number of the current fixed step; StepHook (beforeSystems / afterStep, also while paused);
+  Engine.setTimeScale and FixedTimestep.setTimeScale / nanosUntilNextStep
+- Networking (engine.net): NetServer / NetClient over UDP (or LoopbackNetwork in memory, with latency, jitter, loss
+  and duplicates), handshake with cookies, version check, server full / denied, timeouts, kick / leave / close;
+  reliable ordered messages (large ones split and joined) and unreliable ones; RTT, loss and bandwidth per
+  connection; BitWriter / BitReader
+- Replication (engine.net.replication): ServerReplication / ClientReplication, spawning by type with Spawner,
+  NetworkIdentity (owner, spawn data), late joiners, despawning (also on scene removal and when the owner leaves),
+  snapshots of transforms and NetState components, interpolated copies on clients, RPCs; Scene.contains;
+  BitWriter / BitReader: rotations in 47 bits, vectors, align
+- Prediction: InputCommand, CommandSource / ActionCommandSource, CharacterMotor; the client moves its own player at
+  once and corrects it from the host (restore and replay), the host runs clients' commands per step; clock kept in
+  line by Engine.setTimeScale; CharacterController.save / restore and PhysicsSystem.replayCharacter
+- Snapshots per client as changes from acknowledged states (quantised positions and rotations; nothing sent for
+  entities the client has exactly), RelevanceFilter (byDistance, setAlwaysRelevant), setBandwidthLimit with
+  setPriority; Quantize
+- Lag compensation: ServerReplication.raycastAsSeenBy / raycastAt (entities moved back to what the client saw, at
+  most setMaxRewind); PhysicsSystem.raycast over given colliders
+- Security: connections encrypted and authenticated by default (X25519, AES-256-GCM), optional password
+  (NetConfig.withPassword, DisconnectReason.WRONG_PASSWORD), authenticated disconnects; LoopbackNetwork.Interceptor
+
 Version 0.9.0
 Characters, navigation and a richer world. Contains:
 - Physics: CharacterController (collide and slide, steps, slope limit, ground snapping, jumps with coyote time,

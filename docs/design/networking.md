@@ -1,0 +1,309 @@
+# Networking: design notes
+
+Status: phases 1 (headless engine, step numbers, step hooks), 2 (transport and sessions, package `engine.net`) and 3
+(replication, package `engine.net.replication`), 4 (prediction and clock sync), 5 (delta snapshots, relevance,
+bandwidth) and 6 (lag compensation, encryption and passwords) are done. Host migration was decided against (see
+phase 6 below). This note looks at how a
+network stack would fit the engine as it was at 0.9.0, what it would cost, and in which order to build it.
+
+Decided: the target is **co-op games on listen servers** (one player hosts inside their game), with **no new
+dependencies**. Lockstep and lag compensation for competitive play are not goals; a dedicated server stays possible
+(phase 1 gives the headless engine it needs) but is not the focus.
+
+## What the engine already gives us
+
+| Existing piece | Why it matters for networking |
+|---|---|
+| `FixedTimestep` + `Engine.step(dt)` | The simulation already runs in fixed ticks. A tick number is the natural clock for networking: inputs, snapshots and acks are all "for tick N". |
+| `Transform.snapshot()` / `interpolatedWorldMatrix(alpha)` | Rendering already blends between two states. Remote entities need the same thing, only between two *received* states and a little in the past. |
+| `InputState` with public feed methods and named actions | Inputs can be fed from anything ("a platform layer, a test, or a replay"). Actions (`jump`, `move_forward`, …) are exactly what a client should send, not raw keys. |
+| `MessageService.post()` (thread-safe) + `dispatchPending()` at the start of each step | A network thread can hand received data to the game thread without new locking: post it, it is delivered at the next step. |
+| `ISystem` + `addSystem` ordering | Networking is one more system, run first (apply received state) and one hook at the end of the step (send). |
+| `ComponentRegistry` / `ComponentSerializer` | Every engine component already knows how to describe itself. Good enough for *spawning* an entity on a client; far too heavy (JSON maps, reflection) for per-tick state. |
+| `Prefab` | Spawning by prefab name + a few overrides is much cheaper than sending a full entity. |
+
+## What stands in the way
+
+1. **No headless engine.** `Engine.run()` creates a `GLWindow` and an `Animator`; `step()` is called from the GL
+   `display()` callback. A dedicated server (and server tests) needs the same step without a window, GL, audio or
+   gamepads. This is the first refactoring and is useful on its own (headless simulation tests, tools).
+2. **Entity ids are process-local.** `Entity.id` comes from a static `AtomicLong`, so ids differ between machines.
+   Networked entities need their own id, assigned by the server.
+3. **No tick counter exposed.** `FixedTimestep` has `elapsed` but no integer tick; floating seconds are a bad key for
+   matching inputs to snapshots.
+4. **The physics is not built for rollback.** `PhysicsSystem` keeps contact caches, sleeping state, joints and
+   character state across steps. Saving and restoring all of it every tick (as rollback netcode needs) would be a big,
+   fragile change. Java's floating point is strict since 17, so the *arithmetic* is reproducible, but the uses of
+   `Math.*` (which may use intrinsics), iteration order and per-machine state make bit-exact lockstep a project of its
+   own.
+5. **Game code mutates the scene directly.** Components change fields freely in `update()`. Replication needs to know
+   *what* is replicated and *who* is allowed to change it.
+
+## Recommended model
+
+**Server-authoritative, snapshot-based, with client-side prediction only for the local player.**
+
+- The server (dedicated or a "listen server" inside a client) runs the full simulation, physics included.
+- Clients send **input commands** per tick: the pressed actions as bits, look yaw/pitch, the tick number. Redundantly:
+  each packet carries the last few commands so a lost packet costs nothing.
+- The server sends **snapshots** at a configurable rate (e.g. every 2nd or 3rd tick): the replicated state of the
+  entities relevant to that client, delta-compressed against the last snapshot the client acknowledged.
+- Clients render **remote entities interpolated** ~100 ms in the past between two received snapshots (reusing the
+  idea of `Transform`'s prev/current pair, but with a small buffer of received states).
+- The **local player is predicted**: the client runs its own `CharacterController` with its own inputs immediately,
+  keeps the inputs it has not seen acknowledged, and on each snapshot resets to the server's state and replays them.
+  Only the character controller has to be rewindable, not the whole `PhysicsSystem` — this keeps the physics untouched.
+- Physics bodies the player pushes or throws are server-simulated and interpolated on the client (a slight delay on
+  thrown crates is the accepted trade-off). Optional later: local "visual only" prediction of projectiles.
+
+Why not the alternatives:
+
+- **Deterministic lockstep** (send only inputs, everyone simulates): tiny bandwidth, ideal for RTS-like games, but
+  needs bit-exact physics across machines, and every client waits for the slowest. See problem 4. Worth keeping
+  possible for games that bring their own deterministic simulation (the transport layer below serves both).
+- **Rollback (GGPO-style)**: excellent for 2-player action games, but needs cheap full-state save/restore of the
+  physics. Not a fit for this physics system today.
+- **Client-authoritative**: simple, but trivial to cheat and inconsistent under contention. Fine for co-op prototypes;
+  can be had as a per-component "owner writes" flag in the replication layer.
+
+## Layers
+
+```
+ game code            NetworkIdentity, @Replicated fields, RPCs, ownership
+ ───────────────────────────────────────────────────────────────────────────
+ engine.net.replication   snapshot building, delta compression, interest management,
+                          interpolation buffers, prediction/reconciliation for CharacterController
+ ───────────────────────────────────────────────────────────────────────────
+ engine.net.session       NetServer / NetClient: connect, handshake, protocol version, timeouts,
+                          clock sync (server tick estimate), per-connection channels
+ ───────────────────────────────────────────────────────────────────────────
+ engine.net.transport     Connection with channels over UDP: sequence numbers, ack bitfields,
+                          unreliable / unreliable-sequenced / reliable-ordered, fragmentation, MTU ~1200 B,
+                          RTT and loss estimates, bandwidth budget
+ ───────────────────────────────────────────────────────────────────────────
+ engine.net.io            Transport interface: UdpTransport (java.nio DatagramChannel, own thread)
+                          and LoopbackTransport (in memory, with simulated latency/jitter/loss)
+```
+
+Each layer is usable without the ones above: a turn-based game might only use the session layer with reliable
+messages; a lockstep game uses session + its own input exchange.
+
+### Transport and I/O
+
+- **UDP via `java.nio.channels.DatagramChannel`**, no new dependency (the engine is deliberately light on
+  dependencies). TCP is the wrong default: one lost packet stalls everything behind it, which shows as hitches.
+- Packet header: protocol id, connection salt, sequence (16 bit, wrapping), ack + 32-bit ack bitfield, then channel
+  blocks. The ack bitfield gives reliability and RTT for free on top of unreliable packets.
+- Channels: `UNRELIABLE` (snapshots, inputs — both are redundant anyway), `RELIABLE_ORDERED` (spawn/despawn, RPCs,
+  chat, level changes), maybe `UNRELIABLE_SEQUENCED` (drop older). Reliable messages are re-sent until an ack covers
+  the packet they were in.
+- Fragmentation for the rare large reliable message (initial level state), with a cap.
+- A `BitWriter`/`BitReader` with quantisation helpers: positions to fixed point within level bounds, quaternions as
+  "smallest three" (~29 bits), velocities clamped, booleans as single bits. This is where most bandwidth is won.
+- ~~One I/O thread per socket~~ *As built:* no I/O thread. The socket is non-blocking; the server and client read
+  everything waiting at the start of the step and send at its end, on the update thread. The operating system's
+  receive buffer (made 1 MiB) plays the part of the queue, the latency is the same (a packet waits at most one step
+  either way), and there is no locking. Round-trip times are therefore measured to about a step.
+- *As built:* two deliveries, `UNRELIABLE` and `RELIABLE` (ordered). A sequenced channel was not needed yet: snapshots
+  will carry their tick and can drop old ones themselves.
+- Security, first version: a connect handshake with a server-issued challenge (stops spoofed-address amplification),
+  size limits on everything read, and a protocol version check. Encryption (the JDK has DTLS through `SSLEngine`)
+  and authentication tokens are a later, optional step; they belong behind the same `Transport` interface.
+
+### Session
+
+- `NetServer` (listen on a port, accept up to N clients, kick on timeout) and `NetClient` (connect, retry, report
+  state). Both are plain objects owned by the game, ticked by a `NetworkSystem`.
+- Clock: the client keeps an estimate of the server tick from snapshot ticks and RTT, and runs its prediction a little
+  *ahead* of it (RTT/2 + a jitter margin), so its input for tick N arrives before the server simulates N. The
+  estimate is corrected by gently speeding up or slowing down the client's `FixedTimestep`, not by jumping.
+- Events for the game: `onConnected`, `onDisconnected(reason)`, `onMessage` — delivered on the game thread through the
+  existing message service (a new `MessageQueue.NETWORK`). *As built:* a typed `NetListener` instead (connected,
+  disconnected with a `DisconnectReason`, received); it is called on the update thread already, so the message
+  service would only have added a cast. `NetServer` and `NetClient` are `StepHook`s themselves rather than being
+  driven by a `NetworkSystem`.
+
+### Replication
+
+- `NetworkIdentity` component: a server-assigned `int netId`, the prefab (or spawn type) it was created from, and the
+  owning connection (if any).
+- Which state is replicated is declared per component type, like `ComponentSerializer` but binary and per field:
+
+  ```java
+  registry.register(Replication.of(Rigidbody.class)
+      .transform(Quantize.position(0.001f), Quantize.rotation())
+      .field("velocity", Quantize.vector(0.01f, 50f)));
+  ```
+
+  Transforms are by far the most common case and get a dedicated fast path.
+- Spawning on a client: `netId` + prefab name + initial replicated state, on the reliable channel. Falls back to the
+  existing JSON `ComponentSerializer` for entities that are not prefab-based (sent once, so its cost is acceptable).
+- Snapshots carry only entities and fields that changed relative to the client's last acked snapshot (the server
+  keeps a short ring buffer of past snapshots per client).
+- Interest management: a per-client relevance test (distance, using the existing `SpatialGrid`) plus priorities, so
+  big levels fit a fixed bandwidth budget per client. First version: everything is relevant.
+- RPCs: `server.call(connection, "openDoor", args)` / `client.call("useItem", args)` on the reliable channel, handled
+  by registered handlers on the game thread. Server-side handlers must validate — the client is never trusted.
+- Ownership: the server owns everything by default. A component may be marked "owner-authoritative" for co-op
+  shortcuts (a cosmetic, or a player's camera), which the server then accepts within limits.
+
+*As built (phase 3):*
+
+- Spawning is by **spawn type**: games register a `Spawner` (a function from a spawn context to an entity) under a
+  name, the same on host and clients; it can load a prefab. The spawn message carries the type, the owner, free-form
+  spawn data, the transform and the initial `NetState`s. The JSON serializer fallback was not needed.
+- Replicated state is the transform (position as 3 floats, rotation as "smallest three" in 47 bits) plus whatever
+  components implementing `NetState` write with a `BitWriter`. No per-field declarations yet: a component writes its
+  state as a whole, and the host sends it when the bytes changed.
+- No delta compression against acknowledged snapshots yet (phase 5). Instead an entity is in every snapshot for half
+  a second after it changed (so a lost snapshot is covered), and otherwise only about once a second. Snapshots are
+  split into several unreliable messages of at most one packet, each usable on its own.
+- Clients show copies 0.1 s (configurable) behind the newest snapshot, interpolating between the two around that
+  moment; `NetState`s are applied when that moment reaches their snapshot. The host's tick is estimated from the
+  newest snapshot seen, carried forward with the client's own steps; the proper clock synchronisation is phase 4.
+- Spawns, despawns, RPCs and game messages go out in the order the host made them, after the step, so a call about
+  an entity spawned in the same step never overtakes the spawn.
+- RPCs are named, matched by a 32-bit hash of the name, and can target an entity or nothing. `Call.isFromOwner()` is
+  the usual check on the host. Replication owns its server's or client's message stream (every message starts with a
+  tag byte); games send their own messages through it (`send`/`broadcast`), not through the server directly.
+- Entities removed from the host's scene are despawned on clients automatically; a leaving client's entities are
+  despawned (configurable). Copies get kinematic rigid bodies and disabled character controllers.
+- Owner-authoritative components were left out: in co-op the owner sends RPCs and the host applies them.
+
+### Prediction for the local player
+
+- `CharacterController` gets a small `State` value (position, velocity, grounded flag, …) with `save()` / `restore()`,
+  and its step must depend only on that state, the input and the static world. This is the one piece of the physics
+  that needs to be rewindable.
+- Client: per tick, store `(tick, input, predicted state)`. On a snapshot for tick S: compare the server's state with
+  the stored prediction for S; if they differ beyond a threshold, restore the server's state, replay inputs S+1..now,
+  and smooth the visual correction over a few frames (offset decay) so the camera does not snap.
+- Server: apply each client's input for the tick it was meant for; if it arrives late, reuse the last one.
+- Lag compensation for hitscan (later): the server keeps a short history of collider positions and raycasts against
+  the state the shooter saw.
+
+*As built (phase 4):*
+
+- An `InputCommand` is move x/z (whole steps of 1/127, so standing still is exactly 0), yaw, pitch, 8 button bits and
+  the host step the player was looking at (for phase 6). Commands are rounded to their wire form before anyone uses
+  them, so host and client compute bit-identical movement; each message repeats the last 8 commands.
+- `CharacterMotor` turns a command into turning, walking and jumping (jump on the press, not while held), and exposes
+  `pressed`/`isDown` for game buttons. Pitch reaches other players as `NetState`.
+- `CharacterController` gained `save`/`restore` of a small `State` (position, velocity, walk, grounded, air time) and
+  `PhysicsSystem.replayCharacter`, which steps one character without riding or pushing bodies (so replays have no
+  side effects). The rest of the physics is untouched.
+- The host runs a client's command for step N in step N (before the systems); if none came in time it repeats the
+  last one. Every snapshot it sends the owner its characters' exact `State`, plus how early commands arrive ("lead").
+- The client predicts for host step `its tick + offset`: initially the newest snapshot's tick plus a whole round trip
+  plus 2. If the host's state for a step differs from the prediction by more than 1 mm (or in grounded), it restores
+  it and replays the stored commands since. It steers the lead towards 2 steps with `Engine.setTimeScale` (±2 %),
+  and jumps the offset when the lead drops under half a step or is off by more than 6.
+- The visual correction is an offset on the motor's `visual` child that fades in about a tenth of a second.
+
+*As built (phase 5):*
+
+- Positions travel as whole numbers of 1/1024 m and rotations as packed 47-bit integers (`Quantize`), so host and
+  client hold bit-identical states (`QState`, with the `NetState` bytes) to build on.
+- Snapshots are per client. Each snapshot message has a 16-bit id; the client acknowledges ids (newest + 32-bit
+  field), and only for messages it could decode completely. An acknowledged entry becomes that entity's baseline for
+  that client. An entity is in a client's snapshot while its current state differs from its baseline; it is written
+  as a change from the baseline (flags for moved/turned/state changed, moves as zig-zag varints) when the baseline is
+  at most 2 s old, else in full. The client keeps 3 s of received states per entity to decode against. This replaced
+  phase 3's "everything changed recently, plus a refresh once a second".
+- Relevance (`RelevanceFilter`, `byDistance` with 10 % hysteresis) is checked every 10 steps per client; leaving
+  relevance despawns on that client only, coming back spawns as it is then (the old baselines are dropped on both
+  sides by the spawn's tick).
+- Bandwidth: each snapshot may use `limit × step × interval` bytes per client (at least one entry). Candidates are
+  ordered by accumulated waiting (priority, ×4 for the client's own entities); what does not fit keeps waiting and
+  rises. Spawns, despawns, RPCs and prediction messages are outside the budget.
+- Not done: per-field change masks inside `NetState`s (a changed state is sent whole), and compression of packets
+  as a whole.
+
+*As built (phase 6):*
+
+- **Lag compensation.** The host records the pose of every replicated entity with a collider after each step (about a
+  second). `raycastAsSeenBy(client, ...)` takes the view tick of the client's current command (the host step its
+  interpolated copies showed), clamps it to `setMaxRewind` (0.5 s, so a client cannot claim an arbitrarily old view),
+  moves the other replicated entities there, and combines `PhysicsSystem.raycast(colliders, ...)` (new: a ray
+  against given colliders with their shapes recomputed from the transforms) with an ordinary raycast that skips those
+  entities. Everything is put back before it returns. Only rays for now; shape casts would work the same way.
+- **Encryption** (`NetConfig.encrypted`, on by default). The client sends an X25519 public key in the challenge
+  response, the server answers with its own and a key confirmation in the accept. Keys per direction come from HMAC-
+  SHA256 over the shared secret, the password key, both public keys, the client salt and the cookie. DATA and
+  DISCONNECT bodies are AES-256-GCM sealed; the nonce is the direction and the 64-bit packet sequence, the header is
+  authenticated data. A DISCONNECT now carries a sequence number so it can be authenticated. Overhead: 16 bytes per
+  packet. DENY stays unauthenticated (a forger can only stop a connection attempt, which it could by dropping
+  packets anyway).
+- **Passwords** (`NetConfig.password`). PBKDF2 (salted with the protocol id) turns it into a key; the client proves
+  knowledge with an HMAC in the challenge response (wrong: `WRONG_PASSWORD`), and the key also goes into the session
+  keys, so a man in the middle without the password can neither join nor read along. Without a password the key
+  agreement is unauthenticated: it stops eavesdroppers, not an active man in the middle. Someone who records an
+  attempt can try passwords offline against the proof, which is why long passwords are recommended.
+- **Not done: auth tokens.** They need a matchmaking or account service to issue them; the `ConnectionFilter`
+  (with the connect payload) is where a game that has one checks them.
+- **Not done: host migration.** For a listen server it would mean another player's game becoming the host: the
+  others connect to it (often impossible behind home routers without port forwarding or a relay), and it promotes
+  its interpolated copies to the authoritative world, without the old host's physics state (velocities, contacts,
+  AI). It would be a lot of fragile machinery for a result that fails in practice where it matters most. Co-op games
+  are better served by saving the world when the host leaves (`SceneSerializer`) so that anyone can host it again.
+
+## Changes to the existing engine
+
+In the order they would be needed:
+
+1. **Headless engine**: extract the body of `step()` and the system setup from `Engine.Loop` into a part that runs
+   without GL (`Engine.runHeadless()` or a separate `Simulation` class driven by a plain thread with `FixedTimestep`).
+   Audio, renderer, gamepads and `ResourceManager`'s GPU uploads become optional. Meshes still have to load on a
+   server (mesh colliders), so resource loading needs a CPU-only path.
+2. **Tick counter**: `long tick` in `FixedTimestep`/`Engine`, incremented per step; plus a way to stretch the step
+   slightly for clock sync.
+3. **Step hooks**: a "before systems" and an "after systems" point (or ordering for systems) so `NetworkSystem` can
+   apply received state first and send at the end of the same tick.
+4. **`MessageQueue.NETWORK`**.
+5. **Rewindable `CharacterController`** state, as above.
+6. **Input from data**: an `InputCommand` (action bits + look) that can be captured from `InputState` and applied to
+   it, so the server feeds each player's controller from received commands instead of the local keyboard.
+   `FirstPersonController` reads `InputState` today; it would read an input source per player instead.
+7. **Scene changes from the network** must go through `Scene.add/remove` (already deferred to `flush()`), which they
+   would.
+
+None of this changes the public API in breaking ways; all of it is additive.
+
+## Testing
+
+The engine's tests run without a GPU, and the network stack should too:
+
+- `LoopbackTransport` connects a server and clients in one process with configurable latency, jitter, loss,
+  duplication and reordering, driven by a fake clock — fully deterministic tests of reliability, acks, fragmentation,
+  clock sync and reconciliation, with no sockets and no sleeps.
+- Property tests for the bit packing and quantisation round-trips and for sequence-number wrap-around.
+- A headless server + headless client test over loopback: the client moves its character with scripted inputs at 150
+  ms RTT and 5 % loss; assert positions converge and corrections stay small.
+- One real-socket smoke test on `127.0.0.1`.
+- Demo: a `-Ddemo.host=7777` / `-Ddemo.connect=host:7777` mode so CI can run two demo processes under `xvfb-run`.
+- Debug overlay (`F3`): RTT, loss, bytes in/out per second, snapshot rate, prediction corrections per second.
+
+## Phases
+
+| Phase | Content | Usable for |
+|---|---|---|
+| 1 (done) | Headless engine (`Engine.runHeadless`, `startHeadless` + `runTicks`, `NullRenderBackend`), tick counter (`Engine.tick()`), step hooks (`StepHook`), time scale for clock sync | Dedicated simulation, server tests |
+| 2 (done) | `engine.net`: `UdpTransport`, `LoopbackNetwork` (latency, jitter, loss, duplicates), `Connection` (acks, reliable ordered messages, fragmentation, RTT/loss/bandwidth), `NetServer`/`NetClient` (cookie handshake, version check, full/denied, timeouts, kick/leave/close), `BitWriter`/`BitReader` | Turn-based games, chat, lobbies, lockstep games with their own simulation |
+| 3 (done) | Replication (`engine.net.replication`): `ServerReplication`/`ClientReplication`, `NetworkIdentity`, spawners, spawn/despawn (also on scene removal and when an owner leaves), late joiners, transform + `NetState` snapshots, interpolation of copies, RPCs | Server-authoritative games where a little input delay is fine |
+| 4 (done) | `InputCommand`, `CommandSource`/`ActionCommandSource`, `CharacterMotor`, `CharacterController` save/restore and `PhysicsSystem.replayCharacter`, prediction and reconciliation in `ClientReplication`, command buffering on the host, clock sync by time scale | First/third-person action games |
+| 5 (done) | Per-client snapshots as changes from acknowledged baselines, `Quantize`d positions and rotations, `RelevanceFilter` (by distance, always relevant), bandwidth limit with priorities | Larger levels, more players |
+| 6 (done, partly) | Lag compensation (`raycastAsSeenBy`, `raycastAt`), encryption by default (X25519 + AES-256-GCM), passwords; not auth tokens or host migration (see above) | Public games, shooting |
+
+Phases 1 and 2 are a self-contained first release; each later phase is usable on its own.
+
+## Questions to decide before starting
+
+- **What kind of games is this for?** Co-op for 2–8 players over the internet, competitive shooters, or RTS-like? This
+  decides whether lockstep should get first-class support and how much effort goes into lag compensation.
+- **Dedicated servers, listen servers, or both?** Listen servers are much easier to ship to players; dedicated
+  servers need the headless engine sooner.
+- **NAT traversal / relays**: out of scope for the engine (players forward a port, or the game uses a platform
+  service), or wanted? A relay can be added behind the `Transport` interface later.
+- **Dependency policy**: the plan above needs no new library. Using an existing one (e.g. a Netty-based or a
+  KryoNet-style library) would save the transport work but bring a large dependency and its own threading model; the
+  transport layer is small enough (a few thousand lines) that writing it fits the rest of the engine better.

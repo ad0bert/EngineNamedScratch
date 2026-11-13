@@ -14,6 +14,7 @@ import java.util.TreeSet;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
@@ -57,6 +58,7 @@ import engine.messaging.MessageQueue;
 import engine.messaging.MessageService;
 import engine.physics.PhysicsSystem;
 import engine.physics.RayHit;
+import engine.render.NullRenderBackend;
 import engine.render.Overlay;
 import engine.render.RenderBackend;
 import engine.render.gl.GlBackend;
@@ -88,6 +90,12 @@ import lombok.extern.slf4j.Slf4j;
  * <p>
  * A game either builds everything in {@link Game#init}, or pushes {@link GameState}s (title screen, levels, pause
  * menu) onto {@code states()}.
+ *
+ * <p>
+ * Without a window ({@link #runHeadless}, {@link #startHeadless}, or {@code -Dengine.headless=true} for {@link #run})
+ * the engine runs the same steps, systems, game and game states, with nothing drawn, no sound and no devices: for
+ * servers, tools and tests. Every step has a number ({@link #tick()}), and {@link StepHook}s run at fixed points of
+ * it.
  */
 @Slf4j
 public class Engine {
@@ -103,6 +111,7 @@ public class Engine {
   // copy-on-write: systems and overlays may add or remove others while the engine iterates them
   private final List<ISystem> systems = new CopyOnWriteArrayList<>();
   private final List<Overlay> overlays = new CopyOnWriteArrayList<>();
+  private final List<StepHook> hooks = new CopyOnWriteArrayList<>();
   /** The overlays and, last, the game states' drawing. */
   private volatile List<Overlay> drawn = List.of();
   /** The game's screens and modes (title, levels, pause menu). */
@@ -127,6 +136,16 @@ public class Engine {
   private final int gameSection = this.profiler.section("Game");
   private final int renderSection = this.profiler.section("Render");
   private final int reloadSection = this.profiler.section("Hot reload");
+  private int hookSection = -1; // made when the first hook is added
+  /** The number of the step being run, or of the last one run; 0 before the first. */
+  private long tick;
+  private volatile boolean headless;
+  /** True while {@link #runHeadless} drives the steps (rather than {@link #runTicks}). */
+  private volatile boolean headlessLoop;
+  private volatile Thread headlessThread;
+  /** Inside setup or a step: a stop() there is carried out afterwards. */
+  private boolean busy;
+  private boolean shutDown;
   private HotReload hotReload;
   private boolean hotReloadWanted = Boolean.getBoolean("engine.hotReload");
   private final List<Consumer<String>> assetListeners = HotReload.newListenerList();
@@ -214,6 +233,120 @@ public class Engine {
 
   public void removeSystem(ISystem system) {
     this.systems.remove(system);
+  }
+
+  /** Runs {@code hook} in every step from the next one on, after the hooks added before it; see {@link StepHook}. */
+  public void addStepHook(StepHook hook) {
+    if (this.hookSection < 0) {
+      this.hookSection = this.profiler.section("Step hooks");
+    }
+    this.hooks.add(hook);
+  }
+
+  public void removeStepHook(StepHook hook) {
+    this.hooks.remove(hook);
+  }
+
+  /**
+   * The number of the update step being run (inside a step), or of the last one (between steps): 1 in the first step,
+   * then one more per step, also while paused. Steps are {@link EngineConfig#updateStep()} seconds long, so this is the
+   * simulation's clock; networking uses it to say which step an input or a state belongs to.
+   */
+  public long tick() {
+    return this.tick;
+  }
+
+  /**
+   * How fast wall time turns into steps: 1 (the default) is real time. Each step still lasts exactly
+   * {@link EngineConfig#updateStep()} of simulated time; a scale of 1.01 only runs steps 1 % more often. Meant for small
+   * corrections, such as a networked client keeping its {@link #tick()} in line with the server's.
+   */
+  public void setTimeScale(double scale) {
+    this.timestep.setTimeScale(scale);
+  }
+
+  public double timeScale() {
+    return this.timestep.timeScale();
+  }
+
+  /** Whether the engine runs without a window ({@link #runHeadless} or {@link #startHeadless}). */
+  public boolean isHeadless() {
+    return this.headless;
+  }
+
+  /**
+   * Starts the engine without a window, on the calling thread, and returns: the render backend draws nothing
+   * ({@link NullRenderBackend}), sound is silent and no gamepads are looked for, but resources, physics, systems, the
+   * game's {@link Game#init} and game states are set up as with {@link #run}. Then call {@link #runTicks} to run steps
+   * (tests, tools, simulations faster than real time), and {@link #stop()} on the same thread when done. All of it
+   * belongs to the thread that called this.
+   */
+  public void startHeadless() {
+    if (this.headless || this.window != null) {
+      throw new IllegalStateException("the engine has already been started");
+    }
+    this.headless = true;
+    System.setProperty("java.awt.headless", "true");
+    this.busy = true;
+    try {
+      setUp(new NullRenderBackend(), false);
+    } finally {
+      this.busy = false;
+    }
+    if (this.stopping.get() && !this.headlessLoop) {
+      shutDown(); // the game stopped in its init
+    }
+  }
+
+  /**
+   * Runs {@code count} update steps right away, without waiting for wall time to pass (after {@link #startHeadless}).
+   * Stops early if a step calls {@link #stop()}.
+   */
+  public void runTicks(int count) {
+    if (!this.headless || this.headlessLoop) {
+      throw new IllegalStateException("runTicks needs an engine started with startHeadless()");
+    }
+    if (this.shutDown) {
+      throw new IllegalStateException("the engine has been stopped");
+    }
+    for (int i = 0; i < count && !this.stopping.get(); i++) {
+      step(this.timestep.step());
+      this.scene.flush();
+    }
+    if (this.stopping.get()) {
+      shutDown();
+    }
+  }
+
+  /**
+   * Runs the engine without a window on the calling thread, in real time ({@link EngineConfig#updateStep()} per step,
+   * scaled by {@link #setTimeScale}), and blocks until {@link #stop()} is called (from any thread, also from the game)
+   * or the thread is interrupted. Everything else is as with {@link #startHeadless}. With
+   * {@code -Dengine.exitAfterFrames=N} it stops after N steps.
+   */
+  public void runHeadless() {
+    if (this.headless || this.window != null) {
+      throw new IllegalStateException("the engine has already been started");
+    }
+    this.headlessThread = Thread.currentThread();
+    this.headlessLoop = true;
+    startHeadless();
+    try {
+      while (!this.stopping.get() && !Thread.currentThread().isInterrupted()) {
+        this.timestep.advance(System.nanoTime(), this::step);
+        this.scene.flush();
+        if (this.exitAfterFrames > 0 && this.tick >= this.exitAfterFrames) {
+          break;
+        }
+        if (!this.stopping.get()) {
+          LockSupport.parkNanos(Math.max(100_000L, this.timestep.nanosUntilNextStep()));
+        }
+      }
+    } finally {
+      this.stopping.set(true);
+      shutDown();
+      log.info("Engine stopped after {} steps", this.tick);
+    }
   }
 
   /** Adds 2D content drawn over the scene every frame, in registration order (the game states draw last). */
@@ -352,8 +485,15 @@ public class Engine {
     }
   }
 
-  /** Opens the window and blocks until it is closed. */
+  /** Opens the window and blocks until it is closed; with {@code -Dengine.headless=true}, {@link #runHeadless}. */
   public void run() throws InterruptedException {
+    if (Boolean.getBoolean("engine.headless")) {
+      runHeadless();
+      return;
+    }
+    if (this.headless || this.window != null) {
+      throw new IllegalStateException("the engine has already been started");
+    }
     System.setProperty("java.awt.headless", "true"); // ImageIO/Java2D only; keeps macOS from showing an AWT app
     final var caps = new GLCapabilities(GLProfile.get(GLProfile.GL3));
     caps.setDepthBits(24);
@@ -429,15 +569,41 @@ public class Engine {
   /**
    * Requests shutdown; safe to call from any thread, and more than once (only the first call counts). The animator is
    * stopped before the window is destroyed, so no frame is drawn while the window goes away; the sound device is
-   * closed last, after the window's dispose has released the clips.
+   * closed last, after the window's dispose has released the clips. Without a window, {@link #runHeadless} returns
+   * after the current step; an engine driven by {@link #runTicks} shuts down right away (call it on that thread).
    */
   public void stop() {
+    if (this.headless) {
+      if (this.stopping.compareAndSet(false, true)) {
+        final var loop = this.headlessThread;
+        if (loop != null) {
+          LockSupport.unpark(loop); // runHeadless shuts down on its own thread
+        } else if (!this.busy) {
+          shutDown(); // started with startHeadless: this is its thread; inside a step, runTicks does it after
+        }
+      }
+      return;
+    }
     if (this.stopping.compareAndSet(false, true)) {
       new Thread(() -> {
         this.animator.stop();
         this.window.destroy();
         closeAudio();
       }, "engine-stop").start();
+    }
+  }
+
+  /** Headless: what the window's dispose does, then the sound. */
+  private void shutDown() {
+    if (this.shutDown) {
+      return;
+    }
+    this.shutDown = true;
+    try {
+      tearDown();
+    } finally {
+      closeAudio();
+      this.closed.countDown();
     }
   }
 
@@ -448,12 +614,25 @@ public class Engine {
   }
 
   public void captureMouse(boolean capture) {
+    if (this.window == null) {
+      return; // headless, or not open yet
+    }
     this.inputListener.setCaptured(capture, this.window.getSurfaceWidth(), this.window.getSurfaceHeight());
     this.window.setPointerVisible(!capture);
     this.window.confinePointer(capture);
   }
 
   private void step(double dt) {
+    this.busy = true;
+    try {
+      runStep(dt);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private void runStep(double dt) {
+    final long now = ++this.tick;
     this.states.applyPending();
     this.scene.flush();
     for (Entity e : this.scene.entities()) {
@@ -464,6 +643,7 @@ public class Engine {
     if (this.input.wasActionPressed("release_mouse")) {
       captureMouse(false);
     }
+    runHooks(now, dt, true);
     final boolean simulate = !isPaused();
     for (ISystem s : this.systems) {
       if (simulate || s.runsWhilePaused()) {
@@ -482,7 +662,26 @@ public class Engine {
     } finally {
       this.profiler.end();
     }
+    runHooks(now, dt, false);
     this.input.endFrame();
+  }
+
+  private void runHooks(long now, double dt, boolean before) {
+    if (this.hooks.isEmpty()) {
+      return;
+    }
+    this.profiler.begin(this.hookSection);
+    try {
+      for (StepHook h : this.hooks) {
+        if (before) {
+          h.beforeSystems(this, now, dt);
+        } else {
+          h.afterStep(this, now, dt);
+        }
+      }
+    } finally {
+      this.profiler.end();
+    }
   }
 
   /** "PhysicsSystem" becomes "Physics", anonymous systems keep their enclosing class's name. */
@@ -587,6 +786,56 @@ public class Engine {
     this.appliedVsync = value;
   }
 
+  /**
+   * Everything after the graphics context exists: sound, resources, gamepads, the engine's systems, then the game.
+   * {@code devices} false (headless) leaves out the sound device and gamepads.
+   */
+  private void setUp(RenderBackend renderer, boolean devices) {
+    this.backend = renderer;
+    this.backend.setShaderSource(this::shaderFromAssets);
+    this.backend.init();
+    final var sound = devices && Boolean.parseBoolean(System.getProperty("engine.audio", "true"))
+        ? AlAudioBackend.open(32)
+        : null;
+    this.audio = new AudioSystem(sound != null ? sound : new NullAudioBackend());
+    this.audio.setOcclusionTest(this::occluded);
+    this.resources = new ResourceManager(this.backend, this.audio.backend(), this.assets);
+    if (devices && Boolean.parseBoolean(System.getProperty("engine.gamepads", "true"))) {
+      final var pads = JInputGamepads.open(this.input);
+      this.gamepads = pads != null ? pads : GamepadBackend.NONE;
+    }
+    this.input.bind("release_mouse", KeyEvent.VK_ESCAPE);
+    FirstPersonController.bindDefaults(this.input);
+    addSystem(new ComponentUpdateSystem());
+    addSystem(new AnimationSystem()); // before physics: animated kinematic bodies push others
+    addSystem(this.physics);
+    addSystem(this.audio); // after physics: sounds follow the bodies' new positions
+    this.messages.register(this.audio, MessageQueue.COLLISION);
+    final var debug = new DebugOverlay(this);
+    addSystem(debug);
+    addOverlay(debug);
+    this.game.init(this);
+    this.states.applyPending();
+    this.scene.flush();
+    if (this.hotReloadWanted) {
+      this.hotReload = HotReload.start(this, this.assetListeners);
+    }
+    this.fpsWindowStart = System.nanoTime();
+  }
+
+  /** The game states, the game, then the engine's resources; the sound device is closed separately. */
+  private void tearDown() {
+    this.states.exitAll();
+    this.game.shutdown(this);
+    this.gamepads.dispose();
+    if (this.hotReload != null) {
+      this.hotReload.close();
+      this.hotReload = null;
+    }
+    this.resources.dispose();
+    this.backend.dispose();
+  }
+
   private final class Loop implements GLEventListener {
     @Override
     public void init(GLAutoDrawable drawable) {
@@ -596,37 +845,7 @@ public class Engine {
       final var gl = drawable.getGL().getGL3();
       applyVsync(gl);
       log.info("OpenGL {} on {}", gl.glGetString(GL3.GL_VERSION), gl.glGetString(GL3.GL_RENDERER));
-      Engine.this.backend = new GlBackend(() -> Engine.this.window.getGL().getGL3());
-      Engine.this.backend.setShaderSource(Engine.this::shaderFromAssets);
-      Engine.this.backend.init();
-      final var sound = Boolean.parseBoolean(System.getProperty("engine.audio", "true")) ? AlAudioBackend.open(32)
-          : null;
-      Engine.this.audio = new AudioSystem(sound != null ? sound : new NullAudioBackend());
-      Engine.this.audio.setOcclusionTest(Engine.this::occluded);
-      Engine.this.resources = new ResourceManager(Engine.this.backend, Engine.this.audio.backend(),
-          Engine.this.assets);
-
-      if (Boolean.parseBoolean(System.getProperty("engine.gamepads", "true"))) {
-        final var pads = JInputGamepads.open(Engine.this.input);
-        Engine.this.gamepads = pads != null ? pads : GamepadBackend.NONE;
-      }
-      Engine.this.input.bind("release_mouse", KeyEvent.VK_ESCAPE);
-      FirstPersonController.bindDefaults(Engine.this.input);
-      Engine.this.addSystem(new ComponentUpdateSystem());
-      Engine.this.addSystem(new AnimationSystem()); // before physics: animated kinematic bodies push others
-      Engine.this.addSystem(Engine.this.physics);
-      Engine.this.addSystem(Engine.this.audio); // after physics: sounds follow the bodies' new positions
-      Engine.this.messages.register(Engine.this.audio, MessageQueue.COLLISION);
-      final var debug = new DebugOverlay(Engine.this);
-      Engine.this.addSystem(debug);
-      Engine.this.addOverlay(debug);
-      Engine.this.game.init(Engine.this);
-      Engine.this.states.applyPending();
-      Engine.this.scene.flush();
-      if (Engine.this.hotReloadWanted) {
-        Engine.this.hotReload = HotReload.start(Engine.this, Engine.this.assetListeners);
-      }
-      Engine.this.fpsWindowStart = System.nanoTime();
+      setUp(new GlBackend(() -> Engine.this.window.getGL().getGL3()), true);
       captureMouse(Boolean.parseBoolean(System.getProperty("engine.captureMouse", "true")));
     }
 
@@ -666,14 +885,7 @@ public class Engine {
 
     @Override
     public void dispose(GLAutoDrawable drawable) {
-      Engine.this.states.exitAll();
-      Engine.this.game.shutdown(Engine.this);
-      Engine.this.gamepads.dispose();
-      if (Engine.this.hotReload != null) {
-        Engine.this.hotReload.close();
-      }
-      Engine.this.resources.dispose();
-      Engine.this.backend.dispose();
+      tearDown();
     }
   }
 }

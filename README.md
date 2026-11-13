@@ -45,6 +45,7 @@ System properties:
 | `engine.antiAliasing=false`, `engine.orderIndependentTransparency=false` | turn off FXAA / weighted blended OIT |
 | `engine.ambientOcclusion=false`, `engine.aoRadius=0.8`, `engine.aoStrength=2` | screen-space ambient occlusion; `engine.debugAmbientOcclusion=true` shows it in grey |
 | `engine.skyIntensity=1` | brightness of the sky and its lighting |
+| `engine.headless=true` | `Engine.run()` runs without a window, sound or gamepads (`Engine.runHeadless`); with `engine.exitAfterFrames=N` it stops after N steps |
 | `engine.audio=false` | no sound (also automatic without a sound device) |
 | `engine.gamepads=false` | do not look for gamepads |
 | `engine.fullscreen=true`, `engine.vsync=false` | override the config's `app.fullscreen` / `app.vsync` |
@@ -87,7 +88,7 @@ with the demo (a runnable jar, and packaged for each platform). The release's ti
   <dependency>
     <groupId>io.github.ad0bert</groupId>
     <artifactId>engine-named-scratch</artifactId>
-    <version>0.9.0</version>
+    <version>0.10.0</version>
   </dependency>
   <!-- the engine logs through SLF4J only; pick a backend -->
   <dependency>
@@ -155,6 +156,85 @@ class PauseMenu implements GameState {
   updates stop; sound keeps playing (`engine.audio().mixer().setMuted(true)` silences it). Systems that should keep
   going return true from `ISystem.runsWhilePaused`.
 - **Window:** `engine.setFullscreen`, `setVsync`, `setWindowSize`, `monitorResolutions()` for a settings menu.
+- **Without a window:** `engine.runHeadless()` runs the same game in real time with nothing drawn, no sound and no
+  gamepads (resources still load, meshes keep their data for colliders): for servers and tools. For tests and
+  simulations faster than real time, `engine.startHeadless()`, then `engine.runTicks(n)` and `engine.stop()`, all on
+  one thread. `engine.isHeadless()` tells the game.
+- **Steps:** `engine.tick()` is the number of the current fixed step (1, 2, …, also counted while paused).
+  `engine.addStepHook(hook)` runs code before the systems (`beforeSystems`) and after the game's update (`afterStep`)
+  of every step, paused or not; networking is built on this. `engine.setTimeScale(1.01)` runs steps slightly more
+  often in wall time without changing their length (clock corrections).
+- **Networking** (`engine.net`, UDP, no extra libraries): the host runs a `NetServer`, players a `NetClient`; both
+  are step hooks. Messages are byte arrays (build them with `BitWriter`, read with `BitReader`), sent `UNRELIABLE`
+  (positions, inputs) or `RELIABLE` (in order, exactly once, split and joined when large). See
+  `docs/design/networking.md` for the design and what comes next (client-side prediction).
+
+  ```java
+  var server = new NetServer(UdpTransport.bind(27015), NetConfig.forGame(engine.config()));
+  server.setListener(new NetListener() {
+    public void connected(Connection c) { c.send(welcome, Delivery.RELIABLE); }
+    public void received(Connection c, byte[] data, Delivery d) { server.broadcastExcept(c, data, d); }
+  });
+  engine.addStepHook(server);
+
+  var client = new NetClient(UdpTransport.open(), new InetSocketAddress(host, 27015), NetConfig.forGame(engine.config()));
+  client.setListener(...);                     // connected, disconnected(reason, message), received
+  client.connect(name.getBytes(UTF_8));        // the server's ConnectionFilter can refuse it
+  engine.addStepHook(client);
+  ```
+
+  **Shared entities** (`engine.net.replication`): wrap the server in a `ServerReplication` and the client in a
+  `ClientReplication`, and add those as step hooks instead. Both register the same spawners; what the host spawns
+  appears on every client (also on clients that join later), follows the host's movement smoothly about 0.1 s behind,
+  and goes away when the host despawns it or removes it from the scene. Components implementing `NetState` send
+  their own fields along. RPCs are named calls in either direction, about an entity or about nothing.
+
+  ```java
+  Spawner crate = ctx -> new Entity("crate").add(...);         // same code on host and clients (ctx.onHost())
+  host.registerSpawner("crate", crate);
+  guest.registerSpawner("crate", crate);
+  Entity e = host.spawn("crate", position);                       // or spawn(type, pos, rot, ownerClientId, data)
+  host.onRpc("use", call -> { if (call.isFromOwner()) open(call.entity()); });
+  guest.rpc(door, "use", new BitWriter().writeInt(1, 0, 3));
+  ```
+
+  Copies on clients have kinematic rigid bodies and switched-off character controllers: the host moves them. When a
+  client leaves, the entities it owned are despawned.
+
+  **Bandwidth:** each client gets its own snapshots, as changes from the state it last confirmed (positions to the
+  millimetre, as whole numbers), so entities it already has exactly cost nothing and slow ones a few bytes.
+  `setRelevanceFilter(RelevanceFilter.byDistance(60))` gives a client only what is near its own entities (entities
+  leaving its range are despawned there and come back as they are then; `setAlwaysRelevant` for exceptions).
+  `setBandwidthLimit(bytesPerSecond)` caps each client's snapshots: the most urgent changes go first
+  (`setPriority`, a client's own entities count four times), the rest wait.
+
+  **Players without lag** (client-side prediction): give the player entity a `CapsuleCollider`, a
+  `CharacterController` and a `CharacterMotor`, spawn it owned by the client, and give the client's replication a
+  command source. The client then moves its own player at once, sends its input (`InputCommand`s: move, look,
+  buttons) to the host, and quietly corrects itself when the host's result differs (put back, inputs replayed; the
+  motor's `visual` child slides back instead of jumping). It keeps its input arriving a couple of steps early by
+  running its clock slightly faster or slower. The host's own player is driven the same way.
+
+  ```java
+  guestReplication.setCommandSource(new ActionCommandSource(engine.input()).addButton(0, "fire"));
+  hostReplication.setLocalPlayer(hostPlayer, new ActionCommandSource(engine.input()));
+  // on the host, game code reads what the players do:
+  if (player.get(CharacterMotor.class).pressed(InputCommand.button(0))) shoot(player);
+  ```
+
+  **Hit tests as the shooter saw them** (lag compensation): `hostReplication.raycastAsSeenBy(clientId, origin,
+  direction, distance)` moves the replicated entities back to where that client saw them when it gave its current
+  command (at most 0.5 s, `setMaxRewind`), tests the ray, and puts them back.
+
+  **Security:** connections are encrypted and authenticated by default (X25519 key agreement, AES-256-GCM, from the
+  JDK): nobody on the way can read, change, replay or end them. `NetConfig.withPassword("...")` makes the host
+  require a password (clients get `WRONG_PASSWORD`); it is never sent, it goes into the keys.
+  `withEncryption(false)` turns it off (both sides must agree). The handshake's cookie and padded requests keep
+  forged addresses from using the host to flood others.
+
+  `NetConfig.forGame` only lets the same game and version connect. A connection reports `rtt()`, `packetLoss()` and
+  bytes per second. For tests, `LoopbackNetwork` connects servers and clients in memory with a clock you drive and
+  chosen latency, jitter, loss and duplication.
 - **Assets and user files:** `engine.assets()` looks in added directories, then on the classpath;
   `engine.userDirs().config()` / `.data()` are the platform's per-user directories; `Settings.load(file)` reads and
   safely writes a properties file of player settings.
@@ -322,9 +402,9 @@ How it works:
 
 | Package | Purpose |
 |---|---|
-| `engine.core` | `Engine` (window, GL loop, lifecycle, pause, window options, screenshots, hot reloading), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
+| `engine.core` | `Engine` (window, GL loop or headless loop, lifecycle, pause, step numbers, window options, screenshots, hot reloading), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `StepHook`, `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
-| `engine.render` | Backend-agnostic: `RenderBackend`, `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
+| `engine.render` | Backend-agnostic: `RenderBackend` (and `NullRenderBackend`, which draws nothing), `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
 | `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, particles, sky and image-based lighting, post-processing, UI batching) |
 | `engine.animation` | `Track`, `Easing`, `Channel`, `AnimationClip`, `Animator` (layers, blending), `AnimationSystem` |
 | `engine.audio` | Backend-agnostic: `AudioBackend`, `AudioClip`/`AudioVoice` handles, `AudioSource`, `AudioListener`, `ImpactSound`, `AudioMixer`/`AudioBus`, `Rolloff`, `VoiceAllocator`, `AudioSystem`, `NullAudioBackend` |
@@ -335,6 +415,8 @@ How it works:
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
+| `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig` (encryption, password), `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Quantize`, `Transport` with `UdpTransport` and `LoopbackNetwork` (with an `Interceptor` for tests) |
+| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand`, `CommandSource`/`ActionCommandSource` and `CharacterMotor`; `RelevanceFilter`; lag compensation (`raycastAsSeenBy`) |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |
