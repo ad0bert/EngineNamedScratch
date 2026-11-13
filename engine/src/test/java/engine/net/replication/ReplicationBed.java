@@ -27,6 +27,8 @@ import engine.physics.Rigidbody;
 final class ReplicationBed {
   static final double STEP = 1 / 60.0;
   static final EngineConfig GAME = new EngineConfig("Replication test", "1", 8, 8, STEP);
+  /** The space ships fly in. */
+  static final Wraparound SPACE = Wraparound.cube(20f);
 
   /** Replicated game state for the tests. */
   static final class Health extends Component implements NetState {
@@ -106,6 +108,14 @@ final class ReplicationBed {
     r.registerSpawner("target", ctx -> { // a solid box moved by code
       final var e = new Entity("target");
       e.add(new BoxCollider(0.5f, 0.5f, 0.5f));
+      return e;
+    });
+    r.registerSpawner("ship", ctx -> { // flies in a cube of 40 m that wraps around
+      final var e = new Entity("ship " + ctx.owner());
+      final var motor = e.add(new FlightMotor());
+      motor.wraparound = SPACE;
+      motor.brakeButton = InputCommand.button(1);
+      e.add(new Health());
       return e;
     });
     r.registerSpawner("walker", ctx -> {

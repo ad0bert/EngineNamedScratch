@@ -54,8 +54,8 @@ class DeltaAndInterestTest {
 
   @Test
   void statesWriteAsSmallChanges() {
-    final var a = new QState(1000, 2000, -3000, 12345L, new byte[] { 1, 2 });
-    final var b = new QState(1010, 2000, -3005, 12345L, new byte[] { 1, 2 });
+    final var a = new QState(1000, 2000, -3000, 12345L, 0, new byte[] { 1, 2 });
+    final var b = new QState(1010, 2000, -3005, 12345L, 0, new byte[] { 1, 2 });
     final var full = new BitWriter();
     b.write(full, null);
     final var delta = new BitWriter();
@@ -65,6 +65,12 @@ class DeltaAndInterestTest {
     assertTrue(delta.byteLength() <= 4, "a small move is a few bytes: " + delta.byteLength());
     assertTrue(full.byteLength() > 18);
     assertTrue(b.sameAs(QState.read(new BitReader(delta.toByteArray()), a)));
+    final var jumped = new QState(1010, 2000, -3005, 12345L, 1, new byte[] { 1, 2 });
+    assertFalse(jumped.sameAs(b), "a jump is a change");
+    final var jump = new BitWriter();
+    jumped.write(jump, b);
+    assertEquals(jumped, QState.read(new BitReader(jump.toByteArray()), b));
+    assertEquals(1, QState.read(new BitReader(jump.toByteArray()), b).jumps());
   }
 
   @Test

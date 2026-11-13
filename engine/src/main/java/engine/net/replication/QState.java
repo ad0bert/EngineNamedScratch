@@ -11,14 +11,18 @@ import engine.net.BitWriter;
 import engine.net.Quantize;
 
 /**
- * An entity's replicated state as the network carries it: position in steps of 1/1024 m, packed rotation, the
- * {@link NetState} bytes. Host and client hold identical copies, so snapshots can describe changes from one.
+ * An entity's replicated state as the network carries it: position in steps of 1/1024 m, packed rotation, how often it
+ * has jumped ({@link ServerReplication#teleported}, counting up to 255 and round again), the {@link NetState} bytes.
+ * Host and client hold identical copies, so snapshots can describe changes from one.
  */
-record QState(int x, int y, int z, long rotation, byte[] state) {
-  static QState of(Entity entity) {
+record QState(int x, int y, int z, long rotation, int jumps, byte[] state) {
+  static final int JUMP_BITS = 8;
+
+  static QState of(Entity entity, int jumps) {
     final var t = entity.transform();
     return new QState(Quantize.position(t.position().x), Quantize.position(t.position().y),
-        Quantize.position(t.position().z), Quantize.rotation(t.rotation()), Replication.stateOf(entity));
+        Quantize.position(t.position().z), Quantize.rotation(t.rotation()), jumps & 0xFF,
+        Replication.stateOf(entity));
   }
 
   Vector3f position(Vector3f dest) {
@@ -41,7 +45,8 @@ record QState(int x, int y, int z, long rotation, byte[] state) {
     final boolean move = base == null || !samePlace(base);
     final boolean turn = base == null || base.rotation != this.rotation;
     final boolean change = base == null ? this.state.length > 0 : !Arrays.equals(base.state, this.state);
-    out.writeBoolean(move).writeBoolean(turn).writeBoolean(change);
+    final boolean jump = base == null ? this.jumps != 0 : base.jumps != this.jumps;
+    out.writeBoolean(move).writeBoolean(turn).writeBoolean(change).writeBoolean(jump);
     if (move) {
       if (base == null) {
         out.writeInt(this.x).writeInt(this.y).writeInt(this.z);
@@ -56,6 +61,9 @@ record QState(int x, int y, int z, long rotation, byte[] state) {
     if (change) {
       out.writeBytes(this.state);
     }
+    if (jump) {
+      out.writeBits(this.jumps, JUMP_BITS);
+    }
   }
 
   /** Reads what {@link #write} wrote with the same base. */
@@ -63,6 +71,7 @@ record QState(int x, int y, int z, long rotation, byte[] state) {
     final boolean move = in.readBoolean();
     final boolean turn = in.readBoolean();
     final boolean change = in.readBoolean();
+    final boolean jump = in.readBoolean();
     int nx = base == null ? 0 : base.x;
     int ny = base == null ? 0 : base.y;
     int nz = base == null ? 0 : base.z;
@@ -79,12 +88,14 @@ record QState(int x, int y, int z, long rotation, byte[] state) {
     }
     final long rot = turn ? in.readBits(Quantize.ROTATION_BITS) : base == null ? 0 : base.rotation;
     final byte[] st = change ? in.readBytes(Replication.MAX_DATA) : base == null ? new byte[0] : base.state;
-    return new QState(nx, ny, nz, rot, st);
+    final int jumps = jump ? (int) in.readBits(JUMP_BITS) : base == null ? 0 : base.jumps;
+    return new QState(nx, ny, nz, rot, jumps, st);
   }
 
-  /** Whether {@code o} needs nothing sent: same place, rotation and state. */
+  /** Whether {@code o} needs nothing sent: same place, rotation, jumps and state. */
   boolean sameAs(QState o) {
-    return o != null && samePlace(o) && this.rotation == o.rotation && Arrays.equals(this.state, o.state);
+    return o != null && samePlace(o) && this.rotation == o.rotation && this.jumps == o.jumps
+        && Arrays.equals(this.state, o.state);
   }
 
   @Override
@@ -94,6 +105,6 @@ record QState(int x, int y, int z, long rotation, byte[] state) {
 
   @Override
   public int hashCode() {
-    return 31 * (31 * (31 * this.x + this.y) + this.z) + Long.hashCode(this.rotation) + Arrays.hashCode(this.state);
+    return 31 * (31 * (31 * this.x + this.y) + this.z) + Long.hashCode(this.rotation) + this.jumps + Arrays.hashCode(this.state);
   }
 }

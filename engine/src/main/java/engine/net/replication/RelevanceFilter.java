@@ -29,6 +29,11 @@ public interface RelevanceFilter {
    * away, so that something on the edge does not come and go. A client that owns nothing gets everything.
    */
   static RelevanceFilter byDistance(float radius) {
+    return byDistance(radius, null);
+  }
+
+  /** Like {@link #byDistance(float)}, measuring the short way in a world that wraps around (null: straight). */
+  static RelevanceFilter byDistance(float radius, Wraparound wraparound) {
     final float enter = radius * radius;
     final float leave = radius * 1.1f * radius * 1.1f;
     final var a = new Vector3f();
@@ -40,7 +45,8 @@ public interface RelevanceFilter {
       final float limit = known ? leave : enter;
       entity.transform().worldPosition(a);
       for (Entity e : owned) {
-        if (e.transform().worldPosition(b).distanceSquared(a) <= limit) {
+        e.transform().worldPosition(b);
+        if ((wraparound == null ? b.distanceSquared(a) : wraparound.distanceSquared(a, b)) <= limit) {
           return true;
         }
       }
