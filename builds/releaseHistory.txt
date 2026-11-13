@@ -1,4 +1,5 @@
-Unreleased
+Version 0.10.0
+Networking for co-op games, and an engine without a window. Contains:
 - Engine without a window: Engine.runHeadless (real time), startHeadless + runTicks (as fast as wanted, for tests),
   -Dengine.headless=true; NullRenderBackend
 - Engine.tick(): the number of the current fixed step; StepHook (beforeSystems / afterStep, also while paused);
