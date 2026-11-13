@@ -60,6 +60,7 @@ public final class ClientReplication extends Replication {
     final Entity entity;
     final List<Sample> samples = new ArrayList<>();
     long appliedStateTick;
+    byte[] lastState = new byte[0];
 
     Copy(Entity entity) {
       this.entity = entity;
@@ -84,6 +85,7 @@ public final class ClientReplication extends Replication {
     final CharacterController controller;
     final TreeMap<Long, Step> history = new TreeMap<>();
     long reconciledTick = -1;
+    byte[] lastState = new byte[0];
 
     Predicted(Entity entity, CharacterMotor motor, CharacterController controller) {
       this.entity = entity;
@@ -92,8 +94,17 @@ public final class ClientReplication extends Replication {
     }
   }
 
+  /** Received states by entity and host step: the baselines snapshots refer to. */
+  private static final int HISTORY_TICKS = 180;
+  private static final QState MISSING = new QState(0, 0, 0, 0, new byte[0]);
+
   private final NetClient client;
   private final Map<Integer, Copy> copies = new HashMap<>();
+  private final Map<Integer, TreeMap<Long, QState>> histories = new HashMap<>();
+  private long latestMessage = -1;
+  private int messageBits;
+  private boolean ackDue;
+  private long lastPrune;
   private final Map<Integer, Predicted> predicted = new HashMap<>();
   private CommandSource commandSource;
   private double predictionOffset;
@@ -216,6 +227,7 @@ public final class ClientReplication extends Replication {
       }
       sendCommands();
     }
+    sendAck();
     this.client.flush();
   }
 
@@ -382,6 +394,10 @@ public final class ClientReplication extends Replication {
     if (entity == null) {
       return;
     }
+    final var older = this.histories.get(netId);
+    if (older != null) {
+      older.headMap(tick).clear(); // from an earlier life of this entity here
+    }
     final var motor = entity.findOrNull(CharacterMotor.class);
     final var controller = entity.findOrNull(CharacterController.class);
     if (owner == this.client.id() && motor != null && controller != null) {
@@ -403,6 +419,7 @@ public final class ClientReplication extends Replication {
     final var copy = new Copy(entity);
     copy.samples.add(new Sample(tick, position, rotation, null));
     copy.appliedStateTick = tick;
+    copy.lastState = state;
     this.copies.put(netId, copy);
     observeHostTick(tick);
   }
@@ -417,21 +434,69 @@ public final class ClientReplication extends Replication {
   }
 
   private void snapshot(BitReader in) {
+    final int wireId = (int) in.readBits(16);
     final long tick = in.readLong();
     observeHostTick(tick);
+    boolean complete = true;
     while (in.hasMoreBytes()) {
       final int netId = in.readVarInt();
-      final var position = in.readVector(new Vector3f());
-      final var rotation = in.readRotation(new Quaternionf());
-      final byte[] state = in.readBoolean() ? in.readBytes(MAX_DATA) : null;
+      final int age = in.readInt(0, ServerReplication.MAX_BASELINE_AGE);
+      QState base = null;
+      if (age > 0) {
+        final var history = this.histories.get(netId);
+        base = history == null ? null : history.get(tick - age);
+        if (base == null) {
+          base = MISSING; // read it to get past it, but it cannot be used
+        }
+      }
+      final var q = QState.read(in, base);
       in.align();
+      if (base == MISSING) {
+        complete = false; // do not confirm this message: the host must not build on it
+        continue;
+      }
+      final var history = this.histories.computeIfAbsent(netId, id -> new TreeMap<>());
+      history.put(tick, q);
+      history.headMap(tick - HISTORY_TICKS).clear();
       final var copy = this.copies.get(netId);
       if (copy != null) {
-        insert(copy, new Sample(tick, position, rotation, state));
-      } else if (state != null && this.predicted.containsKey(netId)) {
-        applyState(this.predicted.get(netId).entity, state); // own character: game state at once, no movement
+        insert(copy, new Sample(tick, q.position(new Vector3f()), q.orientation(new Quaternionf()), q.state()));
+      } else if (this.predicted.containsKey(netId)) {
+        final var own = this.predicted.get(netId);
+        if (!java.util.Arrays.equals(own.lastState, q.state())) {
+          own.lastState = q.state();
+          applyState(own.entity, q.state()); // own character: game state at once, no movement
+        }
       }
     }
+    if (complete) {
+      noteMessage(wireId);
+    }
+  }
+
+  /** Remembers a snapshot message for the next acknowledgement (the newest id and the 32 before it). */
+  private void noteMessage(int wireId) {
+    final long id = this.latestMessage < 0 ? wireId : unwrap16(wireId, this.latestMessage);
+    if (this.latestMessage < 0) {
+      this.latestMessage = id;
+      this.messageBits = 0;
+    } else if (id > this.latestMessage) {
+      final long shift = id - this.latestMessage;
+      this.messageBits = shift > 32 ? 0 : (int) (((long) this.messageBits << shift) | (1L << (shift - 1)));
+      this.latestMessage = id;
+    } else if (id < this.latestMessage && this.latestMessage - id <= 32) {
+      this.messageBits |= 1 << (this.latestMessage - id - 1);
+    }
+    this.ackDue = true;
+  }
+
+  private void sendAck() {
+    if (!this.ackDue) {
+      return;
+    }
+    this.ackDue = false;
+    this.client.send(new BitWriter(8).writeBits(SNAPSHOT_ACK, 8).writeBits(this.latestMessage & 0xFFFF, 16)
+        .writeInt(this.messageBits).toByteArray(), Delivery.UNRELIABLE);
   }
 
   private static void insert(Copy copy, Sample sample) {
@@ -475,6 +540,12 @@ public final class ClientReplication extends Replication {
     }
     final double renderTick = tick + this.offset - this.interpolationDelay / this.engine.config().updateStep();
     this.renderTick = renderTick;
+    if (tick - this.lastPrune > 120) { // let go of what entities that are gone left behind
+      this.lastPrune = tick;
+      final double hostNow = tick + this.offset;
+      this.histories.entrySet().removeIf(e -> !this.byNetId.containsKey(e.getKey())
+          && (e.getValue().isEmpty() || e.getValue().lastKey() < hostNow - HISTORY_TICKS));
+    }
     for (Copy copy : this.copies.values()) {
       final var samples = copy.samples;
       int before = -1;
@@ -485,7 +556,10 @@ public final class ClientReplication extends Replication {
       for (int i = 0; i <= before; i++) {
         final var s = samples.get(i);
         if (s.state != null && s.tick > copy.appliedStateTick) {
-          applyState(copy.entity, s.state);
+          if (!java.util.Arrays.equals(s.state, copy.lastState)) {
+            applyState(copy.entity, s.state);
+            copy.lastState = s.state;
+          }
           copy.appliedStateTick = s.tick;
         }
       }
@@ -522,6 +596,10 @@ public final class ClientReplication extends Replication {
     }
     this.copies.clear();
     this.predicted.clear();
+    this.histories.clear();
+    this.latestMessage = -1;
+    this.messageBits = 0;
+    this.ackDue = false;
     this.byNetId.clear();
     this.clockKnown = false;
     this.predicting = false;

@@ -1,7 +1,8 @@
 # Networking: design notes
 
 Status: phases 1 (headless engine, step numbers, step hooks), 2 (transport and sessions, package `engine.net`) and 3
-(replication, package `engine.net.replication`) and 4 (prediction and clock sync) are done; the rest is a proposal. This note looks at how a
+(replication, package `engine.net.replication`), 4 (prediction and clock sync) and 5 (delta snapshots, relevance,
+bandwidth) are done; the rest is a proposal. This note looks at how a
 network stack would fit the engine as it was at 0.9.0, what it would cost, and in which order to build it.
 
 Decided: the target is **co-op games on listen servers** (one player hosts inside their game), with **no new
@@ -198,6 +199,25 @@ messages; a lockstep game uses session + its own input exchange.
   and jumps the offset when the lead drops under half a step or is off by more than 6.
 - The visual correction is an offset on the motor's `visual` child that fades in about a tenth of a second.
 
+*As built (phase 5):*
+
+- Positions travel as whole numbers of 1/1024 m and rotations as packed 47-bit integers (`Quantize`), so host and
+  client hold bit-identical states (`QState`, with the `NetState` bytes) to build on.
+- Snapshots are per client. Each snapshot message has a 16-bit id; the client acknowledges ids (newest + 32-bit
+  field), and only for messages it could decode completely. An acknowledged entry becomes that entity's baseline for
+  that client. An entity is in a client's snapshot while its current state differs from its baseline; it is written
+  as a change from the baseline (flags for moved/turned/state changed, moves as zig-zag varints) when the baseline is
+  at most 2 s old, else in full. The client keeps 3 s of received states per entity to decode against. This replaced
+  phase 3's "everything changed recently, plus a refresh once a second".
+- Relevance (`RelevanceFilter`, `byDistance` with 10 % hysteresis) is checked every 10 steps per client; leaving
+  relevance despawns on that client only, coming back spawns as it is then (the old baselines are dropped on both
+  sides by the spawn's tick).
+- Bandwidth: each snapshot may use `limit × step × interval` bytes per client (at least one entry). Candidates are
+  ordered by accumulated waiting (priority, ×4 for the client's own entities); what does not fit keeps waiting and
+  rises. Spawns, despawns, RPCs and prediction messages are outside the budget.
+- Not done: per-field change masks inside `NetState`s (a changed state is sent whole), and compression of packets
+  as a whole.
+
 ## Changes to the existing engine
 
 In the order they would be needed:
@@ -242,7 +262,7 @@ The engine's tests run without a GPU, and the network stack should too:
 | 2 (done) | `engine.net`: `UdpTransport`, `LoopbackNetwork` (latency, jitter, loss, duplicates), `Connection` (acks, reliable ordered messages, fragmentation, RTT/loss/bandwidth), `NetServer`/`NetClient` (cookie handshake, version check, full/denied, timeouts, kick/leave/close), `BitWriter`/`BitReader` | Turn-based games, chat, lobbies, lockstep games with their own simulation |
 | 3 (done) | Replication (`engine.net.replication`): `ServerReplication`/`ClientReplication`, `NetworkIdentity`, spawners, spawn/despawn (also on scene removal and when an owner leaves), late joiners, transform + `NetState` snapshots, interpolation of copies, RPCs | Server-authoritative games where a little input delay is fine |
 | 4 (done) | `InputCommand`, `CommandSource`/`ActionCommandSource`, `CharacterMotor`, `CharacterController` save/restore and `PhysicsSystem.replayCharacter`, prediction and reconciliation in `ClientReplication`, command buffering on the host, clock sync by time scale | First/third-person action games |
-| 5 | Delta compression, quantisation tuning, interest management, bandwidth budgets | Larger levels, more players |
+| 5 (done) | Per-client snapshots as changes from acknowledged baselines, `Quantize`d positions and rotations, `RelevanceFilter` (by distance, always relevant), bandwidth limit with priorities | Larger levels, more players |
 | 6 | Lag compensation, encryption/auth tokens, listen-server host migration (maybe) | Competitive play, public servers |
 
 Phases 1 and 2 are a self-contained first release; each later phase is usable on its own.

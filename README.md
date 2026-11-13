@@ -201,6 +201,13 @@ class PauseMenu implements GameState {
   Copies on clients have kinematic rigid bodies and switched-off character controllers: the host moves them. When a
   client leaves, the entities it owned are despawned.
 
+  **Bandwidth:** each client gets its own snapshots, as changes from the state it last confirmed (positions to the
+  millimetre, as whole numbers), so entities it already has exactly cost nothing and slow ones a few bytes.
+  `setRelevanceFilter(RelevanceFilter.byDistance(60))` gives a client only what is near its own entities (entities
+  leaving its range are despawned there and come back as they are then; `setAlwaysRelevant` for exceptions).
+  `setBandwidthLimit(bytesPerSecond)` caps each client's snapshots: the most urgent changes go first
+  (`setPriority`, a client's own entities count four times), the rest wait.
+
   **Players without lag** (client-side prediction): give the player entity a `CapsuleCollider`, a
   `CharacterController` and a `CharacterMotor`, spawn it owned by the client, and give the client's replication a
   command source. The client then moves its own player at once, sends its input (`InputCommand`s: move, look,
@@ -398,8 +405,8 @@ How it works:
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
-| `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig`, `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Transport` with `UdpTransport` and `LoopbackNetwork` |
-| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand`, `CommandSource`/`ActionCommandSource` and `CharacterMotor` |
+| `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig`, `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Quantize`, `Transport` with `UdpTransport` and `LoopbackNetwork` |
+| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand`, `CommandSource`/`ActionCommandSource` and `CharacterMotor`; `RelevanceFilter` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |

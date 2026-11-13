@@ -45,6 +45,7 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
   static final int RPC = 0xF4;
   static final int COMMANDS = 0xF5;
   static final int PREDICTION = 0xF6;
+  static final int SNAPSHOT_ACK = 0xF7;
   /** Commands sent again in every message, so that a lost packet costs nothing. */
   static final int REDUNDANT_COMMANDS = 8;
   static final int MAX_TYPE = 200;
@@ -102,6 +103,11 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
   }
 
   // ---- shared plumbing ----
+
+  /** Expands a 16-bit number on the wire to the full counter closest to {@code reference}. */
+  static long unwrap16(int wire, long reference) {
+    return reference + (short) (wire - (int) reference);
+  }
 
   static int rpcId(String name) {
     return NetConfig.protocolId("rpc/" + name);

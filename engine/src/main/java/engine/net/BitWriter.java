@@ -124,42 +124,8 @@ public final class BitWriter {
    * about 0.0001 per component. Read it with {@link BitReader#readRotation}.
    */
   public BitWriter writeRotation(Quaternionfc q) {
-    float x = q.x();
-    float y = q.y();
-    float z = q.z();
-    float w = q.w();
-    final float length = (float) Math.sqrt(x * x + y * y + z * z + w * w);
-    if (!(length > 0)) {
-      x = 0;
-      y = 0;
-      z = 0;
-      w = 1;
-    } else {
-      x /= length;
-      y /= length;
-      z /= length;
-      w /= length;
-    }
-    final float[] c = { x, y, z, w };
-    int largest = 0;
-    for (int i = 1; i < 4; i++) {
-      if (Math.abs(c[i]) > Math.abs(c[largest])) {
-        largest = i;
-      }
-    }
-    final float sign = c[largest] < 0 ? -1f : 1f; // q and -q are the same rotation: make the left-out one positive
-    writeBits(largest, 2);
-    for (int i = 0; i < 4; i++) {
-      if (i != largest) {
-        writeFloat(c[i] * sign, -ROTATION_RANGE, ROTATION_RANGE, ROTATION_BITS);
-      }
-    }
-    return this;
+    return writeBits(Quantize.rotation(q), Quantize.ROTATION_BITS);
   }
-
-  /** The range of the three smaller components of a unit quaternion: +-1/sqrt(2). */
-  static final float ROTATION_RANGE = 0.70710679f;
-  static final int ROTATION_BITS = 15;
 
   /** UTF-8 with its length in front; throws if it takes more than {@code maxBytes}. */
   public BitWriter writeString(String value, int maxBytes) {

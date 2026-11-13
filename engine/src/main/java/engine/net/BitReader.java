@@ -124,17 +124,7 @@ public final class BitReader {
 
   /** A rotation written by {@link BitWriter#writeRotation}. */
   public Quaternionf readRotation(Quaternionf dest) {
-    final int largest = (int) readBits(2);
-    final float[] c = new float[4];
-    float sum = 0;
-    for (int i = 0; i < 4; i++) {
-      if (i != largest) {
-        c[i] = readFloat(-BitWriter.ROTATION_RANGE, BitWriter.ROTATION_RANGE, BitWriter.ROTATION_BITS);
-        sum += c[i] * c[i];
-      }
-    }
-    c[largest] = (float) Math.sqrt(Math.max(0f, 1f - sum));
-    return dest.set(c[0], c[1], c[2], c[3]).normalize();
+    return Quantize.rotation(readBits(Quantize.ROTATION_BITS), dest);
   }
 
   public String readString(int maxBytes) {

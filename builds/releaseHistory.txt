@@ -14,6 +14,9 @@ Unreleased
 - Prediction: InputCommand, CommandSource / ActionCommandSource, CharacterMotor; the client moves its own player at
   once and corrects it from the host (restore and replay), the host runs clients' commands per step; clock kept in
   line by Engine.setTimeScale; CharacterController.save / restore and PhysicsSystem.replayCharacter
+- Snapshots per client as changes from acknowledged states (quantised positions and rotations; nothing sent for
+  entities the client has exactly), RelevanceFilter (byDistance, setAlwaysRelevant), setBandwidthLimit with
+  setPriority; Quantize
 
 Version 0.9.0
 Characters, navigation and a richer world. Contains:

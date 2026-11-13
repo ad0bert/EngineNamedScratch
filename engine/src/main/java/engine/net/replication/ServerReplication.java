@@ -51,18 +51,17 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 public final class ServerReplication extends Replication {
-  /** Steps after a change in which an entity is in every snapshot; after that it is refreshed about once a second. */
-  private static final int RECENT_TICKS = 30;
+  private static final int SENT_MESSAGES = 256;
+  /** Older baselines are not used: the client may have let go of them. */
+  static final int MAX_BASELINE_AGE = 120;
 
   private static final class Tracked {
     final Entity entity;
     final NetworkIdentity identity;
-    final Vector3f position = new Vector3f();
-    final Quaternionf rotation = new Quaternionf();
-    byte[] state = new byte[0];
-    long changedTick = Long.MIN_VALUE;
     boolean announced;
     boolean removed;
+    boolean alwaysRelevant;
+    float priority = 1f;
 
     Tracked(Entity entity, NetworkIdentity identity) {
       this.entity = entity;
@@ -80,6 +79,46 @@ public final class ServerReplication extends Replication {
   }
 
   private record Message(Connection to, byte[] data, Delivery delivery) {
+  }
+
+  /** What a client has of an entity: since when, the newest state it confirmed, how long it has waited. */
+  private static final class Known {
+    final Tracked tracked;
+    final long since;
+    QState baseline;
+    long baselineTick = -1;
+    double waiting;
+
+    Known(Tracked tracked, long since) {
+      this.tracked = tracked;
+      this.since = since;
+    }
+  }
+
+  private record SentEntry(int netId, QState state) {
+  }
+
+  /** A snapshot message sent to a client, kept until it is acknowledged or its slot is reused. */
+  private static final class SentMessage {
+    long id = -1;
+    long tick;
+    boolean acked;
+    final List<SentEntry> entries = new ArrayList<>();
+  }
+
+  /** Everything about one client's view of the world. */
+  private static final class View {
+    final Connection connection;
+    final Map<Integer, Known> known = new LinkedHashMap<>();
+    final SentMessage[] sent = new SentMessage[SENT_MESSAGES];
+    long nextMessageId;
+
+    View(Connection connection) {
+      this.connection = connection;
+      for (int i = 0; i < SENT_MESSAGES; i++) {
+        this.sent[i] = new SentMessage();
+      }
+    }
   }
 
   /** A client's commands waiting for their step, and the one in use. */
@@ -104,6 +143,11 @@ public final class ServerReplication extends Replication {
   @Getter private int snapshotInterval = 2;
   private boolean despawnOwned = true;
   private final BitWriter scratch = new BitWriter(256);
+  private final Map<Connection, View> views = new LinkedHashMap<>();
+  private RelevanceFilter relevance = RelevanceFilter.ALL;
+  private int relevanceInterval = 10;
+  /** Bytes per second of snapshots per client. */
+  @Getter private int bandwidthLimit = 48_000;
 
   /** Takes over {@code server}'s listener; set the game's on this instead. */
   public ServerReplication(Engine engine, NetServer server) {
@@ -112,6 +156,7 @@ public final class ServerReplication extends Replication {
     server.setListener(new NetListener() {
       @Override
       public void connected(Connection connection) {
+        ServerReplication.this.views.put(connection, new View(connection));
         ServerReplication.this.outbox.add(new AnnounceAll(connection));
         ServerReplication.this.listener.connected(connection);
       }
@@ -126,6 +171,7 @@ public final class ServerReplication extends Replication {
           }
         }
         ServerReplication.this.pilots.remove(connection.id());
+        ServerReplication.this.views.remove(connection);
         ServerReplication.this.listener.disconnected(connection, reason, message);
       }
 
@@ -142,6 +188,62 @@ public final class ServerReplication extends Replication {
       throw new IllegalArgumentException("interval must be at least 1");
     }
     this.snapshotInterval = steps;
+  }
+
+  /** Which entities each client gets (default {@link RelevanceFilter#ALL}). */
+  public void setRelevanceFilter(RelevanceFilter filter) {
+    this.relevance = filter;
+  }
+
+  /** Steps between relevance checks (default 10). */
+  public void setRelevanceInterval(int steps) {
+    if (steps < 1) {
+      throw new IllegalArgumentException("interval must be at least 1");
+    }
+    this.relevanceInterval = steps;
+  }
+
+  /** Sends {@code entity} to every client whatever the relevance filter says (e.g. a match's score keeper). */
+  public void setAlwaysRelevant(Entity entity, boolean value) {
+    final var t = this.tracked.get(entity);
+    if (t != null) {
+      t.alwaysRelevant = value;
+    }
+  }
+
+  /**
+   * How urgent the entity's updates are compared with others (default 1) when a snapshot does not have room for all
+   * changes: an entity waits less the higher this is. A client's own entities count four times.
+   */
+  public void setPriority(Entity entity, float priority) {
+    final var t = this.tracked.get(entity);
+    if (t != null) {
+      t.priority = Math.max(0.01f, priority);
+    }
+  }
+
+  /**
+   * At most this many bytes per second of snapshots to each client (default 48000). When changes do not fit, the
+   * most urgent go first and the rest wait for the next snapshot.
+   */
+  public void setBandwidthLimit(int bytesPerSecond) {
+    if (bytesPerSecond < 1000) {
+      throw new IllegalArgumentException("at least 1000 bytes per second");
+    }
+    this.bandwidthLimit = bytesPerSecond;
+  }
+
+  /** Whether the client has the entity (it is relevant to it and was spawned there). */
+  public boolean isKnownBy(Connection client, Entity entity) {
+    final var view = this.views.get(client);
+    final var t = this.tracked.get(entity);
+    return view != null && t != null && view.known.containsKey(t.identity.netId());
+  }
+
+  /** How many entities the client has. */
+  public int knownCount(Connection client) {
+    final var view = this.views.get(client);
+    return view == null ? 0 : view.known.size();
   }
 
   /** Whether a client's entities are despawned when it disconnects (default true). */
@@ -257,6 +359,9 @@ public final class ServerReplication extends Replication {
       }
     }
     sendOutbox(tick);
+    if (this.relevance != RelevanceFilter.ALL && tick % this.relevanceInterval == 0) {
+      updateRelevance(tick);
+    }
     if (tick % this.snapshotInterval == 0) {
       sendSnapshots(tick);
       sendPredictions(tick);
@@ -279,6 +384,10 @@ public final class ServerReplication extends Replication {
       final int tag = data[0] & 0xFF;
       if (tag == GAME) {
         this.listener.received(from, gamePayload(data), delivery);
+      } else if (tag == SNAPSHOT_ACK) {
+        final var in = new BitReader(data);
+        in.readBits(8);
+        acksFrom(from, in);
       } else if (tag == COMMANDS) {
         final var in = new BitReader(data);
         in.readBits(8);
@@ -343,41 +452,121 @@ public final class ServerReplication extends Replication {
     }
   }
 
+  private void acksFrom(Connection from, BitReader in) {
+    final var view = this.views.get(from);
+    if (view == null || view.nextMessageId == 0) {
+      return;
+    }
+    final long newest = unwrap16((int) in.readBits(16), view.nextMessageId - 1);
+    final int bits = in.readInt();
+    acknowledge(view, newest);
+    for (int i = 0; i < 32; i++) {
+      if ((bits & (1 << i)) != 0) {
+        acknowledge(view, newest - 1 - i);
+      }
+    }
+  }
+
+  private void acknowledge(View view, long id) {
+    if (id < 0 || id >= view.nextMessageId) {
+      return;
+    }
+    final var record = view.sent[(int) (id % SENT_MESSAGES)];
+    if (record.id != id || record.acked) {
+      return;
+    }
+    record.acked = true;
+    for (SentEntry e : record.entries) {
+      final var known = view.known.get(e.netId());
+      if (known != null && record.tick >= known.since && record.tick > known.baselineTick) {
+        known.baseline = e.state();
+        known.baselineTick = record.tick;
+      }
+    }
+  }
+
+  private boolean relevant(View view, Tracked t, List<Entity> owned) {
+    if (t.alwaysRelevant || t.identity.owner() == view.connection.id() || this.relevance == RelevanceFilter.ALL) {
+      return true;
+    }
+    return this.relevance.isRelevant(view.connection, t.entity, owned, view.known.containsKey(t.identity.netId()));
+  }
+
+  private List<Entity> ownedBy(Connection c) {
+    final List<Entity> owned = new ArrayList<>();
+    for (Tracked t : this.tracked.values()) {
+      if (t.identity.owner() == c.id()) {
+        owned.add(t.entity);
+      }
+    }
+    return owned;
+  }
+
+  private void spawnTo(View view, Tracked t, long tick) {
+    view.connection.send(spawnMessage(t, tick), Delivery.RELIABLE);
+    view.known.put(t.identity.netId(), new Known(t, tick));
+  }
+
+  private void despawnFrom(View view, Tracked t) {
+    if (view.known.remove(t.identity.netId()) != null) {
+      view.connection.send(new BitWriter().writeBits(DESPAWN, 8).writeVarInt(t.identity.netId()).toByteArray(),
+          Delivery.RELIABLE);
+    }
+  }
+
+  private void updateRelevance(long tick) {
+    for (View view : this.views.values()) {
+      if (!view.connection.isConnected()) {
+        continue;
+      }
+      final var owned = ownedBy(view.connection);
+      for (Tracked t : this.tracked.values()) {
+        if (!t.announced) {
+          continue;
+        }
+        final boolean want = relevant(view, t, owned);
+        final boolean has = view.known.containsKey(t.identity.netId());
+        if (want && !has) {
+          spawnTo(view, t, tick);
+        } else if (!want && has) {
+          despawnFrom(view, t);
+        }
+      }
+    }
+  }
+
   private void sendOutbox(long tick) {
-    final var connections = this.server.connections();
     for (int i = 0; i < this.outbox.size(); i++) {
       switch (this.outbox.get(i)) {
         case Announce(Tracked t) -> {
           if (!t.removed) {
-            remember(t, tick);
-            final byte[] message = spawnMessage(t, tick);
-            for (Connection c : connections) {
-              c.send(message, Delivery.RELIABLE);
+            for (View view : this.views.values()) {
+              if (view.connection.isConnected() && relevant(view, t, ownedBy(view.connection))) {
+                spawnTo(view, t, tick);
+              }
             }
             t.announced = true;
           }
         }
         case AnnounceAll(Connection to) -> {
-          if (to.isConnected()) {
+          final var view = this.views.get(to);
+          if (view != null && to.isConnected()) {
+            final var owned = ownedBy(to);
             for (Tracked t : this.tracked.values()) {
-              if (t.announced) {
-                to.send(spawnMessage(t, tick), Delivery.RELIABLE);
+              if (t.announced && !view.known.containsKey(t.identity.netId()) && relevant(view, t, owned)) {
+                spawnTo(view, t, tick);
               }
             }
           }
         }
         case Despawn(Tracked t) -> {
-          if (t.announced) {
-            final byte[] message = new BitWriter().writeBits(DESPAWN, 8).writeVarInt(t.identity.netId())
-                .toByteArray();
-            for (Connection c : connections) {
-              c.send(message, Delivery.RELIABLE);
-            }
+          for (View view : this.views.values()) {
+            despawnFrom(view, t);
           }
         }
         case Message(Connection to, byte[] data, Delivery delivery) -> {
           if (to == null) {
-            for (Connection c : connections) {
+            for (Connection c : this.server.connections()) {
               c.send(data, delivery);
             }
           } else {
@@ -388,13 +577,6 @@ public final class ServerReplication extends Replication {
       }
     }
     this.outbox.clear();
-  }
-
-  private void remember(Tracked t, long tick) {
-    t.position.set(t.entity.transform().position());
-    t.rotation.set(t.entity.transform().rotation());
-    t.state = stateOf(t.entity);
-    t.changedTick = tick;
   }
 
   private byte[] spawnMessage(Tracked t, long tick) {
@@ -411,61 +593,86 @@ public final class ServerReplication extends Replication {
         .toByteArray();
   }
 
+  private record Candidate(Known known, QState state, QState base) {
+  }
+
+  /**
+   * One snapshot per client: the entities it has whose state differs from what it last confirmed, as changes from that
+   * (or in full), most urgent first, as many as its bandwidth allows.
+   */
   private void sendSnapshots(long tick) {
-    final var connections = this.server.connections();
-    if (connections.isEmpty()) {
+    if (this.views.isEmpty()) {
       return;
     }
-    final int maxBytes = connections.get(0).maxUnreliableSize();
-    final double perSecond = 1.0 / (this.engine.config().updateStep() * this.snapshotInterval);
-    final long refreshEvery = Math.max(1, Math.round(perSecond));
-    final long snapshotNumber = tick / this.snapshotInterval;
-    final List<byte[]> messages = new ArrayList<>();
-    BitWriter message = null;
+    final Map<Tracked, QState> current = new java.util.HashMap<>();
     for (Tracked t : this.tracked.values()) {
-      if (!t.announced) {
-        continue;
-      }
-      final var transform = t.entity.transform();
-      final byte[] state = stateOf(t.entity);
-      if (!transform.position().equals(t.position) || !transform.rotation().equals(t.rotation)
-          || !Arrays.equals(state, t.state)) {
-        t.position.set(transform.position());
-        t.rotation.set(transform.rotation());
-        t.state = state;
-        t.changedTick = tick;
-      }
-      final boolean recent = tick - t.changedTick <= RECENT_TICKS;
-      if (!recent && (snapshotNumber + t.identity.netId()) % refreshEvery != 0) {
-        continue;
-      }
-      this.scratch.reset().writeVarInt(t.identity.netId()).writeVector(transform.position())
-          .writeRotation(transform.rotation()).writeBoolean(state.length > 0);
-      if (state.length > 0) {
-        this.scratch.writeBytes(state);
-      }
-      final byte[] entry = this.scratch.toByteArray();
-      if (entry.length + 9 > maxBytes) {
-        log.warn("State of {} is too large for a snapshot ({} bytes); it is left out", t.entity, entry.length);
-        continue;
-      }
-      if (message != null && message.byteLength() + entry.length > maxBytes) {
-        messages.add(message.toByteArray());
-        message = null;
-      }
-      if (message == null) {
-        message = new BitWriter(maxBytes).writeBits(SNAPSHOT, 8).writeLong(tick);
-      }
-      for (byte b : entry) {
-        message.writeBits(b, 8);
+      if (t.announced) {
+        current.put(t, QState.of(t.entity));
       }
     }
-    if (message != null) {
-      messages.add(message.toByteArray());
-    }
-    for (Connection c : connections) {
-      for (byte[] m : messages) {
-        c.send(m, Delivery.UNRELIABLE);
+    final int budget = (int) Math.max(1, this.bandwidthLimit * this.engine.config().updateStep()
+        * this.snapshotInterval);
+    for (View view : this.views.values()) {
+      final var c = view.connection;
+      if (!c.isConnected()) {
+        continue;
+      }
+      final List<Candidate> candidates = new ArrayList<>();
+      for (Known k : view.known.values()) {
+        final var q = current.get(k.tracked);
+        if (q == null) {
+          continue;
+        }
+        final boolean fresh = k.baseline != null && tick - k.baselineTick <= MAX_BASELINE_AGE;
+        final var base = fresh ? k.baseline : null;
+        if (q.sameAs(base)) {
+          k.waiting = 0;
+          continue; // the client has exactly this
+        }
+        k.waiting += k.tracked.priority * (k.tracked.identity.owner() == c.id() ? 4 : 1);
+        candidates.add(new Candidate(k, q, base));
+      }
+      candidates.sort((x, y) -> Double.compare(y.known.waiting, x.known.waiting));
+      final int maxBytes = c.maxUnreliableSize();
+      int used = 0;
+      BitWriter message = null;
+      SentMessage record = null;
+      for (Candidate cand : candidates) {
+        final int netId = cand.known.tracked.identity.netId();
+        final int age = cand.base == null ? 0 : (int) (tick - cand.known.baselineTick);
+        this.scratch.reset().writeVarInt(netId).writeInt(age, 0, MAX_BASELINE_AGE);
+        cand.state.write(this.scratch, cand.base);
+        final byte[] entry = this.scratch.align().toByteArray();
+        if (entry.length + 11 > maxBytes) {
+          warnOnce("big " + netId, "State of {} is too large for a snapshot ({} bytes); it is left out",
+              cand.known.tracked.entity, entry.length);
+          continue;
+        }
+        if (used > 0 && used + entry.length > budget) {
+          break; // the rest waits, and gets more urgent
+        }
+        if (message != null && message.byteLength() + entry.length > maxBytes) {
+          c.send(message.toByteArray(), Delivery.UNRELIABLE);
+          message = null;
+        }
+        if (message == null) {
+          final long id = view.nextMessageId++;
+          message = new BitWriter(maxBytes).writeBits(SNAPSHOT, 8).writeBits(id & 0xFFFF, 16).writeLong(tick);
+          record = view.sent[(int) (id % SENT_MESSAGES)];
+          record.id = id;
+          record.tick = tick;
+          record.acked = false;
+          record.entries.clear();
+        }
+        for (byte b : entry) {
+          message.writeBits(b, 8);
+        }
+        record.entries.add(new SentEntry(netId, cand.state));
+        used += entry.length;
+        cand.known.waiting = 0;
+      }
+      if (message != null) {
+        c.send(message.toByteArray(), Delivery.UNRELIABLE);
       }
     }
   }
