@@ -24,6 +24,7 @@ import engine.net.Connection;
 import engine.net.NetConfig;
 import engine.net.NetDataException;
 import engine.net.NetListener;
+import engine.physics.CharacterController;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -42,6 +43,10 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
   static final int DESPAWN = 0xF2;
   static final int SNAPSHOT = 0xF3;
   static final int RPC = 0xF4;
+  static final int COMMANDS = 0xF5;
+  static final int PREDICTION = 0xF6;
+  /** Commands sent again in every message, so that a lost packet costs nothing. */
+  static final int REDUNDANT_COMMANDS = 8;
   static final int MAX_TYPE = 200;
   static final int MAX_DATA = 64 * 1024;
 
@@ -178,6 +183,21 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
     this.engine.scene().add(entity);
     this.byNetId.put(netId, entity);
     return entity;
+  }
+
+  static void writeCharacter(BitWriter out, CharacterController.State s) {
+    out.writeVector(s.position).writeVector(s.velocity).writeFloat(s.walk.x).writeFloat(s.walk.z)
+        .writeBoolean(s.grounded).writeFloat(s.airTime);
+  }
+
+  static CharacterController.State readCharacter(BitReader in) {
+    final var s = new CharacterController.State();
+    in.readVector(s.position);
+    in.readVector(s.velocity);
+    s.walk.set(in.readFloat(), 0f, in.readFloat());
+    s.grounded = in.readBoolean();
+    s.airTime = in.readFloat();
+    return s;
   }
 
   static byte[] stateOf(Entity entity) {

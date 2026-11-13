@@ -1519,6 +1519,19 @@ public class PhysicsSystem implements ISystem {
   }
 
   /** Nearest non-trigger collider hit by the ray within {@code maxDistance}; {@code dir} need not be normalized. */
+  /**
+   * Steps one character again against the world as it is now, without riding its ground or pushing bodies: for
+   * replaying a networked player's inputs after a correction from the host ({@link CharacterController#restore}).
+   */
+  public void replayCharacter(Scene scene, CharacterController character, float dt) {
+    character.replaying = true;
+    try {
+      character.step(this, scene, dt);
+    } finally {
+      character.replaying = false;
+    }
+  }
+
   public Optional<RayHit> raycast(Scene scene, Vector3f origin, Vector3f dir, float maxDistance) {
     return raycast(scene, origin, dir, maxDistance, c -> !c.trigger);
   }

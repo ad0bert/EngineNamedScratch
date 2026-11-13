@@ -83,6 +83,54 @@ public class CharacterController extends Component {
   private final Matrix4f groundMatrix = new Matrix4f();
   private boolean hasGroundPose;
   private boolean warned;
+  /** Set by {@link PhysicsSystem#replayCharacter}: no riding, no pushing bodies. */
+  boolean replaying;
+
+  /**
+   * What a character carries from one step to the next: enough to put it back to an earlier moment and step it again
+   * (networked prediction). The position is the entity's (local) position, so use it on root entities.
+   */
+  public static final class State {
+    public final Vector3f position = new Vector3f();
+    public final Vector3f velocity = new Vector3f();
+    public final Vector3f walk = new Vector3f();
+    public boolean grounded;
+    public float airTime = Float.MAX_VALUE;
+
+    public State set(State other) {
+      this.position.set(other.position);
+      this.velocity.set(other.velocity);
+      this.walk.set(other.walk);
+      this.grounded = other.grounded;
+      this.airTime = other.airTime;
+      return this;
+    }
+  }
+
+  /** Copies the current state into {@code dest}. */
+  public State save(State dest) {
+    dest.position.set(entity().transform().position());
+    dest.velocity.set(this.velocity);
+    dest.walk.set(this.walkVelocity);
+    dest.grounded = this.grounded;
+    dest.airTime = this.airTime;
+    return dest;
+  }
+
+  /**
+   * Puts the character back to a saved state: position, velocity, walking, on the ground or not. A pending jump is
+   * dropped, and it does not ride its old ground at the next step (the ground is found again).
+   */
+  public void restore(State state) {
+    entity().transform().position().set(state.position);
+    this.velocity.set(state.velocity);
+    this.walkVelocity.set(state.walk);
+    this.grounded = state.grounded;
+    this.airTime = state.airTime;
+    this.jumpRequested = false;
+    this.ground = null;
+    this.hasGroundPose = false;
+  }
 
   // scratch
   private final ShapeCast cast = new ShapeCast();
@@ -221,7 +269,7 @@ public class CharacterController extends Component {
     this.flags = 0;
     final boolean wasGrounded = this.grounded;
 
-    if (wasGrounded && this.rideMovingGround) {
+    if (wasGrounded && this.rideMovingGround && !this.replaying) {
       ride(physics, scene);
     }
     depenetrate(physics, scene);
@@ -403,7 +451,7 @@ public class CharacterController extends Component {
 
   /** Gives a dynamic body in the way the momentum of an inelastic collision with the character. */
   private void push(Collider hit, Vector3f n, float dt) {
-    if (this.mass <= 0f) {
+    if (this.mass <= 0f || this.replaying) {
       return;
     }
     final var body = hit.entity().findOrNull(Rigidbody.class);

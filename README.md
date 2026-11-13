@@ -201,6 +201,20 @@ class PauseMenu implements GameState {
   Copies on clients have kinematic rigid bodies and switched-off character controllers: the host moves them. When a
   client leaves, the entities it owned are despawned.
 
+  **Players without lag** (client-side prediction): give the player entity a `CapsuleCollider`, a
+  `CharacterController` and a `CharacterMotor`, spawn it owned by the client, and give the client's replication a
+  command source. The client then moves its own player at once, sends its input (`InputCommand`s: move, look,
+  buttons) to the host, and quietly corrects itself when the host's result differs (put back, inputs replayed; the
+  motor's `visual` child slides back instead of jumping). It keeps its input arriving a couple of steps early by
+  running its clock slightly faster or slower. The host's own player is driven the same way.
+
+  ```java
+  guestReplication.setCommandSource(new ActionCommandSource(engine.input()).addButton(0, "fire"));
+  hostReplication.setLocalPlayer(hostPlayer, new ActionCommandSource(engine.input()));
+  // on the host, game code reads what the players do:
+  if (player.get(CharacterMotor.class).pressed(InputCommand.button(0))) shoot(player);
+  ```
+
   `NetConfig.forGame` only lets the same game and version connect. A connection reports `rtt()`, `packetLoss()` and
   bytes per second. For tests, `LoopbackNetwork` connects servers and clients in memory with a clock you drive and
   chosen latency, jitter, loss and duplication.
@@ -385,7 +399,7 @@ How it works:
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
 | `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig`, `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Transport` with `UdpTransport` and `LoopbackNetwork` |
-| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`) |
+| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand`, `CommandSource`/`ActionCommandSource` and `CharacterMotor` |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |

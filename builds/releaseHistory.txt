@@ -11,6 +11,9 @@ Unreleased
   NetworkIdentity (owner, spawn data), late joiners, despawning (also on scene removal and when the owner leaves),
   snapshots of transforms and NetState components, interpolated copies on clients, RPCs; Scene.contains;
   BitWriter / BitReader: rotations in 47 bits, vectors, align
+- Prediction: InputCommand, CommandSource / ActionCommandSource, CharacterMotor; the client moves its own player at
+  once and corrects it from the host (restore and replay), the host runs clients' commands per step; clock kept in
+  line by Engine.setTimeScale; CharacterController.save / restore and PhysicsSystem.replayCharacter
 
 Version 0.9.0
 Characters, navigation and a richer world. Contains:

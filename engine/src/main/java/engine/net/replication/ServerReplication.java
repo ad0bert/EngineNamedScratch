@@ -21,6 +21,7 @@ import engine.net.DisconnectReason;
 import engine.net.NetDataException;
 import engine.net.NetListener;
 import engine.net.NetServer;
+import engine.physics.CharacterController;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -81,6 +82,20 @@ public final class ServerReplication extends Replication {
   private record Message(Connection to, byte[] data, Delivery delivery) {
   }
 
+  /** A client's commands waiting for their step, and the one in use. */
+  private static final class Pilot {
+    final java.util.TreeMap<Long, InputCommand> pending = new java.util.TreeMap<>();
+    InputCommand last = InputCommand.NONE;
+    /** The newest step that ran a command the client sent for it (not a repeat), or -1. */
+    long ack = -1;
+    long newest = -1;
+  }
+
+  private final Map<Integer, Pilot> pilots = new java.util.HashMap<>();
+  private Entity localPlayer;
+  private CommandSource localSource;
+  private final CharacterController.State characterScratch = new CharacterController.State();
+
   @Getter private final NetServer server;
   private final Map<Entity, Tracked> tracked = new LinkedHashMap<>();
   private final List<Object> outbox = new ArrayList<>();
@@ -110,6 +125,7 @@ public final class ServerReplication extends Replication {
             }
           }
         }
+        ServerReplication.this.pilots.remove(connection.id());
         ServerReplication.this.listener.disconnected(connection, reason, message);
       }
 
@@ -131,6 +147,15 @@ public final class ServerReplication extends Replication {
   /** Whether a client's entities are despawned when it disconnects (default true). */
   public void setDespawnOwnedOnDisconnect(boolean value) {
     this.despawnOwned = value;
+  }
+
+  /**
+   * The host's own player: every step its {@link CharacterMotor} gets the next command from {@code source}. Null
+   * stops it. (Clients' players get theirs from the clients.)
+   */
+  public void setLocalPlayer(Entity player, CommandSource source) {
+    this.localPlayer = player;
+    this.localSource = source;
   }
 
   public Entity spawn(String type, Vector3fc position) {
@@ -190,6 +215,38 @@ public final class ServerReplication extends Replication {
   @Override
   public void beforeSystems(Engine e, long tick, double dt) {
     this.server.receive();
+    if (this.localPlayer != null && this.localSource != null) {
+      final var motor = this.localPlayer.findOrNull(CharacterMotor.class);
+      if (motor != null && this.engine.scene().contains(this.localPlayer)) {
+        motor.apply(this.localSource.sample(tick, dt).quantized());
+      }
+    }
+    for (Pilot p : this.pilots.values()) {
+      p.pending.headMap(tick).clear(); // too late
+      final var command = p.pending.remove(tick);
+      if (command != null) {
+        p.last = command;
+        p.ack = tick;
+      } else {
+        p.last = p.last.withTick(tick); // nothing in time: keep doing what it did
+      }
+    }
+    for (Tracked t : this.tracked.values()) {
+      final int owner = t.identity.owner();
+      if (owner >= 0) {
+        final var pilot = this.pilots.get(owner);
+        final var motor = pilot == null ? null : t.entity.findOrNull(CharacterMotor.class);
+        if (motor != null) {
+          motor.apply(pilot.last);
+        }
+      }
+    }
+  }
+
+  /** The command in use for client {@code clientId}'s characters (its last one if a step's did not come in time). */
+  public InputCommand commandOf(int clientId) {
+    final var p = this.pilots.get(clientId);
+    return p == null ? InputCommand.NONE : p.last;
   }
 
   @Override
@@ -202,6 +259,7 @@ public final class ServerReplication extends Replication {
     sendOutbox(tick);
     if (tick % this.snapshotInterval == 0) {
       sendSnapshots(tick);
+      sendPredictions(tick);
     }
     this.server.flush();
   }
@@ -221,6 +279,10 @@ public final class ServerReplication extends Replication {
       final int tag = data[0] & 0xFF;
       if (tag == GAME) {
         this.listener.received(from, gamePayload(data), delivery);
+      } else if (tag == COMMANDS) {
+        final var in = new BitReader(data);
+        in.readBits(8);
+        commandsFrom(from, in);
       } else if (tag == RPC) {
         final var in = new BitReader(data);
         in.readBits(8);
@@ -230,6 +292,54 @@ public final class ServerReplication extends Replication {
       }
     } catch (NetDataException e) {
       log.debug("Bad message from client {}: {}", from.id(), e.toString());
+    }
+  }
+
+  private void commandsFrom(Connection from, BitReader in) {
+    final var pilot = this.pilots.computeIfAbsent(from.id(), id -> new Pilot());
+    final long now = this.engine.tick();
+    long tick = in.readLong();
+    final int count = in.readInt(1, REDUNDANT_COMMANDS);
+    for (int i = 0; i < count; i++) {
+      if (i > 0) {
+        tick -= in.readVarInt() + 1L;
+      }
+      final var command = InputCommand.readBody(in, tick);
+      // only steps still to come, and not absurdly far ahead
+      if (tick >= now && tick <= now + 600 && pilot.pending.size() < 256) {
+        pilot.pending.putIfAbsent(tick, command);
+      }
+      pilot.newest = Math.max(pilot.newest, tick);
+    }
+  }
+
+  /** Tells each client where its characters really are, which of its commands made them so, and how early they come. */
+  private void sendPredictions(long tick) {
+    for (Connection c : this.server.connections()) {
+      final var pilot = this.pilots.get(c.id());
+      if (pilot == null) {
+        continue;
+      }
+      BitWriter out = null;
+      for (Tracked t : this.tracked.values()) {
+        if (t.identity.owner() != c.id() || !t.announced) {
+          continue;
+        }
+        final var controller = t.entity.findOrNull(CharacterController.class);
+        if (controller == null || t.entity.findOrNull(CharacterMotor.class) == null) {
+          continue;
+        }
+        if (out == null) {
+          out = new BitWriter(128).writeBits(PREDICTION, 8).writeLong(tick).writeLong(pilot.ack)
+              .writeFloat(pilot.newest - tick);
+        }
+        out.writeVarInt(t.identity.netId());
+        writeCharacter(out, controller.save(this.characterScratch));
+        out.align();
+      }
+      if (out != null) {
+        c.send(out.toByteArray(), Delivery.UNRELIABLE);
+      }
     }
   }
 

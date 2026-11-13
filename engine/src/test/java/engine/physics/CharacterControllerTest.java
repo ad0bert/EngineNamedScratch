@@ -298,4 +298,39 @@ class CharacterControllerTest {
     assertTrue(c.isGrounded());
     assertEquals(0.3f * pos(c).x, feet(c), 0.05f);
   }
+
+  @Test
+  void aSavedStateCanBeRestoredAndReplayedExactly() {
+    floor();
+    box("step", 3f, 0.1f, 0f, 0.5f, 0.1f, 2f); // a ledge to walk up on the way
+    final var c = character(0f, 0.95f, 0f);
+    simulate(0.5);
+    final var saved = c.save(new CharacterController.State());
+    final var walks = new Vector3f[90];
+    for (int i = 0; i < walks.length; i++) {
+      walks[i] = new Vector3f(i < 60 ? 3f : 0f, 0f, i < 30 ? 0f : 1f);
+    }
+    for (int i = 0; i < walks.length; i++) {
+      c.walk(walks[i]);
+      if (i == 40) {
+        c.jump(5f);
+      }
+      this.physics.update(this.scene, DT);
+    }
+    final var end = new Vector3f(pos(c));
+    final var endState = c.save(new CharacterController.State());
+    assertTrue(end.distance(saved.position) > 2f, "it went somewhere: " + end);
+    c.restore(saved);
+    assertEquals(saved.position, pos(c));
+    for (int i = 0; i < walks.length; i++) {
+      c.walk(walks[i]);
+      if (i == 40) {
+        c.jump(5f);
+      }
+      this.physics.replayCharacter(this.scene, c, (float) DT);
+    }
+    assertTrue(pos(c).distance(end) < 1e-5f, "replayed to " + pos(c) + ", first time " + end);
+    assertEquals(endState.grounded, c.isGrounded());
+    assertTrue(c.velocity.distance(endState.velocity) < 1e-5f);
+  }
 }

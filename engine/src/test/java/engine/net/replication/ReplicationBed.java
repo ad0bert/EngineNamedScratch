@@ -19,6 +19,7 @@ import engine.net.NetConfig;
 import engine.net.NetListener;
 import engine.net.NetServer;
 import engine.physics.BoxCollider;
+import engine.physics.CapsuleCollider;
 import engine.physics.CharacterController;
 import engine.physics.Rigidbody;
 
@@ -80,6 +81,7 @@ final class ReplicationBed {
     this.host = new Engine(GAME, e -> {
     });
     this.host.startHeadless();
+    scenery(this.host);
     this.server = new ServerReplication(this.host, netServer);
     register(this.server);
     this.server.setListener(this.hostEvents);
@@ -101,6 +103,26 @@ final class ReplicationBed {
       return e;
     });
     r.registerSpawner("marker", ctx -> new Entity("marker"));
+    r.registerSpawner("walker", ctx -> {
+      final var e = new Entity("walker " + ctx.owner());
+      e.add(new CapsuleCollider(0.3f, 0.6f)); // feet 0.9 below the centre
+      e.add(new CharacterController());
+      e.add(new CharacterMotor());
+      e.add(new Health());
+      return e;
+    });
+  }
+
+  /** The same static floor (top at y = 0) and wall (x = 10) in every engine: scenery, not replicated. */
+  static void scenery(Engine engine) {
+    final var floor = new Entity("floor");
+    floor.transform().position().set(0, -0.5f, 0);
+    floor.add(new BoxCollider(100f, 0.5f, 100f));
+    engine.scene().add(floor);
+    final var wall = new Entity("wall");
+    wall.transform().position().set(10.5f, 1f, 0);
+    wall.add(new BoxCollider(0.5f, 1f, 100f));
+    engine.scene().add(wall);
   }
 
   /** A guest engine with its replication, connecting now. */
@@ -108,6 +130,7 @@ final class ReplicationBed {
     final var engine = new Engine(GAME, e -> {
     });
     engine.startHeadless();
+    scenery(engine);
     final var client = new ClientReplication(engine,
         new NetClient(this.network.open(), this.server.server().address(), this.config, this.time::get));
     register(client);

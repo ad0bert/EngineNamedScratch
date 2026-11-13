@@ -1,7 +1,7 @@
 # Networking: design notes
 
 Status: phases 1 (headless engine, step numbers, step hooks), 2 (transport and sessions, package `engine.net`) and 3
-(replication, package `engine.net.replication`) are done; the rest is a proposal. This note looks at how a
+(replication, package `engine.net.replication`) and 4 (prediction and clock sync) are done; the rest is a proposal. This note looks at how a
 network stack would fit the engine as it was at 0.9.0, what it would cost, and in which order to build it.
 
 Decided: the target is **co-op games on listen servers** (one player hosts inside their game), with **no new
@@ -180,6 +180,24 @@ messages; a lockstep game uses session + its own input exchange.
 - Lag compensation for hitscan (later): the server keeps a short history of collider positions and raycasts against
   the state the shooter saw.
 
+*As built (phase 4):*
+
+- An `InputCommand` is move x/z (whole steps of 1/127, so standing still is exactly 0), yaw, pitch, 8 button bits and
+  the host step the player was looking at (for phase 6). Commands are rounded to their wire form before anyone uses
+  them, so host and client compute bit-identical movement; each message repeats the last 8 commands.
+- `CharacterMotor` turns a command into turning, walking and jumping (jump on the press, not while held), and exposes
+  `pressed`/`isDown` for game buttons. Pitch reaches other players as `NetState`.
+- `CharacterController` gained `save`/`restore` of a small `State` (position, velocity, walk, grounded, air time) and
+  `PhysicsSystem.replayCharacter`, which steps one character without riding or pushing bodies (so replays have no
+  side effects). The rest of the physics is untouched.
+- The host runs a client's command for step N in step N (before the systems); if none came in time it repeats the
+  last one. Every snapshot it sends the owner its characters' exact `State`, plus how early commands arrive ("lead").
+- The client predicts for host step `its tick + offset`: initially the newest snapshot's tick plus a whole round trip
+  plus 2. If the host's state for a step differs from the prediction by more than 1 mm (or in grounded), it restores
+  it and replays the stored commands since. It steers the lead towards 2 steps with `Engine.setTimeScale` (±2 %),
+  and jumps the offset when the lead drops under half a step or is off by more than 6.
+- The visual correction is an offset on the motor's `visual` child that fades in about a tenth of a second.
+
 ## Changes to the existing engine
 
 In the order they would be needed:
@@ -223,7 +241,7 @@ The engine's tests run without a GPU, and the network stack should too:
 | 1 (done) | Headless engine (`Engine.runHeadless`, `startHeadless` + `runTicks`, `NullRenderBackend`), tick counter (`Engine.tick()`), step hooks (`StepHook`), time scale for clock sync | Dedicated simulation, server tests |
 | 2 (done) | `engine.net`: `UdpTransport`, `LoopbackNetwork` (latency, jitter, loss, duplicates), `Connection` (acks, reliable ordered messages, fragmentation, RTT/loss/bandwidth), `NetServer`/`NetClient` (cookie handshake, version check, full/denied, timeouts, kick/leave/close), `BitWriter`/`BitReader` | Turn-based games, chat, lobbies, lockstep games with their own simulation |
 | 3 (done) | Replication (`engine.net.replication`): `ServerReplication`/`ClientReplication`, `NetworkIdentity`, spawners, spawn/despawn (also on scene removal and when an owner leaves), late joiners, transform + `NetState` snapshots, interpolation of copies, RPCs | Server-authoritative games where a little input delay is fine |
-| 4 | Input commands, client prediction and reconciliation of `CharacterController`, clock sync | First/third-person action games |
+| 4 (done) | `InputCommand`, `CommandSource`/`ActionCommandSource`, `CharacterMotor`, `CharacterController` save/restore and `PhysicsSystem.replayCharacter`, prediction and reconciliation in `ClientReplication`, command buffering on the host, clock sync by time scale | First/third-person action games |
 | 5 | Delta compression, quantisation tuning, interest management, bandwidth budgets | Larger levels, more players |
 | 6 | Lag compensation, encryption/auth tokens, listen-server host migration (maybe) | Competitive play, public servers |
 

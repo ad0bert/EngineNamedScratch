@@ -192,7 +192,7 @@ class ReplicationTest {
     assertEquals(List.of(stays), List.copyOf(bed.server.entities()));
     assertEquals(1, bed.clients.get(1).entities().size());
     assertTrue(bed.clients.get(0).entities().isEmpty(), "the leaver dropped its copies");
-    assertEquals(0, bed.guests.get(0).scene().entities().size());
+    assertEquals(2, bed.guests.get(0).scene().entities().size());
   }
 
   @Test
@@ -264,10 +264,10 @@ class ReplicationTest {
     bed.connectAll();
     bed.server.spawn("marker", new Vector3f());
     bed.step(10);
-    assertEquals(1, bed.guests.get(0).scene().entities().size());
+    assertEquals(3, bed.guests.get(0).scene().entities().size());
     bed.server.server().close();
     bed.step(5);
-    assertEquals(0, bed.guests.get(0).scene().entities().size());
+    assertEquals(2, bed.guests.get(0).scene().entities().size());
     assertEquals("disconnected SERVER_CLOSED", bed.guestEvents.get(0).log.getLast());
   }
 
