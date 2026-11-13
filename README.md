@@ -222,6 +222,16 @@ class PauseMenu implements GameState {
   if (player.get(CharacterMotor.class).pressed(InputCommand.button(0))) shoot(player);
   ```
 
+  **Hit tests as the shooter saw them** (lag compensation): `hostReplication.raycastAsSeenBy(clientId, origin,
+  direction, distance)` moves the replicated entities back to where that client saw them when it gave its current
+  command (at most 0.5 s, `setMaxRewind`), tests the ray, and puts them back.
+
+  **Security:** connections are encrypted and authenticated by default (X25519 key agreement, AES-256-GCM, from the
+  JDK): nobody on the way can read, change, replay or end them. `NetConfig.withPassword("...")` makes the host
+  require a password (clients get `WRONG_PASSWORD`); it is never sent, it goes into the keys.
+  `withEncryption(false)` turns it off (both sides must agree). The handshake's cookie and padded requests keep
+  forged addresses from using the host to flood others.
+
   `NetConfig.forGame` only lets the same game and version connect. A connection reports `rtt()`, `packetLoss()` and
   bytes per second. For tests, `LoopbackNetwork` connects servers and clients in memory with a clock you drive and
   chosen latency, jitter, loss and duplication.
@@ -405,8 +415,8 @@ How it works:
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
-| `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig`, `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Quantize`, `Transport` with `UdpTransport` and `LoopbackNetwork` |
-| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand`, `CommandSource`/`ActionCommandSource` and `CharacterMotor`; `RelevanceFilter` |
+| `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig` (encryption, password), `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Quantize`, `Transport` with `UdpTransport` and `LoopbackNetwork` (with an `Interceptor` for tests) |
+| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand`, `CommandSource`/`ActionCommandSource` and `CharacterMotor`; `RelevanceFilter`; lag compensation (`raycastAsSeenBy`) |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |

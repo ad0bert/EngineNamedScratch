@@ -17,6 +17,10 @@ Unreleased
 - Snapshots per client as changes from acknowledged states (quantised positions and rotations; nothing sent for
   entities the client has exactly), RelevanceFilter (byDistance, setAlwaysRelevant), setBandwidthLimit with
   setPriority; Quantize
+- Lag compensation: ServerReplication.raycastAsSeenBy / raycastAt (entities moved back to what the client saw, at
+  most setMaxRewind); PhysicsSystem.raycast over given colliders
+- Security: connections encrypted and authenticated by default (X25519, AES-256-GCM), optional password
+  (NetConfig.withPassword, DisconnectReason.WRONG_PASSWORD), authenticated disconnects; LoopbackNetwork.Interceptor
 
 Version 0.9.0
 Characters, navigation and a richer world. Contains:

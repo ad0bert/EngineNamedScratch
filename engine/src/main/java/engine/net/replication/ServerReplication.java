@@ -5,6 +5,8 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.Predicate;
 
 import org.joml.Quaternionf;
 import org.joml.Quaternionfc;
@@ -22,6 +24,9 @@ import engine.net.NetDataException;
 import engine.net.NetListener;
 import engine.net.NetServer;
 import engine.physics.CharacterController;
+import engine.physics.Collider;
+import engine.physics.PhysicsSystem;
+import engine.physics.RayHit;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -62,6 +67,8 @@ public final class ServerReplication extends Replication {
     boolean removed;
     boolean alwaysRelevant;
     float priority = 1f;
+    /** Where it was after recent steps, oldest first, for lag compensation (entities with colliders only). */
+    final java.util.ArrayDeque<Pose> poses = new java.util.ArrayDeque<>();
 
     Tracked(Entity entity, NetworkIdentity identity) {
       this.entity = entity;
@@ -97,6 +104,12 @@ public final class ServerReplication extends Replication {
 
   private record SentEntry(int netId, QState state) {
   }
+
+  private record Pose(long tick, Vector3f position, Quaternionf rotation) {
+  }
+
+  private static final int POSE_HISTORY = 64;
+  private double maxRewind = 0.5;
 
   /** A snapshot message sent to a client, kept until it is acknowledged or its slot is reused. */
   private static final class SentMessage {
@@ -246,6 +259,119 @@ public final class ServerReplication extends Replication {
     return view == null ? 0 : view.known.size();
   }
 
+  /** The furthest back {@link #raycastAsSeenBy} goes, in seconds (default 0.5): older views are not trusted. */
+  public void setMaxRewind(double seconds) {
+    if (!(seconds >= 0) || seconds > POSE_HISTORY * this.engine.config().updateStep()) {
+      throw new IllegalArgumentException("rewind must be 0.." + POSE_HISTORY * this.engine.config().updateStep());
+    }
+    this.maxRewind = seconds;
+  }
+
+  /**
+   * Lag compensation: the nearest solid hit of a ray as client {@code clientId} saw the world when it gave its
+   * current command (its {@link InputCommand#viewTick()}): replicated entities are where they were then, the client's
+   * own ones and everything else where they are now. For hitscan weapons, so that aiming at what is on the screen
+   * hits. For the host's own player (or without a view) it is a plain raycast.
+   */
+  public Optional<RayHit> raycastAsSeenBy(int clientId, Vector3f origin, Vector3f direction, float maxDistance) {
+    final double view = clientId == NetworkIdentity.HOST ? -1 : commandOf(clientId).viewTick();
+    return raycastAt(view < 0 ? this.engine.tick() : view, clientId, origin, direction, maxDistance,
+        c -> !c.trigger);
+  }
+
+  /**
+   * The nearest hit (that {@code accept} lets through) of a ray with replicated entities moved back to host step
+   * {@code hostTick} (fractional; at most {@link #setMaxRewind} ago), except those owned by {@code exceptOwner}. They
+   * are back where they belong before this returns.
+   */
+  public Optional<RayHit> raycastAt(double hostTick, int exceptOwner, Vector3f origin, Vector3f direction,
+      float maxDistance, Predicate<Collider> accept) {
+    final double now = this.engine.tick();
+    final double tick = Math.clamp(hostTick, now - this.maxRewind / this.engine.config().updateStep(), now);
+    final List<Tracked> moved = new ArrayList<>();
+    final List<Vector3f> savedPositions = new ArrayList<>();
+    final List<Quaternionf> savedRotations = new ArrayList<>();
+    final List<Collider> colliders = new ArrayList<>();
+    final java.util.Set<Entity> movedEntities = new java.util.HashSet<>();
+    final var position = new Vector3f();
+    final var rotation = new Quaternionf();
+    try {
+      for (Tracked t : this.tracked.values()) {
+        if (t.identity.owner() == exceptOwner || t.poses.isEmpty() || tick >= now
+            || !poseAt(t, tick, position, rotation)) {
+          continue;
+        }
+        final var transform = t.entity.transform();
+        moved.add(t);
+        savedPositions.add(new Vector3f(transform.position()));
+        savedRotations.add(new Quaternionf(transform.rotation()));
+        transform.position().set(position);
+        transform.rotation().set(rotation);
+        PhysicsSystem.refreshShapes(t.entity);
+        movedEntities.add(t.entity);
+        for (int i = 0; i < t.entity.componentCount(); i++) {
+          if (t.entity.componentAt(i) instanceof Collider c) {
+            colliders.add(c);
+          }
+        }
+      }
+      final var physics = this.engine.physics();
+      final var back = physics.raycast(colliders, origin, direction, maxDistance, accept);
+      final var rest = physics.raycast(this.engine.scene(), origin, direction, maxDistance,
+          c -> accept.test(c) && !movedEntities.contains(c.entity()));
+      if (back.isPresent() && (rest.isEmpty() || back.get().distance() <= rest.get().distance())) {
+        return back;
+      }
+      return rest;
+    } finally {
+      for (int i = 0; i < moved.size(); i++) {
+        final var transform = moved.get(i).entity.transform();
+        transform.position().set(savedPositions.get(i));
+        transform.rotation().set(savedRotations.get(i));
+        PhysicsSystem.refreshShapes(moved.get(i).entity);
+      }
+    }
+  }
+
+  /** Where {@code t} was at {@code tick}, between the recorded steps around it; false if that is unknown. */
+  private static boolean poseAt(Tracked t, double tick, Vector3f position, Quaternionf rotation) {
+    Pose before = null;
+    for (Pose p : t.poses) {
+      if (p.tick() <= tick) {
+        before = p;
+        continue;
+      }
+      if (before == null) {
+        position.set(p.position());
+        rotation.set(p.rotation());
+      } else {
+        final float f = (float) ((tick - before.tick()) / (p.tick() - before.tick()));
+        before.position().lerp(p.position(), f, position);
+        before.rotation().slerp(p.rotation(), f, rotation);
+      }
+      return true;
+    }
+    if (before == null) {
+      return false;
+    }
+    position.set(before.position());
+    rotation.set(before.rotation());
+    return true;
+  }
+
+  private void recordPoses(long tick) {
+    for (Tracked t : this.tracked.values()) {
+      if (t.entity.findOrNull(Collider.class) == null) {
+        continue;
+      }
+      final var transform = t.entity.transform();
+      t.poses.addLast(new Pose(tick, new Vector3f(transform.position()), new Quaternionf(transform.rotation())));
+      while (t.poses.size() > POSE_HISTORY) {
+        t.poses.removeFirst();
+      }
+    }
+  }
+
   /** Whether a client's entities are despawned when it disconnects (default true). */
   public void setDespawnOwnedOnDisconnect(boolean value) {
     this.despawnOwned = value;
@@ -358,6 +484,7 @@ public final class ServerReplication extends Replication {
         forget(t); // the game removed it from the scene
       }
     }
+    recordPoses(tick);
     sendOutbox(tick);
     if (this.relevance != RelevanceFilter.ALL && tick % this.relevanceInterval == 0) {
       updateRelevance(tick);

@@ -43,10 +43,18 @@ public final class LoopbackNetwork {
   private record InFlight(long deliverAt, long order, SocketAddress from, byte[] data) {
   }
 
+  /** Sees every packet on its way: returns it (changed or not) or null to drop it. For tests of what is on the wire. */
+  @FunctionalInterface
+  public interface Interceptor {
+    byte[] intercept(SocketAddress from, SocketAddress to, byte[] packet);
+  }
+
   private final LongSupplier clock;
   private final Random random;
   private final Map<SocketAddress, Endpoint> endpoints = new HashMap<>();
   @Getter @Setter private Conditions conditions = Conditions.PERFECT;
+  /** Null, or something that looks at (and may change or drop) every packet. */
+  @Getter @Setter private Interceptor interceptor;
   private int nextPort = 40000;
   private long order;
   /** Packets the network dropped (loss), for tests. */
@@ -77,8 +85,14 @@ public final class LoopbackNetwork {
   }
 
   private void deliver(SocketAddress from, SocketAddress to, ByteBuffer packet) {
-    final byte[] data = new byte[packet.remaining()];
+    byte[] data = new byte[packet.remaining()];
     packet.get(data);
+    if (this.interceptor != null) {
+      data = this.interceptor.intercept(from, to, data);
+      if (data == null) {
+        return;
+      }
+    }
     final var target = this.endpoints.get(to);
     if (target == null) {
       return;

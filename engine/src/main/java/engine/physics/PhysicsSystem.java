@@ -1563,6 +1563,36 @@ public class PhysicsSystem implements ISystem {
   }
 
   /**
+   * The nearest hit among {@code colliders} only (enabled ones that {@code accept} lets through), with their shapes
+   * taken from their entities' transforms as they are now rather than from the last step: for queries against entities
+   * moved somewhere for a moment, such as back in time for lag compensation. Tests each collider; meant for a few
+   * dozen, not a level.
+   */
+  public Optional<RayHit> raycast(List<? extends Collider> colliders, Vector3f origin, Vector3f dir, float maxDistance,
+      Predicate<Collider> accept) {
+    if (dir.lengthSquared() < 1e-12f) {
+      return Optional.empty();
+    }
+    final var q = new RayQuery(origin, new Vector3f(dir).normalize(), maxDistance, accept);
+    for (int i = 0; i < colliders.size(); i++) {
+      final var c = colliders.get(i);
+      if (c.isEnabled() && c.entity() != null) {
+        c.refresh();
+        q.test(c);
+      }
+    }
+    if (q.bestCollider == null) {
+      return Optional.empty();
+    }
+    return Optional.of(new RayHit(q.bestCollider, new Vector3f(origin).fma(q.best, q.dir), q.bestNormal, q.best));
+  }
+
+  /** Recomputes the world shapes of the entity's colliders from its transform now (after moving it for a query). */
+  public static void refreshShapes(Entity e) {
+    refreshColliders(e);
+  }
+
+  /**
    * Particle collisions against this system's colliders (not triggers; those on the layers in {@code layerMask}),
    * for {@link ParticleEmitter#collider}: one ray per particle and step along its move, through the broadphase grid
    * of the last step. Allocates only when a particle hits something. One instance per emitter or shared, on the

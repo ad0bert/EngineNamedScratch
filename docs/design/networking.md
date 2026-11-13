@@ -1,8 +1,9 @@
 # Networking: design notes
 
 Status: phases 1 (headless engine, step numbers, step hooks), 2 (transport and sessions, package `engine.net`) and 3
-(replication, package `engine.net.replication`), 4 (prediction and clock sync) and 5 (delta snapshots, relevance,
-bandwidth) are done; the rest is a proposal. This note looks at how a
+(replication, package `engine.net.replication`), 4 (prediction and clock sync), 5 (delta snapshots, relevance,
+bandwidth) and 6 (lag compensation, encryption and passwords) are done. Host migration was decided against (see
+phase 6 below). This note looks at how a
 network stack would fit the engine as it was at 0.9.0, what it would cost, and in which order to build it.
 
 Decided: the target is **co-op games on listen servers** (one player hosts inside their game), with **no new
@@ -218,6 +219,34 @@ messages; a lockstep game uses session + its own input exchange.
 - Not done: per-field change masks inside `NetState`s (a changed state is sent whole), and compression of packets
   as a whole.
 
+*As built (phase 6):*
+
+- **Lag compensation.** The host records the pose of every replicated entity with a collider after each step (about a
+  second). `raycastAsSeenBy(client, ...)` takes the view tick of the client's current command (the host step its
+  interpolated copies showed), clamps it to `setMaxRewind` (0.5 s, so a client cannot claim an arbitrarily old view),
+  moves the other replicated entities there, and combines `PhysicsSystem.raycast(colliders, ...)` (new: a ray
+  against given colliders with their shapes recomputed from the transforms) with an ordinary raycast that skips those
+  entities. Everything is put back before it returns. Only rays for now; shape casts would work the same way.
+- **Encryption** (`NetConfig.encrypted`, on by default). The client sends an X25519 public key in the challenge
+  response, the server answers with its own and a key confirmation in the accept. Keys per direction come from HMAC-
+  SHA256 over the shared secret, the password key, both public keys, the client salt and the cookie. DATA and
+  DISCONNECT bodies are AES-256-GCM sealed; the nonce is the direction and the 64-bit packet sequence, the header is
+  authenticated data. A DISCONNECT now carries a sequence number so it can be authenticated. Overhead: 16 bytes per
+  packet. DENY stays unauthenticated (a forger can only stop a connection attempt, which it could by dropping
+  packets anyway).
+- **Passwords** (`NetConfig.password`). PBKDF2 (salted with the protocol id) turns it into a key; the client proves
+  knowledge with an HMAC in the challenge response (wrong: `WRONG_PASSWORD`), and the key also goes into the session
+  keys, so a man in the middle without the password can neither join nor read along. Without a password the key
+  agreement is unauthenticated: it stops eavesdroppers, not an active man in the middle. Someone who records an
+  attempt can try passwords offline against the proof, which is why long passwords are recommended.
+- **Not done: auth tokens.** They need a matchmaking or account service to issue them; the `ConnectionFilter`
+  (with the connect payload) is where a game that has one checks them.
+- **Not done: host migration.** For a listen server it would mean another player's game becoming the host: the
+  others connect to it (often impossible behind home routers without port forwarding or a relay), and it promotes
+  its interpolated copies to the authoritative world, without the old host's physics state (velocities, contacts,
+  AI). It would be a lot of fragile machinery for a result that fails in practice where it matters most. Co-op games
+  are better served by saving the world when the host leaves (`SceneSerializer`) so that anyone can host it again.
+
 ## Changes to the existing engine
 
 In the order they would be needed:
@@ -263,7 +292,7 @@ The engine's tests run without a GPU, and the network stack should too:
 | 3 (done) | Replication (`engine.net.replication`): `ServerReplication`/`ClientReplication`, `NetworkIdentity`, spawners, spawn/despawn (also on scene removal and when an owner leaves), late joiners, transform + `NetState` snapshots, interpolation of copies, RPCs | Server-authoritative games where a little input delay is fine |
 | 4 (done) | `InputCommand`, `CommandSource`/`ActionCommandSource`, `CharacterMotor`, `CharacterController` save/restore and `PhysicsSystem.replayCharacter`, prediction and reconciliation in `ClientReplication`, command buffering on the host, clock sync by time scale | First/third-person action games |
 | 5 (done) | Per-client snapshots as changes from acknowledged baselines, `Quantize`d positions and rotations, `RelevanceFilter` (by distance, always relevant), bandwidth limit with priorities | Larger levels, more players |
-| 6 | Lag compensation, encryption/auth tokens, listen-server host migration (maybe) | Competitive play, public servers |
+| 6 (done, partly) | Lag compensation (`raycastAsSeenBy`, `raycastAt`), encryption by default (X25519 + AES-256-GCM), passwords; not auth tokens or host migration (see above) | Public games, shooting |
 
 Phases 1 and 2 are a self-contained first release; each later phase is usable on its own.
 

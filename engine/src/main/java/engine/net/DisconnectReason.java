@@ -14,14 +14,17 @@ public enum DisconnectReason {
   SERVER_FULL(5),
   /** The server's {@link ConnectionFilter} refused the client; its reason is the message. */
   DENIED(6),
-  /** The server runs a different game or version ({@link NetConfig#protocolId()}). */
+  /** The server runs a different game or version ({@link NetConfig#protocolId()}), or one side encrypts and the other
+   * does not. */
   VERSION_MISMATCH(7),
   /** The server did not answer within {@link NetConfig#connectTimeout()}. */
   NO_ANSWER(8),
   /** Too much reliable data was waiting to be acknowledged ({@link NetConfig#maxPendingReliable()}). */
   OVERFLOW(9),
   /** The other side sent data that breaks the rules (a message over the size limit, for example). */
-  PROTOCOL_ERROR(10);
+  PROTOCOL_ERROR(10),
+  /** The server needs a password ({@link NetConfig#password()}) and the client did not have the right one. */
+  WRONG_PASSWORD(11);
 
   final int code;
 

@@ -103,6 +103,11 @@ final class ReplicationBed {
       return e;
     });
     r.registerSpawner("marker", ctx -> new Entity("marker"));
+    r.registerSpawner("target", ctx -> { // a solid box moved by code
+      final var e = new Entity("target");
+      e.add(new BoxCollider(0.5f, 0.5f, 0.5f));
+      return e;
+    });
     r.registerSpawner("walker", ctx -> {
       final var e = new Entity("walker " + ctx.owner());
       e.add(new CapsuleCollider(0.3f, 0.6f)); // feet 0.9 below the centre

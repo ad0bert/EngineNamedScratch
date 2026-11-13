@@ -114,8 +114,19 @@ public final class Connection {
   private double sendRate;
   private double receiveRate;
 
+  /** Null when the connection is not encrypted. */
+  private final PacketCrypto crypto;
+  /** Server: the end of the accept message (public key, confirmation) to send again if the first was lost. */
+  byte[] acceptExtra = new byte[0];
+
   Connection(int id, SocketAddress address, long salt, NetConfig config, Transport transport, Owner owner,
       byte[] connectPayload, long now) {
+    this(id, address, salt, config, transport, owner, connectPayload, now, null);
+  }
+
+  Connection(int id, SocketAddress address, long salt, NetConfig config, Transport transport, Owner owner,
+      byte[] connectPayload, long now, PacketCrypto crypto) {
+    this.crypto = crypto;
     this.id = id;
     this.address = address;
     this.salt = salt;
@@ -124,7 +135,8 @@ public final class Connection {
     this.owner = owner;
     this.connectPayload = connectPayload;
     this.out = ByteBuffer.allocate(config.maxPacketSize());
-    this.maxPart = config.maxPacketSize() - Packets.DATA_HEADER - Packets.ENTRY_OVERHEAD;
+    this.maxPart = config.maxPacketSize() - Packets.DATA_HEADER - Packets.ENTRY_OVERHEAD
+        - (crypto == null ? 0 : PacketCrypto.TAG);
     for (int i = 0; i < SENT_BUFFER; i++) {
       this.sent[i] = new SentPacket();
     }
@@ -274,17 +286,39 @@ public final class Connection {
     this.unreliable.clear();
   }
 
-  /** Tells the other side, three times in case of loss. */
+  /**
+   * Tells the other side, three times in case of loss. A DISCONNECT has a sequence number like DATA, so that encrypted
+   * ones are authenticated (nobody else can end the connection).
+   */
   void sendDisconnect(int protocolId, DisconnectReason why, String text) {
     final byte[] bytes = Packets.text(text);
     for (int i = 0; i < 3; i++) {
+      final long sequence = this.nextSequence++;
       this.out.clear();
       Packets.header(this.out, protocolId, Packets.DISCONNECT);
-      this.out.putLong(this.salt).put((byte) why.code);
+      this.out.putLong(this.salt).putShort((short) sequence);
+      final int headerEnd = this.out.position();
+      this.out.put((byte) why.code);
       Packets.putBytes(this.out, bytes);
+      if (this.crypto != null) {
+        this.crypto.seal(this.out, headerEnd, sequence);
+      }
       this.out.flip();
       this.transport.send(this.address, this.out);
     }
+  }
+
+  /**
+   * The reason and text of a DISCONNECT packet positioned after its salt; throws {@link NetDataException} if it is not
+   * authentic.
+   */
+  ByteBuffer disconnectBody(ByteBuffer packet) {
+    final int wire = packet.getShort() & 0xFFFF;
+    if (this.crypto == null) {
+      return packet;
+    }
+    final long sequence = this.latestReceived < 0 ? wire : Packets.unwrap(wire, this.latestReceived);
+    return this.crypto.open(packet, packet.position(), sequence);
   }
 
   /** A DATA packet's body after the salt. Throws {@link NetDataException} if it is malformed. */
@@ -296,6 +330,10 @@ public final class Connection {
     if (sequence < 0 || this.received[(int) (sequence % RECEIVED_BUFFER)] == sequence
         || (this.latestReceived >= 0 && sequence <= this.latestReceived - RECEIVED_BUFFER)) {
       return; // a duplicate, or too old to tell
+    }
+    final int size = body.limit();
+    if (this.crypto != null) {
+      body = this.crypto.open(body, body.position(), sequence); // throws if changed, replayed or made up
     }
     // read everything first: a malformed packet changes nothing
     final List<Object> entries = new ArrayList<>();
@@ -314,7 +352,6 @@ public final class Connection {
     }
     this.lastReceiveTime = now;
     this.packetsReceived++;
-    final int size = body.limit();
     this.bytesReceived += size;
     this.rateBytesReceived += size;
     this.received[(int) (sequence % RECEIVED_BUFFER)] = sequence;
@@ -462,9 +499,13 @@ public final class Connection {
       record.acked = false;
       record.reliable.clear();
       this.out.clear();
+      if (this.crypto != null) {
+        this.out.limit(this.out.capacity() - PacketCrypto.TAG); // room for the tag
+      }
       Packets.header(this.out, protocolId, Packets.DATA);
       this.out.putLong(this.salt).putShort((short) sequence);
       writeAcks();
+      final int headerEnd = this.out.position();
       while (nextDue < due.size()) {
         final var o = due.get(nextDue);
         if (this.out.remaining() < Packets.ENTRY_OVERHEAD + o.part.length) {
@@ -484,6 +525,10 @@ public final class Connection {
         this.out.put(Packets.UNRELIABLE);
         Packets.putBytes(this.out, data);
         nextUnreliable++;
+      }
+      if (this.crypto != null) {
+        this.out.limit(this.out.capacity());
+        this.crypto.seal(this.out, headerEnd, sequence);
       }
       this.out.flip();
       final int size = this.out.remaining();

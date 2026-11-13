@@ -77,7 +77,8 @@ class DeltaAndInterestTest {
     }
     bed.step(60);
     final long bytes = bytesOver(bed, 0, 60);
-    assertTrue(bytes < 1500, "a still world costs keep-alives only: " + bytes + " bytes in a second");
+    // acknowledgements: at most a packet a step, 23 bytes of header and a 16-byte tag (encrypted)
+    assertTrue(bytes < 60 * 40, "a still world costs acknowledgements only: " + bytes + " bytes in a second");
     assertEquals(200, bed.clients.get(0).entities().size());
   }
 
@@ -215,7 +216,8 @@ class DeltaAndInterestTest {
       bytes += link(bed, 0).bytesSent() - before;
     }
     final double perSecond = bytes / 2.0;
-    assertTrue(perSecond < 8000 * 1.25, perSecond + " bytes per second, limit 8000");
+    // the limit is for snapshot contents; packet headers and tags (up to 39 bytes, a packet a step) come on top
+    assertTrue(perSecond < 8000 * 1.1 + 60 * 40, perSecond + " bytes per second, limit 8000");
     bed.step(600); // still: the waiting changes trickle through
     for (Entity m : movers) {
       assertTrue(bed.copy(0, m).transform().position().distance(m.transform().position()) < 1e-3f);

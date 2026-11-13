@@ -74,6 +74,8 @@ public final class NetClient implements StepHook, AutoCloseable {
   private long connectStart;
   private long lastHandshake;
   private boolean closed;
+  private final byte[] passwordKey;
+  private java.security.KeyPair keyPair;
   /** Packets dropped because they were malformed, for diagnostics. */
   @Getter private long malformedPackets;
 
@@ -89,6 +91,7 @@ public final class NetClient implements StepHook, AutoCloseable {
     this.config = config;
     this.clock = clock;
     this.in = ByteBuffer.allocate(config.maxPacketSize() + 1);
+    this.passwordKey = config.encrypted() ? PacketCrypto.passwordKey(config.password(), config.protocolId()) : null;
   }
 
   public void setListener(NetListener listener) {
@@ -123,6 +126,7 @@ public final class NetClient implements StepHook, AutoCloseable {
     this.challenged = false;
     this.connectStart = this.clock.getAsLong();
     this.lastHandshake = Long.MIN_VALUE;
+    this.keyPair = this.config.encrypted() ? PacketCrypto.newKeyPair() : null;
   }
 
   /** The connection to the server while connected (and after it ended), else null. */
@@ -276,10 +280,26 @@ public final class NetClient implements StepHook, AutoCloseable {
         }
       }
       case Packets.ACCEPT -> {
-        if (this.state == State.CONNECTING && this.challenged && p.getLong() == (this.clientSalt ^ this.cookie)) {
+        final long salt = this.clientSalt ^ this.cookie;
+        if (this.state == State.CONNECTING && this.challenged && p.getLong() == salt) {
           final int id = p.getShort() & 0xFFFF;
-          this.connection = new Connection(id, this.server, this.clientSalt ^ this.cookie, this.config,
-              this.transport, this.owner, new byte[0], this.clock.getAsLong());
+          PacketCrypto crypto = null;
+          if (this.keyPair != null) {
+            final byte[] serverPublic = new byte[PacketCrypto.PUBLIC_KEY];
+            p.get(serverPublic);
+            final byte[] confirmation = new byte[PacketCrypto.TAG];
+            p.get(confirmation);
+            final byte[] clientPublic = PacketCrypto.raw(this.keyPair);
+            final var keys = PacketCrypto.keys(PacketCrypto.agree(this.keyPair.getPrivate(), serverPublic),
+                this.passwordKey, this.clientSalt, this.cookie, clientPublic, serverPublic);
+            if (!java.security.MessageDigest.isEqual(confirmation,
+                keys.confirmation(NetServer.transcript(clientPublic, serverPublic, salt)))) {
+              throw new NetDataException("the accept does not prove the keys"); // forged, or a different password
+            }
+            crypto = keys.forClient();
+          }
+          this.connection = new Connection(id, this.server, salt, this.config, this.transport, this.owner,
+              new byte[0], this.clock.getAsLong(), crypto);
           this.state = State.CONNECTED;
           log.info("Connected to {} as client {}", this.server, id);
           this.listener.connected(this.connection);
@@ -292,8 +312,9 @@ public final class NetClient implements StepHook, AutoCloseable {
       }
       case Packets.DISCONNECT -> {
         if (this.state == State.CONNECTED && p.getLong() == this.connection.salt()) {
-          final var why = DisconnectReason.of(p.get());
-          end(why, Packets.getText(p), false);
+          final var body = this.connection.disconnectBody(p); // throws if it is not from the server
+          final var why = DisconnectReason.of(body.get());
+          end(why, Packets.getText(body), false);
         }
       }
       default -> throw new NetDataException("unexpected packet type " + type);
@@ -306,9 +327,16 @@ public final class NetClient implements StepHook, AutoCloseable {
       Packets.header(this.out, this.config.protocolId(), Packets.CHALLENGE_RESPONSE);
       this.out.putLong(this.clientSalt).putLong(this.cookie);
       Packets.putBytes(this.out, this.payload);
+      if (this.keyPair != null) {
+        final byte[] clientPublic = PacketCrypto.raw(this.keyPair);
+        final boolean hasPassword = this.config.password() != null;
+        this.out.put(clientPublic).put((byte) (hasPassword ? 1 : 0)).put(hasPassword
+            ? PacketCrypto.proof(this.passwordKey, this.clientSalt, this.cookie, clientPublic)
+            : new byte[PacketCrypto.PROOF]);
+      }
     } else {
       Packets.header(this.out, this.config.protocolId(), Packets.CONNECT_REQUEST);
-      this.out.putLong(this.clientSalt);
+      this.out.putLong(this.clientSalt).put((byte) (this.config.encrypted() ? 1 : 0));
     }
     Packets.padTo(this.out, Packets.REQUEST_SIZE);
     this.out.flip();

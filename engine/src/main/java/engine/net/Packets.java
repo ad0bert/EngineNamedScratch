@@ -8,15 +8,18 @@ import java.nio.charset.StandardCharsets;
  * 32-bit {@link NetConfig#protocolId()} and a type byte. Then, by type:
  *
  * <pre>
- * CONNECT_REQUEST     client salt (8), zero padding up to REQUEST_SIZE
+ * CONNECT_REQUEST     client salt (8), flags (1: bit 0 = encrypted), zero padding up to REQUEST_SIZE
  * CHALLENGE           client salt (8), cookie (8)
- * CHALLENGE_RESPONSE  client salt (8), cookie (8), payload (varint length + bytes), padding up to REQUEST_SIZE
- * ACCEPT              session salt (8), client id (2)
+ * CHALLENGE_RESPONSE  client salt (8), cookie (8), payload (varint length + bytes),
+ *                       [encrypted: client public key (32), has password (1), password proof (16)],
+ *                       padding up to REQUEST_SIZE
+ * ACCEPT              session salt (8), client id (2), [encrypted: server public key (32), key confirmation (16)]
  * DENY                client salt (8), reason (1), message (varint length + UTF-8)
- * DATA                session salt (8), sequence (2), ack (2), ack bits (4), entries until the end:
+ * DATA                session salt (8), sequence (2), ack (2), ack bits (4), entries until the end
+ *                     (encrypted: the entries, then a 16-byte tag; the header before them is authenticated):
  *                       1 = unreliable: length (varint), bytes
  *                       2 = reliable part: id (2), flags (1: bit 0 = more parts follow), length (varint), bytes
- * DISCONNECT          session salt (8), reason (1), message (varint length + UTF-8)
+ * DISCONNECT          session salt (8), sequence (2), then (encrypted like DATA) reason (1), message (varint + UTF-8)
  * </pre>
  *
  * Requests are padded so that no answer is larger than the request that caused it: a forged sender address cannot

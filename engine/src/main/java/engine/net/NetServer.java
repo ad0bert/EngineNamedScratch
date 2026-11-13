@@ -74,6 +74,8 @@ public final class NetServer implements StepHook, AutoCloseable {
     }
   };
   private boolean closed;
+  /** From the password, for checking clients' proofs and deriving keys (encrypted only). */
+  private final byte[] passwordKey;
   /** Packets dropped because they were malformed, for diagnostics. */
   @Getter private long malformedPackets;
 
@@ -89,6 +91,7 @@ public final class NetServer implements StepHook, AutoCloseable {
     this.clock = clock;
     this.in = ByteBuffer.allocate(config.maxPacketSize() + 1);
     this.slots = new Connection[config.maxClients()];
+    this.passwordKey = config.encrypted() ? PacketCrypto.passwordKey(config.password(), config.protocolId()) : null;
     try {
       this.mac = Mac.getInstance("HmacSHA256");
       final byte[] secret = new byte[32];
@@ -239,6 +242,12 @@ public final class NetServer implements StepHook, AutoCloseable {
           throw new NetDataException("request not padded");
         }
         final long clientSalt = p.getLong();
+        final boolean encrypted = (p.get() & 1) != 0;
+        if (encrypted != this.config.encrypted()) {
+          deny(from, clientSalt, this.config.protocolId(), DisconnectReason.VERSION_MISMATCH,
+              this.config.encrypted() ? "this server encrypts" : "this server does not encrypt");
+          return;
+        }
         this.out.clear();
         Packets.header(this.out, this.config.protocolId(), Packets.CHALLENGE);
         this.out.putLong(clientSalt).putLong(cookie(from, clientSalt, this.clock.getAsLong() / COOKIE_PERIOD));
@@ -259,8 +268,9 @@ public final class NetServer implements StepHook, AutoCloseable {
       case Packets.DISCONNECT -> {
         final var c = this.byAddress.get(from);
         if (c != null && c.isConnected() && p.getLong() == c.salt()) {
-          final var why = DisconnectReason.of(p.get());
-          end(c, why, Packets.getText(p), false);
+          final var body = c.disconnectBody(p); // throws if it is not from the client
+          final var why = DisconnectReason.of(body.get());
+          end(c, why, Packets.getText(body), false);
         }
       }
       default -> throw new NetDataException("unexpected packet type " + type);
@@ -274,6 +284,21 @@ public final class NetServer implements StepHook, AutoCloseable {
     final long period = this.clock.getAsLong() / COOKIE_PERIOD;
     if (cookie != cookie(from, clientSalt, period) && cookie != cookie(from, clientSalt, period - 1)) {
       return; // forged, or too old
+    }
+    byte[] clientPublic = null;
+    if (this.config.encrypted()) {
+      clientPublic = new byte[PacketCrypto.PUBLIC_KEY];
+      p.get(clientPublic);
+      final boolean hasPassword = p.get() != 0;
+      final byte[] proof = new byte[PacketCrypto.PROOF];
+      p.get(proof);
+      final boolean needed = this.config.password() != null;
+      if (hasPassword != needed || (needed && !java.security.MessageDigest.isEqual(proof,
+          PacketCrypto.proof(this.passwordKey, clientSalt, cookie, clientPublic)))) {
+        deny(from, clientSalt, this.config.protocolId(), DisconnectReason.WRONG_PASSWORD,
+            needed ? "" : "this server has no password");
+        return;
+      }
     }
     final long salt = clientSalt ^ cookie;
     final var existing = this.byAddress.get(from);
@@ -299,8 +324,21 @@ public final class NetServer implements StepHook, AutoCloseable {
       deny(from, clientSalt, this.config.protocolId(), DisconnectReason.DENIED, refusal);
       return;
     }
+    PacketCrypto crypto = null;
+    byte[] acceptExtra = new byte[0];
+    if (clientPublic != null) {
+      final var pair = PacketCrypto.newKeyPair();
+      final byte[] serverPublic = PacketCrypto.raw(pair);
+      final var keys = PacketCrypto.keys(PacketCrypto.agree(pair.getPrivate(), clientPublic), this.passwordKey,
+          clientSalt, cookie, clientPublic, serverPublic);
+      crypto = keys.forServer();
+      final byte[] confirmation = keys.confirmation(transcript(clientPublic, serverPublic, salt));
+      acceptExtra = ByteBuffer.allocate(serverPublic.length + confirmation.length).put(serverPublic)
+          .put(confirmation).array();
+    }
     final var c = new Connection(slot, from, salt, this.config, this.transport, this.owner, payload,
-        this.clock.getAsLong());
+        this.clock.getAsLong(), crypto);
+    c.acceptExtra = acceptExtra;
     this.slots[slot] = c;
     this.byAddress.put(from, c);
     this.connections.add(c);
@@ -313,8 +351,14 @@ public final class NetServer implements StepHook, AutoCloseable {
   private void accept(Connection c) {
     this.out.clear();
     Packets.header(this.out, this.config.protocolId(), Packets.ACCEPT);
-    this.out.putLong(c.salt()).putShort((short) c.id());
+    this.out.putLong(c.salt()).putShort((short) c.id()).put(c.acceptExtra);
     send(c.address());
+  }
+
+  /** What the key confirmation covers: both public keys and the session salt. */
+  static byte[] transcript(byte[] clientPublic, byte[] serverPublic, long salt) {
+    return ByteBuffer.allocate(clientPublic.length + serverPublic.length + 8).put(clientPublic).put(serverPublic)
+        .putLong(salt).array();
   }
 
   private void deny(SocketAddress to, long clientSalt, int protocol, DisconnectReason why, String text) {
