@@ -22,6 +22,12 @@ Networking for co-op games, and an engine without a window. Contains:
   most setMaxRewind); PhysicsSystem.raycast over given colliders
 - Security: connections encrypted and authenticated by default (X25519, AES-256-GCM), optional password
   (NetConfig.withPassword, DisconnectReason.WRONG_PASSWORD), authenticated disconnects; LoopbackNetwork.Interceptor
+- Prediction for any movement: PredictedMotor (CharacterMotor is one), FlightMotor (drifting ships, brake button);
+  InputCommand.flying with moveY and a whole aim orientation
+- Wraparound worlds (setWraparound, RelevanceFilter.byDistance(radius, wraparound), FlightMotor.wraparound):
+  copies, corrections and lag compensation take the short way; Transform.shiftPrevious
+- ServerReplication.teleported: copies and the own player jump instead of sliding, lag compensation does not blend
+  across the jump
 
 Version 0.9.0
 Characters, navigation and a richer world. Contains:
