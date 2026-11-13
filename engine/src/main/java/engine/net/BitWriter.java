@@ -3,6 +3,9 @@ package engine.net;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
+import org.joml.Quaternionfc;
+import org.joml.Vector3fc;
+
 /**
  * Writes values bit by bit into a growing buffer, for compact network messages: a flag takes one bit, a number from 0
  * to 99 seven. Read them back in the same order with {@link BitReader}. The last byte is padded with zeros.
@@ -111,6 +114,53 @@ public final class BitWriter {
     return writeBits(Math.round(t * steps), bits);
   }
 
+  /** Three full floats (96 bits). */
+  public BitWriter writeVector(Vector3fc v) {
+    return writeFloat(v.x()).writeFloat(v.y()).writeFloat(v.z());
+  }
+
+  /**
+   * A unit rotation in 47 bits ("smallest three": the largest component is left out and computed from the others), to
+   * about 0.0001 per component. Read it with {@link BitReader#readRotation}.
+   */
+  public BitWriter writeRotation(Quaternionfc q) {
+    float x = q.x();
+    float y = q.y();
+    float z = q.z();
+    float w = q.w();
+    final float length = (float) Math.sqrt(x * x + y * y + z * z + w * w);
+    if (!(length > 0)) {
+      x = 0;
+      y = 0;
+      z = 0;
+      w = 1;
+    } else {
+      x /= length;
+      y /= length;
+      z /= length;
+      w /= length;
+    }
+    final float[] c = { x, y, z, w };
+    int largest = 0;
+    for (int i = 1; i < 4; i++) {
+      if (Math.abs(c[i]) > Math.abs(c[largest])) {
+        largest = i;
+      }
+    }
+    final float sign = c[largest] < 0 ? -1f : 1f; // q and -q are the same rotation: make the left-out one positive
+    writeBits(largest, 2);
+    for (int i = 0; i < 4; i++) {
+      if (i != largest) {
+        writeFloat(c[i] * sign, -ROTATION_RANGE, ROTATION_RANGE, ROTATION_BITS);
+      }
+    }
+    return this;
+  }
+
+  /** The range of the three smaller components of a unit quaternion: +-1/sqrt(2). */
+  static final float ROTATION_RANGE = 0.70710679f;
+  static final int ROTATION_BITS = 15;
+
   /** UTF-8 with its length in front; throws if it takes more than {@code maxBytes}. */
   public BitWriter writeString(String value, int maxBytes) {
     final byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
@@ -125,6 +175,15 @@ public final class BitWriter {
     writeVarInt(bytes.length);
     for (byte b : bytes) {
       writeBits(b, 8);
+    }
+    return this;
+  }
+
+  /** Pads with zero bits up to the next whole byte (nothing if already there). */
+  public BitWriter align() {
+    final int pad = (8 - (this.bitPosition & 7)) & 7;
+    if (pad > 0) {
+      writeBits(0, pad);
     }
     return this;
   }

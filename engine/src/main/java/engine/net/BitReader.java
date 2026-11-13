@@ -2,6 +2,9 @@ package engine.net;
 
 import java.nio.charset.StandardCharsets;
 
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+
 /**
  * Reads what a {@link BitWriter} wrote, in the same order. The data comes from the network, so every read checks it:
  * reading past the end, a length over its limit or a value out of range throws {@link NetDataException}.
@@ -115,6 +118,25 @@ public final class BitReader {
     return min + (max - min) * (readBits(bits) / (float) steps);
   }
 
+  public Vector3f readVector(Vector3f dest) {
+    return dest.set(readFloat(), readFloat(), readFloat());
+  }
+
+  /** A rotation written by {@link BitWriter#writeRotation}. */
+  public Quaternionf readRotation(Quaternionf dest) {
+    final int largest = (int) readBits(2);
+    final float[] c = new float[4];
+    float sum = 0;
+    for (int i = 0; i < 4; i++) {
+      if (i != largest) {
+        c[i] = readFloat(-BitWriter.ROTATION_RANGE, BitWriter.ROTATION_RANGE, BitWriter.ROTATION_BITS);
+        sum += c[i] * c[i];
+      }
+    }
+    c[largest] = (float) Math.sqrt(Math.max(0f, 1f - sum));
+    return dest.set(c[0], c[1], c[2], c[3]).normalize();
+  }
+
   public String readString(int maxBytes) {
     return new String(readBytes(maxBytes), StandardCharsets.UTF_8);
   }
@@ -133,6 +155,12 @@ public final class BitReader {
       out[i] = (byte) readBits(8);
     }
     return out;
+  }
+
+  /** Skips to the next whole byte, past the padding of {@link BitWriter#align()}. */
+  public BitReader align() {
+    this.bitPosition = Math.min(this.bitLimit, (this.bitPosition + 7) & ~7);
+    return this;
   }
 
   public int remainingBits() {

@@ -7,6 +7,10 @@ Unreleased
   and duplicates), handshake with cookies, version check, server full / denied, timeouts, kick / leave / close;
   reliable ordered messages (large ones split and joined) and unreliable ones; RTT, loss and bandwidth per
   connection; BitWriter / BitReader
+- Replication (engine.net.replication): ServerReplication / ClientReplication, spawning by type with Spawner,
+  NetworkIdentity (owner, spawn data), late joiners, despawning (also on scene removal and when the owner leaves),
+  snapshots of transforms and NetState components, interpolated copies on clients, RPCs; Scene.contains;
+  BitWriter / BitReader: rotations in 47 bits, vectors, align
 
 Version 0.9.0
 Characters, navigation and a richer world. Contains:

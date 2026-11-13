@@ -68,6 +68,17 @@ public class Scene {
     }
   }
 
+  /**
+   * Whether the entity is in the scene as of the next {@link #flush()}: added (also if still pending) and not about to
+   * be removed.
+   */
+  public boolean contains(Entity entity) {
+    if (this.toRemove.contains(entity)) {
+      return false;
+    }
+    return this.entitySet.contains(entity) || this.toAdd.contains(entity);
+  }
+
   public List<Entity> entities() {
     return Collections.unmodifiableList(this.entities);
   }

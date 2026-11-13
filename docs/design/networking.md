@@ -1,7 +1,7 @@
 # Networking: design notes
 
-Status: phases 1 (headless engine, step numbers, step hooks) and 2 (transport and sessions, package `engine.net`)
-are done; the rest is a proposal. This note looks at how a
+Status: phases 1 (headless engine, step numbers, step hooks), 2 (transport and sessions, package `engine.net`) and 3
+(replication, package `engine.net.replication`) are done; the rest is a proposal. This note looks at how a
 network stack would fit the engine as it was at 0.9.0, what it would cost, and in which order to build it.
 
 Decided: the target is **co-op games on listen servers** (one player hosts inside their game), with **no new
@@ -145,6 +145,29 @@ messages; a lockstep game uses session + its own input exchange.
 - Ownership: the server owns everything by default. A component may be marked "owner-authoritative" for co-op
   shortcuts (a cosmetic, or a player's camera), which the server then accepts within limits.
 
+*As built (phase 3):*
+
+- Spawning is by **spawn type**: games register a `Spawner` (a function from a spawn context to an entity) under a
+  name, the same on host and clients; it can load a prefab. The spawn message carries the type, the owner, free-form
+  spawn data, the transform and the initial `NetState`s. The JSON serializer fallback was not needed.
+- Replicated state is the transform (position as 3 floats, rotation as "smallest three" in 47 bits) plus whatever
+  components implementing `NetState` write with a `BitWriter`. No per-field declarations yet: a component writes its
+  state as a whole, and the host sends it when the bytes changed.
+- No delta compression against acknowledged snapshots yet (phase 5). Instead an entity is in every snapshot for half
+  a second after it changed (so a lost snapshot is covered), and otherwise only about once a second. Snapshots are
+  split into several unreliable messages of at most one packet, each usable on its own.
+- Clients show copies 0.1 s (configurable) behind the newest snapshot, interpolating between the two around that
+  moment; `NetState`s are applied when that moment reaches their snapshot. The host's tick is estimated from the
+  newest snapshot seen, carried forward with the client's own steps; the proper clock synchronisation is phase 4.
+- Spawns, despawns, RPCs and game messages go out in the order the host made them, after the step, so a call about
+  an entity spawned in the same step never overtakes the spawn.
+- RPCs are named, matched by a 32-bit hash of the name, and can target an entity or nothing. `Call.isFromOwner()` is
+  the usual check on the host. Replication owns its server's or client's message stream (every message starts with a
+  tag byte); games send their own messages through it (`send`/`broadcast`), not through the server directly.
+- Entities removed from the host's scene are despawned on clients automatically; a leaving client's entities are
+  despawned (configurable). Copies get kinematic rigid bodies and disabled character controllers.
+- Owner-authoritative components were left out: in co-op the owner sends RPCs and the host applies them.
+
 ### Prediction for the local player
 
 - `CharacterController` gets a small `State` value (position, velocity, grounded flag, …) with `save()` / `restore()`,
@@ -199,7 +222,7 @@ The engine's tests run without a GPU, and the network stack should too:
 |---|---|---|
 | 1 (done) | Headless engine (`Engine.runHeadless`, `startHeadless` + `runTicks`, `NullRenderBackend`), tick counter (`Engine.tick()`), step hooks (`StepHook`), time scale for clock sync | Dedicated simulation, server tests |
 | 2 (done) | `engine.net`: `UdpTransport`, `LoopbackNetwork` (latency, jitter, loss, duplicates), `Connection` (acks, reliable ordered messages, fragmentation, RTT/loss/bandwidth), `NetServer`/`NetClient` (cookie handshake, version check, full/denied, timeouts, kick/leave/close), `BitWriter`/`BitReader` | Turn-based games, chat, lobbies, lockstep games with their own simulation |
-| 3 | Replication: `NetworkIdentity`, spawn/despawn, transform snapshots, interpolation of remote entities, RPCs | Server-authoritative games where a little input delay is fine |
+| 3 (done) | Replication (`engine.net.replication`): `ServerReplication`/`ClientReplication`, `NetworkIdentity`, spawners, spawn/despawn (also on scene removal and when an owner leaves), late joiners, transform + `NetState` snapshots, interpolation of copies, RPCs | Server-authoritative games where a little input delay is fine |
 | 4 | Input commands, client prediction and reconciliation of `CharacterController`, clock sync | First/third-person action games |
 | 5 | Delta compression, quantisation tuning, interest management, bandwidth budgets | Larger levels, more players |
 | 6 | Lag compensation, encryption/auth tokens, listen-server host migration (maybe) | Competitive play, public servers |

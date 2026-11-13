@@ -166,8 +166,8 @@ class PauseMenu implements GameState {
   often in wall time without changing their length (clock corrections).
 - **Networking** (`engine.net`, UDP, no extra libraries): the host runs a `NetServer`, players a `NetClient`; both
   are step hooks. Messages are byte arrays (build them with `BitWriter`, read with `BitReader`), sent `UNRELIABLE`
-  (positions, inputs) or `RELIABLE` (in order, exactly once, split and joined when large). Replicating entities is
-  not there yet; see `docs/design/networking.md`.
+  (positions, inputs) or `RELIABLE` (in order, exactly once, split and joined when large). See
+  `docs/design/networking.md` for the design and what comes next (client-side prediction).
 
   ```java
   var server = new NetServer(UdpTransport.bind(27015), NetConfig.forGame(engine.config()));
@@ -182,6 +182,24 @@ class PauseMenu implements GameState {
   client.connect(name.getBytes(UTF_8));        // the server's ConnectionFilter can refuse it
   engine.addStepHook(client);
   ```
+
+  **Shared entities** (`engine.net.replication`): wrap the server in a `ServerReplication` and the client in a
+  `ClientReplication`, and add those as step hooks instead. Both register the same spawners; what the host spawns
+  appears on every client (also on clients that join later), follows the host's movement smoothly about 0.1 s behind,
+  and goes away when the host despawns it or removes it from the scene. Components implementing `NetState` send
+  their own fields along. RPCs are named calls in either direction, about an entity or about nothing.
+
+  ```java
+  Spawner crate = ctx -> new Entity("crate").add(...);         // same code on host and clients (ctx.onHost())
+  host.registerSpawner("crate", crate);
+  guest.registerSpawner("crate", crate);
+  Entity e = host.spawn("crate", position);                       // or spawn(type, pos, rot, ownerClientId, data)
+  host.onRpc("use", call -> { if (call.isFromOwner()) open(call.entity()); });
+  guest.rpc(door, "use", new BitWriter().writeInt(1, 0, 3));
+  ```
+
+  Copies on clients have kinematic rigid bodies and switched-off character controllers: the host moves them. When a
+  client leaves, the entities it owned are despawned.
 
   `NetConfig.forGame` only lets the same game and version connect. A connection reports `rtt()`, `packetLoss()` and
   bytes per second. For tests, `LoopbackNetwork` connects servers and clients in memory with a clock you drive and
@@ -367,6 +385,7 @@ How it works:
 | `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
 | `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig`, `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Transport` with `UdpTransport` and `LoopbackNetwork` |
+| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`) |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |

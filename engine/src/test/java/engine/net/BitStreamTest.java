@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Random;
 
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 import org.junit.jupiter.api.Test;
 
 class BitStreamTest {
@@ -115,5 +117,38 @@ class BitStreamTest {
     assertEquals(65535, Packets.unwrap(65535, 65536));
     assertEquals(70000, Packets.unwrap(70000 & 0xFFFF, 69990));
     assertEquals(-1, Packets.unwrap(0xFFFF, 0));
+  }
+
+  @Test
+  void rotationsTakeFortySevenBitsAndComeBackClose() {
+    final var random = new Random(4);
+    for (int i = 0; i < 2000; i++) {
+      final var q = new Quaternionf().rotateXYZ(random.nextFloat() * 7f, random.nextFloat() * 7f, random.nextFloat() * 7f);
+      if (i % 2 == 0) {
+        q.set(-q.x, -q.y, -q.z, -q.w); // the same rotation
+      }
+      final var w = new BitWriter().writeRotation(q);
+      assertEquals(47, w.bitLength());
+      final var back = new BitReader(w.toByteArray()).readRotation(new Quaternionf());
+      final float dot = Math.abs(q.dot(back));
+      assertTrue(dot > 0.99999f, "rotation " + i + " off by " + dot);
+    }
+    final var identity = new BitReader(new BitWriter().writeRotation(new Quaternionf(0, 0, 0, 0)).toByteArray())
+        .readRotation(new Quaternionf());
+    assertTrue(identity.equals(new Quaternionf(), 1e-4f), "a zero quaternion is sent as no rotation");
+  }
+
+  @Test
+  void vectorsAndAlignment() {
+    final var w = new BitWriter().writeBoolean(true).align().writeVector(new Vector3f(1, -2, 3.5f)).writeBits(1, 3)
+        .align();
+    assertEquals(8 + 96 + 8, w.bitLength());
+    final var r = new BitReader(w.toByteArray());
+    assertTrue(r.readBoolean());
+    r.align();
+    assertEquals(new Vector3f(1, -2, 3.5f), r.readVector(new Vector3f()));
+    assertEquals(1, r.readBits(3));
+    r.align();
+    assertFalse(r.hasMoreBytes());
   }
 }

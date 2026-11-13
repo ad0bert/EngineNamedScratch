@@ -239,4 +239,19 @@ class EcsTest {
     final var f = e.transform().forward(new Vector3f());
     assertEquals(-1f, f.x, 1e-3);
   }
+
+  @Test
+  void containsSeesPendingAddsAndRemoves() {
+    final var scene = new Scene();
+    final var e = new Entity("e");
+    assertFalse(scene.contains(e));
+    scene.add(e);
+    assertTrue(scene.contains(e), "pending add");
+    scene.flush();
+    assertTrue(scene.contains(e));
+    scene.remove(e);
+    assertFalse(scene.contains(e), "pending remove");
+    scene.flush();
+    assertFalse(scene.contains(e));
+  }
 }
