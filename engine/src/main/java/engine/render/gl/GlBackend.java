@@ -73,6 +73,7 @@ public final class GlBackend implements RenderBackend {
 
   @Override
   public int reloadShaders(String resource) {
+    this.scene.retryFailedShaders(); // a material's shader that did not compile may now
     return ShaderProgram.reloadAll(this.glSupplier.get(), resource);
   }
 

@@ -1,5 +1,8 @@
 package engine.render;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
 import org.joml.Vector3f;
 
 /**
@@ -67,6 +70,23 @@ public class RenderSettings {
   public boolean debugCascades = Boolean.getBoolean("engine.debugCascades");
   /** Shows the ambient occlusion (white: open, black: occluded) instead of the scene's opaque surfaces. */
   public boolean debugAmbientOcclusion = Boolean.getBoolean("engine.debugAmbientOcclusion");
+  /**
+   * The game's own full-screen passes, in order within their stage ({@link PostPass.Stage}): fog, colour grading,
+   * vignettes, outlines. Change it from the update thread.
+   */
+  public final List<PostPass> postPasses = new CopyOnWriteArrayList<>();
+  /**
+   * Values set on every custom shader: those of materials ({@link Material#fragmentShader}) and post passes (a wind
+   * direction, a game clock, a player's position). A shader's own {@link ShaderParams} win over these.
+   */
+  public final ShaderParams shaderGlobals = new ShaderParams();
+
+  /** Adds a post pass at the end of its stage and returns it (to set its params). */
+  public PostPass addPostPass(String fragmentShader, PostPass.Stage stage) {
+    final var pass = new PostPass(fragmentShader, stage);
+    this.postPasses.add(pass);
+    return pass;
+  }
 
   private static float floatProperty(String name, float fallback) {
     final var v = System.getProperty(name);

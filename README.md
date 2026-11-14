@@ -9,7 +9,7 @@ rendering, physics, sound, animation, input and UI are building blocks you combi
 | Module | What it is |
 |---|---|
 | `engine/` | The engine library, published as `io.github.ad0bert:engine-named-scratch` (jar, sources, javadoc). It holds only `engine.*` and its shaders. |
-| `kits/` | Optional pieces for particular kinds of games, published as `io.github.ad0bert:engine-named-scratch-kits`: flight (`engine.kits.flight`) and worlds that wrap around (`engine.kits.wraparound`). Built only on the engine's public API; the place for contributed genre code. |
+| `kits/` | Optional pieces for particular kinds of games, published as `io.github.ad0bert:engine-named-scratch-kits`: flight (`engine.kits.flight`), worlds that wrap around (`engine.kits.wraparound`) and cel shading with outlines (`engine.kits.toon`). Built only on the engine's public API; the place for contributed genre code. |
 | `demo/` | The demo game (`game.*` and its assets). It shows how to use the engine and is the CI smoke test. It is not published. |
 
 ## Run
@@ -59,6 +59,7 @@ System properties:
 | `demo.paused=true` | demo only: start in the pause menu |
 | `demo.probe=false` | demo only: the room by the field without its reflection probe |
 | `demo.assets=dir` | demo only: an asset directory whose files replace the demo's and the engine's shaders (`dir/shaders/tonemap.frag`) |
+| `demo.outline=true` | demo only: ink outlines over everything (the kits module's `ToonPlugin`) |
 
 The render settings can also be changed at run time through `engine.backend().settings()`.
 
@@ -156,6 +157,52 @@ final class Weather implements EnginePlugin {                          // a plug
 and the installed plugins (for `new SceneSerializer(engine.components())`). A plugin that changes the simulation or
 the network says `networked() = true`; `NetConfig.forGame(engine)` then puts its id and version into the protocol id,
 so hosts and clients with different plugins cannot connect to each other.
+
+### Custom shaders
+
+A material can have shaders of its own, and a game can add full-screen passes. Shader files are resource paths,
+looked up in the asset directories first, then on the classpath (so a library jar can ship them), and hot reloading
+follows them and every file they include.
+
+The engine's shaders are built from a small library that custom shaders `#include` (from any directory:
+`#include "lib/surface.glsl"` finds the engine's; other paths are looked up next to the including file first):
+
+| File | For | What it gives |
+|---|---|---|
+| `lib/lighting.glsl` | fragment shaders of materials | `struct Surface` (albedo, alpha, normal, emissive, PBR or Blinn-Phong parameters, ambient, unlit, glass), `shade(surface)` (lights, shadows, sky, probes, transparency, written to the right targets), `lighting(surface)` (just the light), `geometricNormal()`, `viewDirection()`, `uTime`, `uCameraPos`, `vWorldPos`/`vNormal`/`vUv` |
+| `lib/surface.glsl` | the same, with the standard material | everything above, and `standardSurface()`: the material's colour, maps, UV transform and model as a `Surface` (`gUv` is its UV) |
+| `lib/vertex.glsl` | vertex shaders of materials | the attributes (instancing and skinning included), `uTime`, and `emit(position, normal)`, which does the rest |
+| `lib/post.glsl` | post passes | `uImage`, `uDepth`, `uTexel`, `uTime`, `uProj`/`uInvProj`, `viewPosition(uv)`, `fragColor` |
+
+The engine's own `basic.frag` is `shade(standardSurface())`, so a material shader usually changes just its part:
+
+```glsl
+#version 330 core
+#include "lib/surface.glsl"
+uniform vec3 uGlowColor;                                    // from material.params
+void main() {
+  Surface s = standardSurface();                            // this material's colour, maps, lighting model
+  s.emissive += uGlowColor * (0.5 + 0.5 * sin(uTime * 3.0));
+  shade(s);                                                 // lights, shadows, sky, transparency
+}
+```
+
+```java
+material.shader("shaders/glow.frag");                        // or shader(vertex, fragment); null keeps the engine's
+material.params.set("uGlowColor", new Vector3f(1f, 0.3f, 0.1f)).set("uNoise", noiseTexture);
+var settings = engine.backend().settings();
+settings.addPostPass("shaders/vignette.frag", PostPass.Stage.DISPLAY).params.set("uStrength", 0.4f);
+settings.shaderGlobals.set("uWind", windDirection);          // set on every custom shader and pass
+```
+
+Post passes run in list order within their stage: `HDR` (linear light, after transparency and particles, before bloom
+and tone mapping) or `DISPLAY` (the tone-mapped sRGB image, before FXAA). `ShaderParams` take floats, ints,
+vectors, matrices and textures (bound to free texture units); material shaders and parameters are saved with scenes.
+A shader that does not compile is logged once and the material falls back to the engine's shader (a pass is
+skipped) until hot reloading brings a version that compiles. Shadow maps are drawn with the engine's shaders, so a
+vertex shader that moves vertices does not move their shadows. The demo has examples in
+`demo/src/main/resources/shaders/demo`, and the kits module's `ToonShading`/`ToonPlugin` (cel shading and outlines)
+show shaders shipped in a jar.
 
 ### Structuring a game
 
@@ -420,7 +467,8 @@ class PauseMenu implements GameState {
 - **Hot reloading and profiling:** with `Engine.setHotReload(true)` the asset directories are watched; changed
   shaders are compiled again (one that does not compile keeps its old version), textures and OBJ meshes loaded again
   in place, and `Engine.onAssetChanged` listeners hear of every changed path (to reload a level or a prefab). Shader
-  files in an asset directory replace the built-in ones of the same path. `Engine.profiler()` times every system, the
+  files in an asset directory replace the built-in ones of the same path; a changed library file (`.glsl`) recompiles
+  every shader that includes it. `Engine.profiler()` times every system, the
   game's update and rendering per frame over the last 240 frames; games add sections with `begin`/`end`. F3 shows a
   frame-time graph and the slowest sections.
 - **ECS, message queues, resource caching, screenshots** (see below).
@@ -485,7 +533,7 @@ How it works:
 |---|---|
 | `engine.core` | `Engine` (window, GL loop or headless loop, lifecycle, pause, step numbers, window options, screenshots, hot reloading), `Game` (your entry point), `EnginePlugin`/`EnginePlugins` (optional functionality), `GameState`/`GameStates`/`LevelState` (screens and levels), `StepHook`, `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
-| `engine.render` | Backend-agnostic: `RenderBackend` (and `NullRenderBackend`, which draws nothing), `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
+| `engine.render` | Backend-agnostic: `RenderBackend` (and `NullRenderBackend`, which draws nothing), `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material` (with custom shaders and `ShaderParams`), `PostPass`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
 | `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, particles, sky and image-based lighting, post-processing, UI batching) |
 | `engine.animation` | `Track`, `Easing`, `Channel`, `AnimationClip`, `Animator` (layers, blending), `AnimationSystem` |
 | `engine.audio` | Backend-agnostic: `AudioBackend`, `AudioClip`/`AudioVoice` handles, `AudioSource`, `AudioListener`, `ImpactSound` (+ `ImpactSoundPlugin`), `AudioMixer`/`AudioBus`, `Rolloff`, `VoiceAllocator`, `AudioSystem`, `NullAudioBackend` |
@@ -503,7 +551,7 @@ How it works:
 | `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |
 | `engine.navigation` | `NavGrid` (baked walkable grid, A*, path straightening, blocking), `NavAgent` (path following) |
 | `engine.debug` | `DebugOverlay` (F3 text and frame graph) with `DebugOverlayPlugin`, `Profiler` |
-| `engine.kits.*` (kits module) | `flight`: `FlightCommand`, `FlightMotor`; `wraparound`: `Wraparound` |
+| `engine.kits.*` (kits module) | `flight`: `FlightCommand`, `FlightMotor`; `wraparound`: `Wraparound`; `toon`: `ToonShading`, `ToonPlugin` (and `shaders/kits/`) |
 | `game` (demo module) | Demo scene (`DemoGame`, `Main`) |
 
 Everything — fixed-step update, message dispatch, rendering — runs on the GL thread, so scene state needs no locks.

@@ -10,6 +10,9 @@ import java.util.Map;
 import java.util.Set;
 
 import org.joml.Matrix4f;
+import org.joml.Vector2f;
+import org.joml.Vector3f;
+import org.joml.Vector4f;
 
 import engine.animation.AnimationClip;
 import engine.audio.AudioClip;
@@ -19,6 +22,7 @@ import engine.input.InputState;
 import engine.render.GpuMesh;
 import engine.render.GpuTexture;
 import engine.render.Material;
+import engine.render.ShaderParams;
 import engine.render.Skin;
 import engine.resources.ResourceManager;
 import lombok.Getter;
@@ -87,7 +91,66 @@ public class SerializationContext {
     final Map<String, Object> data = new LinkedHashMap<>();
     this.materialData.add(data); // reserved before writing, in case fields refer back
     Fields.write(m, data, this, Set.of("sortKey"));
+    if (!m.params.isEmpty()) {
+      data.put("params", writeParams(m.params));
+    }
     return next;
+  }
+
+  /**
+   * Shader parameters as JSON: floats as numbers, vectors as arrays, ints as {@code {"int": n}}, matrices as
+   * {@code {"mat4": [16]}}, textures as {@code {"texture": key}} (left out without a key).
+   */
+  private Map<String, Object> writeParams(ShaderParams params) {
+    final Map<String, Object> out = new LinkedHashMap<>();
+    params.forEach((name, value) -> {
+      switch (value) {
+        case Float f -> out.put(name, f);
+        case Integer i -> out.put(name, Map.of("int", i));
+        case Vector2f v -> out.put(name, new float[] { v.x, v.y });
+        case Vector3f v -> out.put(name, new float[] { v.x, v.y, v.z });
+        case Vector4f v -> out.put(name, new float[] { v.x, v.y, v.z, v.w });
+        case Matrix4f m -> out.put(name, Map.of("mat4", m.get(new float[16])));
+        case GpuTexture t -> {
+          final var key = key(t);
+          if (key != null) {
+            out.put(name, Map.of("texture", key));
+          }
+        }
+        default -> {
+        }
+      }
+    });
+    return out;
+  }
+
+  private void readParams(Object json, ShaderParams params) {
+    for (var e : Json.asObject(json).entrySet()) {
+      final String name = e.getKey();
+      final Object v = e.getValue();
+      if (v instanceof Number n) {
+        params.set(name, n.floatValue());
+      } else if (v instanceof Map<?, ?> m) {
+        if (m.containsKey("int")) {
+          params.set(name, Json.asInt(m.get("int")));
+        } else if (m.containsKey("mat4")) {
+          params.set(name, new Matrix4f().set(Json.asFloats(m.get("mat4"))));
+        } else if (m.containsKey("texture")) {
+          final var t = texture((String) m.get("texture"));
+          if (t != null) {
+            params.set(name, t);
+          }
+        }
+      } else {
+        final float[] a = Json.asFloats(v);
+        switch (a.length) {
+          case 2 -> params.set(name, new Vector2f(a[0], a[1]));
+          case 3 -> params.set(name, new Vector3f(a[0], a[1], a[2]));
+          case 4 -> params.set(name, new Vector4f(a[0], a[1], a[2], a[3]));
+          default -> throw new IllegalArgumentException("shader parameter " + name + " has " + a.length + " numbers");
+        }
+      }
+    }
   }
 
   List<Map<String, Object>> materialData() {
@@ -238,7 +301,11 @@ public class SerializationContext {
     if (m == null) {
       m = new Material();
       this.materials.set(i, m);
-      Fields.read(m, Json.asObject(this.materialSource.get(i)), this);
+      final var data = Json.asObject(this.materialSource.get(i));
+      Fields.read(m, data, this);
+      if (data.containsKey("params")) {
+        readParams(data.get("params"), m.params);
+      }
     }
     return m;
   }

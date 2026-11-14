@@ -6,11 +6,14 @@ import java.nio.FloatBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 
 import org.joml.Matrix4f;
+import org.joml.Vector2f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
 
@@ -21,11 +24,13 @@ import com.jogamp.common.nio.Buffers;
 import com.jogamp.opengl.GL3;
 
 import engine.render.Light;
+import engine.render.ShaderParams;
 
 /**
- * Compiled and linked GLSL program, from the shader source ({@link #setSource}) or the classpath resources. Live
- * programs are kept in a registry so they can be compiled again (hot reloading); a program that fails to compile then
- * keeps its old version.
+ * Compiled and linked GLSL program, from the shader source ({@link #setSource}) or the classpath resources, with
+ * {@code #include}s expanded ({@link ShaderIncludes}). Live programs are kept in a registry so they can be compiled
+ * again (hot reloading), also when only a file they include changed; a program that fails to compile then keeps its
+ * old version.
  */
 final class ShaderProgram {
   private static final Logger log = LoggerFactory.getLogger(ShaderProgram.class);
@@ -36,13 +41,15 @@ final class ShaderProgram {
   private final String vertexResource;
   private final String fragmentResource;
   private final Map<String, Integer> uniforms = new HashMap<>();
+  /** The shaders' files and the files they include. */
+  private Set<String> files = Set.of();
   private final FloatBuffer buf16 = Buffers.newDirectFloatBuffer(16);
   private FloatBuffer bufArray = Buffers.newDirectFloatBuffer(16 * Light.MAX_CASCADES);
 
   ShaderProgram(GL3 gl, String vertexResource, String fragmentResource) {
     this.vertexResource = vertexResource;
     this.fragmentResource = fragmentResource;
-    this.id = link(gl, vertexResource, fragmentResource);
+    this.id = link(gl, vertexResource, fragmentResource, this);
     LIVE.add(this);
   }
 
@@ -56,7 +63,8 @@ final class ShaderProgram {
     int failed = 0;
     int done = 0;
     for (final var p : LIVE) {
-      if (resource == null || resource.equals(p.vertexResource) || resource.equals(p.fragmentResource)) {
+      if (resource == null || p.files.contains(resource) || resource.equals(p.vertexResource)
+          || resource.equals(p.fragmentResource)) {
         done++;
         if (!p.reload(gl)) {
           failed++;
@@ -82,7 +90,7 @@ final class ShaderProgram {
   boolean reload(GL3 gl) {
     final int fresh;
     try {
-      fresh = link(gl, this.vertexResource, this.fragmentResource);
+      fresh = link(gl, this.vertexResource, this.fragmentResource, this);
     } catch (IllegalStateException | IllegalArgumentException e) {
       log.error("{} + {} did not compile; keeping the old version: {}", this.vertexResource, this.fragmentResource,
           e.getMessage());
@@ -147,11 +155,16 @@ final class ShaderProgram {
     gl.glUseProgram(0);
   }
 
-  private static int link(GL3 gl, String vertexResource, String fragmentResource) {
-    final int vs = compile(gl, GL3.GL_VERTEX_SHADER, vertexResource);
+  private static int link(GL3 gl, String vertexResource, String fragmentResource, ShaderProgram owner) {
+    final var vertex = ShaderIncludes.expand(vertexResource, ShaderProgram::read);
+    final var fragment = ShaderIncludes.expand(fragmentResource, ShaderProgram::read);
+    final Set<String> used = new HashSet<>(vertex.files());
+    used.addAll(fragment.files());
+    owner.files = Set.copyOf(used);
+    final int vs = compile(gl, GL3.GL_VERTEX_SHADER, vertex);
     final int fs;
     try {
-      fs = compile(gl, GL3.GL_FRAGMENT_SHADER, fragmentResource);
+      fs = compile(gl, GL3.GL_FRAGMENT_SHADER, fragment);
     } catch (RuntimeException e) {
       gl.glDeleteShader(vs);
       throw e;
@@ -172,14 +185,15 @@ final class ShaderProgram {
     return id;
   }
 
-  private static String read(String resource) {
+  /** The text of a shader file (the shader source's, else the classpath's), or null if there is none. */
+  static String read(String resource) {
     final String override = source.apply(resource);
     if (override != null) {
       return override;
     }
     try (InputStream in = ShaderProgram.class.getClassLoader().getResourceAsStream(resource)) {
       if (in == null) {
-        throw new IllegalArgumentException("Shader resource not found: " + resource);
+        return null;
       }
       return new String(in.readAllBytes(), StandardCharsets.UTF_8);
     } catch (IOException e) {
@@ -187,8 +201,10 @@ final class ShaderProgram {
     }
   }
 
-  private static int compile(GL3 gl, int type, String resource) {
-    final String source = read(resource);
+  private static int compile(GL3 gl, int type, ShaderIncludes.Expanded expanded) {
+    final String source = expanded.text();
+    final String resource = expanded.files().size() == 1 ? expanded.files().getFirst()
+        : expanded.files().getFirst() + " (files: " + expanded.legend() + ")";
     final int shader = gl.glCreateShader(type);
     gl.glShaderSource(shader, 1, new String[] { source }, new int[] { source.length() }, 0);
     gl.glCompileShader(shader);
@@ -294,6 +310,45 @@ final class ShaderProgram {
   void setFloatArray(GL3 gl, String name, float[] data, int count) {
     if (count > 0) {
       gl.glUniform1fv(loc(gl, name), count, data, 0);
+    }
+  }
+
+  /**
+   * Sets {@code params} on this (bound) program: numbers, vectors and matrices by name, textures bound to units from
+   * {@code firstUnit} on (below {@code maxUnits}) with their sampler set to it. Returns the next free unit.
+   */
+  int setAll(GL3 gl, ShaderParams params, int firstUnit, int maxUnits) {
+    final int[] unit = { firstUnit };
+    params.forEach((name, value) -> {
+      switch (value) {
+        case Float f -> set(gl, name, f.floatValue());
+        case Integer i -> set(gl, name, i.intValue());
+        case Vector2f v -> set(gl, name, v.x, v.y);
+        case Vector3f v -> set(gl, name, v);
+        case Vector4f v -> set(gl, name, v);
+        case Matrix4f m -> set(gl, name, m);
+        case GlTexture t -> {
+          if (unit[0] >= maxUnits) {
+            warnOnce("units " + name, "Out of texture units for shader parameter " + name);
+            return;
+          }
+          t.bind(gl, unit[0]);
+          set(gl, name, unit[0]);
+          unit[0]++;
+        }
+        default -> warnOnce(value.getClass().getName(), "Unsupported shader parameter " + name + " ("
+            + value.getClass().getSimpleName() + ")");
+      }
+    });
+    gl.glActiveTexture(GL3.GL_TEXTURE0);
+    return unit[0];
+  }
+
+  private static final Set<String> WARNED = new HashSet<>();
+
+  private static void warnOnce(String key, String message) {
+    if (WARNED.add(key)) {
+      log.warn(message);
     }
   }
 

@@ -21,9 +21,9 @@ not opt out of:
 | Where | What | Test |
 |---|---|---|
 | Core (`engine`) | Mechanisms every game uses or can ignore at no cost: scene, ECS, rendering, physics, sound, input plumbing, resources, serialization, networking and replication, game states | Would a puzzle game, a racing game and a shooter all accept it as is? |
-| Extension points (`engine`) | Interfaces where games differ: `EnginePlugin`, `ISystem`, `StepHook`, `Overlay`, `ComponentSerializer`, `NetState`, `InputCommand` + `CommandCodec`, `PredictedMotor`, `WorldSpace`, `CopyHook`, `RelevanceFilter`, `CommandSource` | Is there a sensible default that costs nothing when unused? |
+| Extension points (`engine`) | Interfaces where games differ: `EnginePlugin`, `ISystem`, `StepHook`, `Overlay`, `ComponentSerializer`, `NetState`, `InputCommand` + `CommandCodec`, `PredictedMotor`, `WorldSpace`, `CopyHook`, `RelevanceFilter`, `CommandSource`; material shaders (`Material.fragmentShader`/`vertexShader` + `ShaderParams`) and `PostPass`es on the shader library (see [shaders.md](shaders.md)) | Is there a sensible default that costs nothing when unused? |
 | Default plugins (`engine`) | Conveniences most games want, installed unless the game says otherwise: `MouseReleasePlugin`, `FirstPersonInputPlugin`, `ImpactSoundPlugin`, `DebugOverlayPlugin` | Can a game leave it out without losing anything else? |
-| Kits (`kits`) | Implementations for a kind of game: `engine.kits.flight` (`FlightCommand`, `FlightMotor`), `engine.kits.wraparound` (`Wraparound`) | Does it only make sense for some genres? It goes here. |
+| Kits (`kits`) | Implementations for a kind of game: `engine.kits.flight` (`FlightCommand`, `FlightMotor`), `engine.kits.wraparound` (`Wraparound`), `engine.kits.toon` (`ToonShading`, `ToonPlugin`, shaders under `shaders/kits/`) | Does it only make sense for some genres? It goes here. |
 | Game | Rules, content, its own components and plugins | |
 
 The kits module depends only on the engine's public API, so the build checks that the extension points are enough.
