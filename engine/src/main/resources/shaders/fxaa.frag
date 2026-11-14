@@ -1,7 +1,7 @@
 #version 330 core
 
 // Fast approximate anti-aliasing (after Timothy Lottes' FXAA 3.11, "quality 10"-like): finds the local edge
-// direction from the luma (in alpha) and blends along it.
+// direction from the luma and blends along it. The luma is computed here, so post passes before it need not keep it.
 in vec2 vUv;
 
 uniform sampler2D uImage;
@@ -10,17 +10,21 @@ uniform int uEnabled;
 
 out vec4 fragColor;
 
+float luma(vec4 c) {
+  return dot(c.rgb, vec3(0.299, 0.587, 0.114));
+}
+
 void main() {
   vec4 center = texture(uImage, vUv);
   if (uEnabled == 0) {
     fragColor = vec4(center.rgb, 1.0);
     return;
   }
-  float lumaM = center.a;
-  float lumaNW = texture(uImage, vUv + vec2(-1.0, -1.0) * uTexel).a;
-  float lumaNE = texture(uImage, vUv + vec2(1.0, -1.0) * uTexel).a;
-  float lumaSW = texture(uImage, vUv + vec2(-1.0, 1.0) * uTexel).a;
-  float lumaSE = texture(uImage, vUv + vec2(1.0, 1.0) * uTexel).a;
+  float lumaM = luma(center);
+  float lumaNW = luma(texture(uImage, vUv + vec2(-1.0, -1.0) * uTexel));
+  float lumaNE = luma(texture(uImage, vUv + vec2(1.0, -1.0) * uTexel));
+  float lumaSW = luma(texture(uImage, vUv + vec2(-1.0, 1.0) * uTexel));
+  float lumaSE = luma(texture(uImage, vUv + vec2(1.0, 1.0) * uTexel));
   float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
   float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
   if (lumaMax - lumaMin < max(0.0312, lumaMax * 0.125)) {

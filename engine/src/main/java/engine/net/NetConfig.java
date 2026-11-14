@@ -3,6 +3,7 @@ package engine.net;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.CRC32;
 
+import engine.core.Engine;
 import engine.core.EngineConfig;
 
 /**
@@ -71,6 +72,17 @@ public record NetConfig(int protocolId, int maxClients, int maxPacketSize, doubl
    */
   public static NetConfig forGame(EngineConfig game) {
     return of(protocolId(game.id() + "@" + game.version()));
+  }
+
+  /**
+   * Like {@link #forGame(EngineConfig)}, and the {@link Engine#pluginSignature() networked plugins} must match too: a
+   * client running another version of a plugin that changes the simulation cannot join. Call it once the engine has
+   * started (in {@link engine.core.Game#init} or later), when the plugins are installed.
+   */
+  public static NetConfig forGame(Engine engine) {
+    final var game = engine.config();
+    final String plugins = engine.pluginSignature();
+    return of(protocolId(game.id() + "@" + game.version() + (plugins.isEmpty() ? "" : "+" + plugins)));
   }
 
   /** A stable number for a text, e.g. {@code protocolId("mygame/3")}. */

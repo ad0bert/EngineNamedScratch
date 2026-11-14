@@ -10,8 +10,8 @@ import java.util.Set;
 import engine.animation.AnimationLayer;
 import engine.animation.Animator;
 import engine.audio.AudioListener;
+import engine.core.EnginePlugins;
 import engine.audio.AudioSource;
-import engine.audio.ImpactSound;
 import engine.ecs.Component;
 import engine.ecs.Spinner;
 import engine.input.FirstPersonController;
@@ -31,18 +31,31 @@ import engine.render.ParticleEmitter;
 import engine.render.ReflectionProbe;
 
 /**
- * Which component types can be saved, and how. {@link #defaults()} knows the engine's own components; games register
- * serializers for theirs. Components without a serializer are left out of saved files (logged once per type).
+ * Which component types can be saved, and how. {@link #core()} knows the engine's core components, {@link #defaults()}
+ * those and the default plugins' ({@link engine.core.EnginePlugins#defaults()}); an engine's own registry
+ * ({@link engine.core.Engine#components()}) has those of the plugins it runs. Games register serializers for theirs. Components without a serializer are left out of saved files (logged once per type).
  */
 public class ComponentRegistry {
   private final Map<String, ComponentSerializer<?>> byType = new LinkedHashMap<>();
   private final Map<Class<?>, ComponentSerializer<?>> byClass = new HashMap<>();
 
   /**
-   * The engine's components: rendering (skins included), lights, camera, physics (colliders, bodies, joints,
-   * characters), audio, animators, controllers.
+   * The core and the default plugins' components ({@link engine.core.EnginePlugins#defaults()}: impact sounds, the
+   * first-person controller).
    */
   public static ComponentRegistry defaults() {
+    final var r = core();
+    for (var plugin : EnginePlugins.defaults()) {
+      plugin.registerComponents(r);
+    }
+    return r;
+  }
+
+  /**
+   * The engine's core components: rendering (skins included), lights, camera, physics (colliders, bodies, joints,
+   * characters), audio sources and listeners, animators, spinners.
+   */
+  public static ComponentRegistry core() {
     final var r = new ComponentRegistry();
     r.register(new MeshRendererSerializer());
     r.register(new FieldSerializer<>("Camera", Camera.class, ctx -> new Camera()));
@@ -62,9 +75,7 @@ public class ComponentRegistry {
     r.register(new AudioSourceSerializer());
     r.register(new AnimatorSerializer());
     r.register(new FieldSerializer<>("AudioListener", AudioListener.class, ctx -> new AudioListener()));
-    r.register(new FieldSerializer<>("ImpactSound", ImpactSound.class, ctx -> new ImpactSound()));
     r.register(new FieldSerializer<>("Spinner", Spinner.class, ctx -> new Spinner(0f, 0f, 0f)));
-    r.register(new FirstPersonSerializer());
     return r;
   }
 
@@ -275,9 +286,12 @@ public class ComponentRegistry {
     }
   }
 
-  /** Needs the engine's input state, and keeps the view direction. */
-  static final class FirstPersonSerializer extends FieldSerializer<FirstPersonController> {
-    FirstPersonSerializer() {
+  /**
+   * Saves a {@link FirstPersonController} with its look direction; it needs the engine's input state to load.
+   * Registered by {@link engine.input.FirstPersonInputPlugin}.
+   */
+  public static final class FirstPersonSerializer extends FieldSerializer<FirstPersonController> {
+    public FirstPersonSerializer() {
       super("FirstPersonController", FirstPersonController.class, ctx -> {
         if (ctx.input() == null) {
           throw new IllegalArgumentException("a FirstPersonController needs the input state in the context");

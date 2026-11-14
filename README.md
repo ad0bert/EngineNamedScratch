@@ -9,6 +9,7 @@ rendering, physics, sound, animation, input and UI are building blocks you combi
 | Module | What it is |
 |---|---|
 | `engine/` | The engine library, published as `io.github.ad0bert:engine-named-scratch` (jar, sources, javadoc). It holds only `engine.*` and its shaders. |
+| `kits/` | Optional pieces for particular kinds of games, published as `io.github.ad0bert:engine-named-scratch-kits`: flight (`engine.kits.flight`), worlds that wrap around (`engine.kits.wraparound`) and cel shading with outlines (`engine.kits.toon`). Built only on the engine's public API; the place for contributed genre code. |
 | `demo/` | The demo game (`game.*` and its assets). It shows how to use the engine and is the CI smoke test. It is not published. |
 
 ## Run
@@ -49,7 +50,7 @@ System properties:
 | `engine.audio=false` | no sound (also automatic without a sound device) |
 | `engine.gamepads=false` | do not look for gamepads |
 | `engine.fullscreen=true`, `engine.vsync=false` | override the config's `app.fullscreen` / `app.vsync` |
-| `engine.debugOverlay=false` | start with the debug text (`F3`) hidden; games can also call `engine.setDebugOverlayVisible(false)` |
+| `engine.debugOverlay=false` | start with the debug text (`F3`) hidden; games can also call `engine.plugin(DebugOverlayPlugin.class).ifPresent(d -> d.setVisible(false))` |
 | `engine.hotReload=true` | watch the asset directories and apply changed shaders, textures and meshes while running (`Engine.setHotReload`) |
 | `engine.userDir=dir` | keep settings and saves under `dir/<app id>` instead of the platform's user directories |
 | `demo.camera=x,y,z,yaw,pitch` | demo only: start flying with the eyes somewhere else |
@@ -58,6 +59,7 @@ System properties:
 | `demo.paused=true` | demo only: start in the pause menu |
 | `demo.probe=false` | demo only: the room by the field without its reflection probe |
 | `demo.assets=dir` | demo only: an asset directory whose files replace the demo's and the engine's shaders (`dir/shaders/tonemap.frag`) |
+| `demo.outline=true` | demo only: ink outlines over everything (the kits module's `ToonPlugin`) |
 
 The render settings can also be changed at run time through `engine.backend().settings()`.
 
@@ -115,6 +117,92 @@ Maven dependencies. `demo/pom.xml` shows the packaging:
 
 The packages `engine.render.gl`, `engine.audio.al` and `engine.input.jinput` are the backends' internals; everything
 else is the API. The jar's module name is `io.github.ad0bert.engine`.
+
+### Plugins
+
+The engine's core is the scene, systems, rendering, physics, sound, input, resources and game states. Everything a
+game may or may not want comes as an `EnginePlugin`: a bundle of systems, step hooks, overlays, input bindings,
+message receivers and component serializers that is installed as a whole. The game picks its plugins with
+`Game.plugins()`; they are installed in that order after the engine's own systems and before `Game.init`, and
+uninstalled in reverse after `Game.shutdown`.
+
+By default (`EnginePlugins.defaults()`) a game gets what the engine used to always do:
+
+| Plugin | What it adds |
+|---|---|
+| `MouseReleasePlugin` | Esc (`release_mouse`) frees a captured pointer |
+| `FirstPersonInputPlugin` | the bindings `FirstPersonController` and `ActionCommandSource` read (WASD/arrows, Space, Shift, pad Y) and the controller's serializer |
+| `ImpactSoundPlugin` | collision sounds for entities with an `ImpactSound` |
+| `DebugOverlayPlugin` | the `F3` debug text and frame graph |
+
+```java
+class MyGame implements Game {
+  @Override
+  public List<EnginePlugin> plugins() {
+    return EnginePlugins.defaultsWithout(FirstPersonInputPlugin.class);  // or List.of(), or defaultsAnd(new Weather())
+  }
+  ...
+}
+
+final class Weather implements EnginePlugin {                          // a plugin of your own, or one you share
+  public String id() { return "com.example.weather"; }
+  public List<String> requires() { return List.of(); }                // ids that must be installed before it
+  public void install(Engine engine) { engine.addSystem(rain); engine.addOverlay(clouds); }
+  public void uninstall(Engine engine) { engine.removeSystem(rain); engine.removeOverlay(clouds); }
+  public void registerComponents(ComponentRegistry r) { r.register(new FieldSerializer<>("RainZone", ...)); }
+}
+```
+
+`engine.plugin(Weather.class)` finds an installed plugin. `engine.components()` is the component registry of the core
+and the installed plugins (for `new SceneSerializer(engine.components())`). A plugin that changes the simulation or
+the network says `networked() = true`; `NetConfig.forGame(engine)` then puts its id and version into the protocol id,
+so hosts and clients with different plugins cannot connect to each other.
+
+### Custom shaders
+
+A material can have shaders of its own, and a game can add full-screen passes. Shader files are resource paths,
+looked up in the asset directories first, then on the classpath (so a library jar can ship them), and hot reloading
+follows them and every file they include.
+
+The engine's shaders are built from a small library that custom shaders `#include` (from any directory:
+`#include "lib/surface.glsl"` finds the engine's; other paths are looked up next to the including file first):
+
+| File | For | What it gives |
+|---|---|---|
+| `lib/lighting.glsl` | fragment shaders of materials | `struct Surface` (albedo, alpha, normal, emissive, PBR or Blinn-Phong parameters, ambient, unlit, glass), `shade(surface)` (lights, shadows, sky, probes, transparency, written to the right targets), `lighting(surface)` (just the light), `geometricNormal()`, `viewDirection()`, `uTime`, `uCameraPos`, `vWorldPos`/`vNormal`/`vUv` |
+| `lib/surface.glsl` | the same, with the standard material | everything above, and `standardSurface()`: the material's colour, maps, UV transform and model as a `Surface` (`gUv` is its UV) |
+| `lib/vertex.glsl` | vertex shaders of materials | the attributes (instancing and skinning included), `uTime`, and `emit(position, normal)`, which does the rest |
+| `lib/post.glsl` | post passes | `uImage`, `uDepth`, `uTexel`, `uTime`, `uProj`/`uInvProj`, `viewPosition(uv)`, `fragColor` |
+
+The engine's own `basic.frag` is `shade(standardSurface())`, so a material shader usually changes just its part:
+
+```glsl
+#version 330 core
+#include "lib/surface.glsl"
+uniform vec3 uGlowColor;                                    // from material.params
+void main() {
+  Surface s = standardSurface();                            // this material's colour, maps, lighting model
+  s.emissive += uGlowColor * (0.5 + 0.5 * sin(uTime * 3.0));
+  shade(s);                                                 // lights, shadows, sky, transparency
+}
+```
+
+```java
+material.shader("shaders/glow.frag");                        // or shader(vertex, fragment); null keeps the engine's
+material.params.set("uGlowColor", new Vector3f(1f, 0.3f, 0.1f)).set("uNoise", noiseTexture);
+var settings = engine.backend().settings();
+settings.addPostPass("shaders/vignette.frag", PostPass.Stage.DISPLAY).params.set("uStrength", 0.4f);
+settings.shaderGlobals.set("uWind", windDirection);          // set on every custom shader and pass
+```
+
+Post passes run in list order within their stage: `HDR` (linear light, after transparency and particles, before bloom
+and tone mapping) or `DISPLAY` (the tone-mapped sRGB image, before FXAA). `ShaderParams` take floats, ints,
+vectors, matrices and textures (bound to free texture units); material shaders and parameters are saved with scenes.
+A shader that does not compile is logged once and the material falls back to the engine's shader (a pass is
+skipped) until hot reloading brings a version that compiles. Shadow maps are drawn with the engine's shaders, so a
+vertex shader that moves vertices does not move their shadows. The demo has examples in
+`demo/src/main/resources/shaders/demo`, and the kits module's `ToonShading`/`ToonPlugin` (cel shading and outlines)
+show shaders shipped in a jar.
 
 ### Structuring a game
 
@@ -198,8 +286,9 @@ class PauseMenu implements GameState {
   guest.rpc(door, "use", new BitWriter().writeInt(1, 0, 3));
   ```
 
-  Copies on clients have kinematic rigid bodies and switched-off character controllers: the host moves them. When a
-  client leaves, the entities it owned are despawned.
+  Copies on clients have kinematic rigid bodies and switched-off character controllers: the host moves them. That
+  is a `CopyHook` (`CopyHook.PHYSICS`); `guest.addCopyHook(copy -> ...)` stills the game's own components the same
+  way. When a client leaves, the entities it owned are despawned.
 
   **Bandwidth:** each client gets its own snapshots, as changes from the state it last confirmed (positions to the
   millimetre, as whole numbers), so entities it already has exactly cost nothing and slow ones a few bytes.
@@ -210,43 +299,54 @@ class PauseMenu implements GameState {
 
   **Players without lag** (client-side prediction): give the player entity a `CapsuleCollider`, a
   `CharacterController` and a `CharacterMotor`, spawn it owned by the client, and give the client's replication a
-  command source. The client then moves its own player at once, sends its input (`InputCommand`s: move, look,
-  buttons) to the host, and quietly corrects itself when the host's result differs (put back, inputs replayed; the
+  command source. The client then moves its own player at once, sends its input (`StandardCommand`s: move, look,
+  eight buttons) to the host, and quietly corrects itself when the host's result differs (put back, inputs replayed; the
   motor's `visual` child slides back instead of jumping). It keeps its input arriving a couple of steps early by
   running its clock slightly faster or slower. The host's own player is driven the same way.
 
   ```java
-  guestReplication.setCommandSource(new ActionCommandSource(engine.input()).addButton(0, "fire"));
+  guestReplication.setCommandSource(new ActionCommandSource(engine.input()).setButton(1, "fire")); // 0 is "jump"
   hostReplication.setLocalPlayer(hostPlayer, new ActionCommandSource(engine.input()));
   // on the host, game code reads what the players do:
-  if (player.get(CharacterMotor.class).pressed(InputCommand.button(0))) shoot(player);
+  if (player.get(CharacterMotor.class).pressed(StandardCommand.button(1))) shoot(player);
   ```
 
-  **Players that fly** (or move any other way): prediction works with any `PredictedMotor`, not only walking.
-  `FlightMotor` flies a ship that drifts in empty space: it turns to the command's orientation, pushes along its own
-  axes and keeps drifting (`thrust`, `maxSpeed`, `drag`, a `brakeButton`). Flying commands carry a whole orientation,
-  so ships can loop and roll: `InputCommand.flying(tick, moveX, moveY, moveZ, aim, buttons)`. For other movement,
-  extend `PredictedMotor`: `move(command, dt)`, `writePredicted`/`readPredicted` for the state the movement depends
-  on, and `replayStep` for what the engine's systems do to it in a step (nothing, if `move` moves it itself).
-
-  **Worlds that wrap around and things that jump:** `setWraparound(Wraparound.cube(20))` on the host's and the clients'
-  replication makes copies cross the edges of a world that wraps around the short way, and measures corrections, lag
-  compensation and `RelevanceFilter.byDistance(radius, wraparound)` that way too (give the same to
-  `FlightMotor.wraparound`). `hostReplication.teleported(entity)`, in the step the game moved it (a respawn, a
-  hyperspace jump), makes copies go straight to the new place instead of sliding there; a client's own player jumps
-  there as well. `transform.shiftPrevious(offset)` keeps the drawing smooth when game code wraps an entity itself.
+  **Other input and other movement:** what a command holds is up to the game. `StandardCommand` (the default) fits
+  walking and most first- and third-person games; a game with other input writes a record implementing
+  `InputCommand` and a `CommandCodec` for it, and sets it on both sides with `setCommandCodec`. Movement is a
+  `PredictedMotor<C>`: `move(command, dt)`, `writePredicted`/`readPredicted` for the state the movement depends on,
+  and `replayStep` for what the engine's systems do to it in a step (nothing, if `move` moves it itself).
 
   ```java
+  record Steer(long tick, double viewTick, float wheel, float throttle) implements InputCommand {
+    public Steer at(long t, double v) { return new Steer(t, v, wheel, throttle); }
+  }
+  host.setCommandCodec(STEER_CODEC);                           // the same on every guest
+  class CarMotor extends PredictedMotor<Steer> { CarMotor() { super(Steer.class); } ... }
+  ```
+
+  **The shape of the world and teleports:** `setWorldSpace(space)` on both sides tells the replication how distances
+  work (`WorldSpace.EUCLIDEAN` by default): copies blend along it, and corrections, lag compensation and
+  `RelevanceFilter.byDistance(radius, space)` measure along it. `hostReplication.teleported(entity)`, in the step the
+  game moved it (a respawn, a portal), makes copies go straight to the new place instead of sliding there; a client's
+  own player is put there as well. `transform.shiftPrevious(offset)` keeps the drawing smooth when game code wraps an
+  entity itself.
+
+  The kits module has ready-made pieces built on these: `Wraparound` (a `WorldSpace` whose box wraps around at every
+  face, arcade style), and `FlightCommand` with `FlightMotor` for ships that loop, roll and drift.
+
+  ```java
+  var space = Wraparound.cube(20);                             // engine.kits.wraparound
+  replication.setWorldSpace(space);
+  replication.setCommandCodec(FlightCommand.CODEC);            // engine.kits.flight
   Spawner ship = ctx -> {
     var e = new Entity("ship");
     var motor = e.add(new FlightMotor());
-    motor.wraparound = SPACE;                                  // the same Wraparound as the replication's
-    motor.brakeButton = InputCommand.button(1);
+    motor.space = space;
+    motor.brakeButton = FlightCommand.button(1);
     return e;
   };
-  guestReplication.setCommandSource((tick, dt) -> InputCommand.flying(tick, 0, 0, thrust, aim, buttons));
-  hostShip.transform().position().set(somewhereElse);          // hyperspace, on the host
-  hostReplication.teleported(hostShip);
+  guestReplication.setCommandSource((tick, dt) -> new FlightCommand(tick, 0, 0, thrust, aim, buttons));
   ```
 
   **Hit tests as the shooter saw them** (lag compensation): `hostReplication.raycastAsSeenBy(clientId, origin,
@@ -259,7 +359,8 @@ class PauseMenu implements GameState {
   `withEncryption(false)` turns it off (both sides must agree). The handshake's cookie and padded requests keep
   forged addresses from using the host to flood others.
 
-  `NetConfig.forGame` only lets the same game and version connect. A connection reports `rtt()`, `packetLoss()` and
+  `NetConfig.forGame` only lets the same game and version connect (`forGame(engine)`: and the same networked
+  plugins). A connection reports `rtt()`, `packetLoss()` and
   bytes per second. For tests, `LoopbackNetwork` connects servers and clients in memory with a clock you drive and
   chosen latency, jitter, loss and duplication.
 - **Assets and user files:** `engine.assets()` looks in added directories, then on the classpath;
@@ -366,7 +467,8 @@ class PauseMenu implements GameState {
 - **Hot reloading and profiling:** with `Engine.setHotReload(true)` the asset directories are watched; changed
   shaders are compiled again (one that does not compile keeps its old version), textures and OBJ meshes loaded again
   in place, and `Engine.onAssetChanged` listeners hear of every changed path (to reload a level or a prefab). Shader
-  files in an asset directory replace the built-in ones of the same path. `Engine.profiler()` times every system, the
+  files in an asset directory replace the built-in ones of the same path; a changed library file (`.glsl`) recompiles
+  every shader that includes it. `Engine.profiler()` times every system, the
   game's update and rendering per frame over the last 240 frames; games add sections with `begin`/`end`. F3 shows a
   frame-time graph and the slowest sections.
 - **ECS, message queues, resource caching, screenshots** (see below).
@@ -429,26 +531,27 @@ How it works:
 
 | Package | Purpose |
 |---|---|
-| `engine.core` | `Engine` (window, GL loop or headless loop, lifecycle, pause, step numbers, window options, screenshots, hot reloading), `Game` (your entry point), `GameState`/`GameStates`/`LevelState` (screens and levels), `StepHook`, `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
+| `engine.core` | `Engine` (window, GL loop or headless loop, lifecycle, pause, step numbers, window options, screenshots, hot reloading), `Game` (your entry point), `EnginePlugin`/`EnginePlugins` (optional functionality), `GameState`/`GameStates`/`LevelState` (screens and levels), `StepHook`, `FixedTimestep`, `EngineConfig`, `UserDirs`, `Settings` |
 | `engine.ecs` | `Entity`, `Component`, `Transform` (hierarchy + interpolation + change tracking), `Scene` (deferred add/remove, cached queries), `ISystem` |
-| `engine.render` | Backend-agnostic: `RenderBackend` (and `NullRenderBackend`, which draws nothing), `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
+| `engine.render` | Backend-agnostic: `RenderBackend` (and `NullRenderBackend`, which draws nothing), `RenderSettings`, `RenderQueue`, `GpuMesh`/`GpuTexture` handles, `Material` (with custom shaders and `ShaderParams`), `PostPass`, `MeshRenderer` (+ levels of detail, `MeshSimplifier`), `ReflectionProbe`, `ParticleEmitter`/`ParticleCollider`, `Skin`, `Camera`, `Light`, `Sky`/`HdrImage`, `Overlay`/`UiCanvas`/`UiFont`, `FontAtlas`, `ShadowMath` |
 | `engine.render.gl` | The OpenGL implementation of `RenderBackend` (shaders, instancing, skinning, shadow maps, occlusion queries, particles, sky and image-based lighting, post-processing, UI batching) |
 | `engine.animation` | `Track`, `Easing`, `Channel`, `AnimationClip`, `Animator` (layers, blending), `AnimationSystem` |
-| `engine.audio` | Backend-agnostic: `AudioBackend`, `AudioClip`/`AudioVoice` handles, `AudioSource`, `AudioListener`, `ImpactSound`, `AudioMixer`/`AudioBus`, `Rolloff`, `VoiceAllocator`, `AudioSystem`, `NullAudioBackend` |
+| `engine.audio` | Backend-agnostic: `AudioBackend`, `AudioClip`/`AudioVoice` handles, `AudioSource`, `AudioListener`, `ImpactSound` (+ `ImpactSoundPlugin`), `AudioMixer`/`AudioBus`, `Rolloff`, `VoiceAllocator`, `AudioSystem`, `NullAudioBackend` |
 | `engine.audio.al` | The OpenAL (JOAL) implementation of `AudioBackend` (buffers, sources, streaming) |
 | `engine.serialization` | `Json`, `SceneSerializer`, `Prefab`, `ComponentRegistry`, `ComponentSerializer`/`FieldSerializer`, `SerializationContext` |
 | `engine.ui` | `Gui`: immediate-mode widgets on any `UiCanvas`; `TextEdit` (text editing model), `Clipboard` (system or in-memory), `TextWrap` |
 | `engine.resources` | `Assets` (asset directories, then the classpath), `AssetWatcher` (changed files), `ResourceManager` (cached meshes/textures/models/sounds, generated resources, keys for scene files, scopes that release a level's resources), `ObjLoader`, `MtlLoader`, `GltfLoader`/`GltfModel`, `ImageLoader` (ImageIO), `HdrLoader` (Radiance `.hdr`), `AudioLoader`/`VorbisDecoder`, `NormalMaps` (height field to normal map), `Model` |
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
-| `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController` |
+| `engine.input` | `InputListener` (window thread), `InputState` (polling, key and gamepad bindings, mouse, typed text), `GamepadState`/`Gamepad` (layout, dead zones), `GamepadBackend`, `FirstPersonController`, `FirstPersonInputPlugin`, `MouseReleasePlugin` |
 | `engine.input.jinput` | The JInput implementation of `GamepadBackend` |
 | `engine.net` | `NetServer`, `NetClient`, `Connection` (reliable and unreliable messages over UDP), `NetConfig` (encryption, password), `NetListener`, `ConnectionFilter`, `DisconnectReason`, `BitWriter`/`BitReader`, `Quantize`, `Transport` with `UdpTransport` and `LoopbackNetwork` (with an `Interceptor` for tests) |
-| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand`, `CommandSource`/`ActionCommandSource` and a `PredictedMotor` (`CharacterMotor`, `FlightMotor`, or the game's own); `Wraparound` worlds and `teleported` jumps; `RelevanceFilter`; lag compensation (`raycastAsSeenBy`) |
+| `engine.net.replication` | `ServerReplication` (host) and `ClientReplication` (clients): spawning by type with `Spawner`, `NetworkIdentity`, snapshots of transforms and `NetState`s, interpolation, RPCs (`RpcHandler`); prediction with `InputCommand` (`StandardCommand`, or the game's own with a `CommandCodec`), `CommandSource`/`ActionCommandSource` and a `PredictedMotor` (`CharacterMotor`, or the game's own); `CopyHook`s for copies; `WorldSpace` and `teleported`; `RelevanceFilter`; lag compensation (`raycastAsSeenBy`) |
 | `engine.messaging` | Thread-safe message queues (`send` is immediate, `post` is delivered on the next update) |
 | `engine.physics` | `Rigidbody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `ConvexHullCollider`, `MeshCollider`, `BallJoint`/`HingeJoint`/`DistanceJoint`, `Narrowphase`, `ShapeTests`, `ConvexTests` (GJK/EPA), `CharacterController`, `ShapeCast`, `PhysicsSystem` (+ ray, shape casts, overlaps, layers) |
 | `engine.terrain` | `Heightfield` (heights, interpolation, normals, noise, images), `Terrain` (chunk meshes, levels, colliders) |
 | `engine.navigation` | `NavGrid` (baked walkable grid, A*, path straightening, blocking), `NavAgent` (path following) |
-| `engine.debug` | `DebugOverlay` (F3 text and frame graph), `Profiler` |
+| `engine.debug` | `DebugOverlay` (F3 text and frame graph) with `DebugOverlayPlugin`, `Profiler` |
+| `engine.kits.*` (kits module) | `flight`: `FlightCommand`, `FlightMotor`; `wraparound`: `Wraparound`; `toon`: `ToonShading`, `ToonPlugin` (and `shaders/kits/`) |
 | `game` (demo module) | Demo scene (`DemoGame`, `Main`) |
 
 Everything — fixed-step update, message dispatch, rendering — runs on the GL thread, so scene state needs no locks.

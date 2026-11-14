@@ -20,30 +20,32 @@ import engine.physics.CharacterController;
 class PredictionTest {
   /** Yaw that looks along +X. */
   private static final float EAST = -90f;
+  /** The button {@link CharacterMotor} jumps with by default. */
+  private static final int JUMP = StandardCommand.button(0);
 
   /** A command source that plays {@code script} (by sample number, from 0). */
   private static final class Script implements CommandSource {
-    final IntFunction<InputCommand> script;
+    final IntFunction<StandardCommand> script;
     int samples;
 
-    Script(IntFunction<InputCommand> script) {
+    Script(IntFunction<StandardCommand> script) {
       this.script = script;
     }
 
     @Override
-    public InputCommand sample(long tick, double dt) {
+    public StandardCommand sample(long tick, double dt) {
       final var c = this.script.apply(this.samples++);
-      return new InputCommand(tick, c.moveX(), c.moveZ(), c.yaw(), c.pitch(), c.buttons(), -1);
+      return new StandardCommand(tick, c.moveX(), c.moveZ(), c.yaw(), c.pitch(), c.buttons(), -1);
     }
   }
 
-  private static InputCommand walk(float forward, int buttons) {
-    return new InputCommand(0, 0f, forward, EAST, 10f, buttons, -1);
+  private static StandardCommand walk(float forward, int buttons) {
+    return new StandardCommand(0, 0f, forward, EAST, 10f, buttons, -1);
   }
 
   /** East for {@code steps} samples, a jump at sample 40, then standing still. */
   private static Script eastThenStop(int steps) {
-    return new Script(n -> walk(n < steps ? 1f : 0f, n >= 40 && n < 45 ? InputCommand.JUMP : 0));
+    return new Script(n -> walk(n < steps ? 1f : 0f, n >= 40 && n < 45 ? JUMP : 0));
   }
 
   private static ReplicationBed bedWithWalker(Conditions conditions) {
@@ -165,7 +167,7 @@ class PredictionTest {
   @Test
   void gameButtonsAndTheViewReachTheHost() {
     final var bed = bedWithWalker(new Conditions(0.04, 0.0, 0.0, 0));
-    final int fire = InputCommand.button(0);
+    final int fire = StandardCommand.button(1);
     final var client = bed.clients.get(0);
     client.setCommandSource(new Script(n -> walk(0f, n >= 50 && n < 52 ? fire : 0)));
     final var motor = hostWalker(bed).get(CharacterMotor.class);
@@ -177,7 +179,7 @@ class PredictionTest {
         if (motor.pressed(fire)) {
           presses.add(tick);
         }
-        final double view = motor.lastCommand().viewTick();
+        final double view = motor.lastCommand() == null ? -1 : motor.lastCommand().viewTick();
         if (view >= 0) {
           lags.add(tick - view);
         }
@@ -193,14 +195,17 @@ class PredictionTest {
 
   @Test
   void commandsSurviveTheWire() {
-    final var c = new InputCommand(1234, 0.5f, -1f, 725f, -30f, InputCommand.JUMP | InputCommand.button(6), 1220.5);
-    final var q = c.quantized();
+    final var c = new StandardCommand(1234, 0.5f, -1f, 725f, -30f, JUMP | StandardCommand.button(7), 1220.5);
+    final var q = StandardCommand.CODEC.overTheWire(c);
     assertEquals(0.5f, q.moveX(), 0.01f);
     assertEquals(-1f, q.moveZ(), 1e-6f);
     assertEquals(5f, q.yaw(), 0.01f);
     assertEquals(-30f, q.pitch(), 0.02f);
     assertEquals(c.buttons(), q.buttons());
     assertEquals(1220.5, q.viewTick(), 0.01);
-    assertEquals(q, q.quantized(), "quantizing twice changes nothing");
+    assertEquals(q, StandardCommand.CODEC.overTheWire(q), "quantizing twice changes nothing");
+    final var out = new engine.net.BitWriter();
+    Replication.writeCommand(StandardCommand.CODEC, c, out);
+    assertTrue(out.byteLength() <= 10, "a command stays small: " + out.byteLength());
   }
 }

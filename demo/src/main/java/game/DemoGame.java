@@ -25,13 +25,19 @@ import engine.audio.ImpactSound;
 import engine.audio.ReverbPreset;
 import engine.audio.ReverbZone;
 import engine.core.Engine;
+import engine.core.EnginePlugin;
+import engine.core.EnginePlugins;
 import engine.core.Game;
 import engine.core.Settings;
+import engine.debug.DebugOverlayPlugin;
 import engine.ecs.Entity;
 import engine.ecs.Spinner;
 import engine.input.FirstPersonController;
 import engine.input.Gamepad;
+import engine.input.MouseReleasePlugin;
 import engine.input.Rebinder;
+import engine.kits.toon.ToonPlugin;
+import engine.kits.toon.ToonShading;
 import engine.messaging.IMessageReceiver;
 import engine.navigation.NavAgent;
 import engine.navigation.NavGrid;
@@ -55,6 +61,7 @@ import engine.render.MeshFactory;
 import engine.render.MeshRenderer;
 import engine.render.MeshSimplifier;
 import engine.render.ParticleEmitter;
+import engine.render.PostPass;
 import engine.render.ReflectionProbe;
 import engine.render.Sky;
 import engine.render.UiCanvas;
@@ -106,6 +113,13 @@ public class DemoGame implements Game {
   /** Window and volume choices, kept in the user's config directory between runs. */
   private Settings settings;
 
+  /** The default plugins; with {@code -Ddemo.outline=true} also ink outlines from the kits module. */
+  @Override
+  public List<EnginePlugin> plugins() {
+    return Boolean.getBoolean("demo.outline") ? EnginePlugins.defaultsAnd(new ToonPlugin(1.5f))
+        : EnginePlugins.defaults();
+  }
+
   @Override
   public void init(Engine engine) {
     final var res = engine.resources();
@@ -122,6 +136,10 @@ public class DemoGame implements Game {
     this.thud = res.sound("gen:thud", ProceduralSounds.thud());
     this.whoosh = res.sound("gen:whoosh", ProceduralSounds.whoosh());
     this.click = res.sound("gen:click", ProceduralSounds.click());
+
+    // a post pass of the demo's own: a light vignette over the tone-mapped image
+    engine.backend().settings().addPostPass("shaders/demo/vignette.frag", PostPass.Stage.DISPLAY).params
+        .set("uStrength", 0.35f);
 
     final var sun = new Entity("sun");
     sun.transform().setEulerDegrees(-50f, -30f, 0f);
@@ -209,7 +227,10 @@ public class DemoGame implements Game {
     scene.add(capsule);
 
     final var boxModel = res.model("objects/box.obj");
-    boxModel.parts().get(0).material().color(0.8f, 0.3f, 0.2f, 1f);
+    // a material with shaders of its own (demo/src/main/resources/shaders/demo): it breathes and glows
+    boxModel.parts().get(0).material().color(0.8f, 0.3f, 0.2f, 1f)
+        .shader("shaders/demo/wobble.vert", "shaders/demo/pulse.frag").params
+        .set("uGlowColor", new Vector3f(0.6f, 0.15f, 0.05f)).set("uGlowSpeed", 0.5f).set("uWobble", 0.04f);
     final var box = new Entity("box");
     box.transform().position().set(-4f, 0f, 0f);
     boxModel.attachTo(box);
@@ -401,6 +422,7 @@ public class DemoGame implements Game {
     final var steel = new Material().color(0.75f, 0.75f, 0.8f, 1f);
     steel.specular = 0.8f;
     steel.shininess = 64f;
+    ToonShading.apply(steel, 3); // cel-shaded: light in three flat bands (kits module)
     final var dumbbell = new Entity("dumbbell");
     dumbbell.transform().position().set(-9f, 3f, 4f);
     dumbbell.transform().setEulerDegrees(0f, 30f, 20f);
@@ -629,8 +651,8 @@ public class DemoGame implements Game {
     }
     g.beginScroll("controls", 160f);
     for (String action : input.actions()) {
-      if (action.equals("release_mouse") || action.equals("toggle_debug")) {
-        continue; // the engine's own
+      if (action.equals(MouseReleasePlugin.ACTION) || action.equals(DebugOverlayPlugin.ACTION)) {
+        continue; // the engine plugins' own
       }
       final var keys = input.describe(action);
       if (g.button(action + ": " + (keys.isEmpty() ? "-" : keys) + "##" + action)) {

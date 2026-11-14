@@ -3,14 +3,20 @@ package engine.render.gl;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.jogamp.common.nio.Buffers;
 import com.jogamp.opengl.GL3;
@@ -50,6 +56,7 @@ import engine.render.ShadowMath;
  * spot light shadow maps, 7 metallic-roughness map, 13 to 15 the sky's irradiance, reflection and BRDF maps.
  */
 final class GlSceneRenderer {
+  private static final Logger log = LoggerFactory.getLogger(GlSceneRenderer.class);
   private static final int UNIT_ALBEDO = 0;
   private static final int UNIT_CASCADES = 1;
   private static final int UNIT_NORMAL = 2;
@@ -66,6 +73,8 @@ final class GlSceneRenderer {
   private static final int UNIT_IRRADIANCE = 13;
   private static final int UNIT_PREFILTERED = 14;
   private static final int UNIT_BRDF = 15;
+  /** Custom shaders' own textures ({@link ShaderParams}) go to this unit and up. */
+  static final int UNIT_CUSTOM = 16;
   /** Point and spot lights that may cast shadows in one frame. */
   private static final int MAX_LOCAL_SHADOWS = 4;
   /** Casters up to this far towards the light from a cascade still shadow it. */
@@ -82,6 +91,17 @@ final class GlSceneRenderer {
   private final GlSky sky = new GlSky();
   private final GlParticles particles = new GlParticles();
   private ShaderProgram basic;
+  /** Materials' own programs by "vertex|fragment"; failed ones are remembered (and logged) once. */
+  private final Map<String, ShaderProgram> customPrograms = new HashMap<>();
+  private final Set<String> failedPrograms = new HashSet<>();
+  /** The main-pass programs whose lighting uniforms are set for the current pass. */
+  private final Set<ShaderProgram> lightingSet = Collections.newSetFromMap(new IdentityHashMap<>());
+  private int passCascades;
+  private boolean passProbes;
+  /** Whether the transparency targets are being written (the main shader's uOit). */
+  private boolean oit;
+  private final long startNanos = System.nanoTime();
+  private int maxTextureUnits;
   private ShaderProgram depth;
   private ShaderProgram cutout;
   private ShaderProgram box;
@@ -163,6 +183,9 @@ final class GlSceneRenderer {
     this.cutout = new ShaderProgram(gl, "shaders/cutout.vert", "shaders/cutout.frag");
     this.box = new ShaderProgram(gl, "shaders/box.vert", "shaders/box.frag");
     this.skinning.init(gl, this.basic, this.depth, this.cutout);
+    final int[] units = new int[1];
+    gl.glGetIntegerv(GL3.GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, units, 0);
+    this.maxTextureUnits = units[0];
     this.post.init(gl);
     this.sky.init(gl);
     this.particles.init(gl);
@@ -211,7 +234,7 @@ final class GlSceneRenderer {
     final var activeCamera = scene.activeCamera();
     if (activeCamera.isEmpty()) {
       this.post.beginScene(gl, width, height, sky.x, sky.y, sky.z, false);
-      this.post.finish(gl, this.settings, screen);
+      this.post.finish(gl, this.settings, screen, this.proj.identity(), time());
       return;
     }
     final var camera = activeCamera.get();
@@ -243,7 +266,7 @@ final class GlSceneRenderer {
     mainPass(gl, cascades);
     this.particles.draw(gl, scene, alpha, this.viewProj, this.cameraPos, this.cameraForward, this.cameraRight,
         this.cameraUp, camera.near, camera.far, this.post, this.white, this.stats, this);
-    this.post.finish(gl, this.settings, screen);
+    this.post.finish(gl, this.settings, screen, this.proj, time());
   }
 
   /**
@@ -506,43 +529,106 @@ final class GlSceneRenderer {
     mainPassDraw(gl);
   }
 
-  /** The main shader's camera, light, shadow and sky uniforms, and the reflection probes unless capturing one. */
+  /**
+   * Starts a main pass (or a probe face): the shadow maps are bound, and the main shader gets its camera, light,
+   * shadow and sky uniforms, and the reflection probes unless capturing one. Materials' own programs get the same when
+   * first used in the pass ({@link #useMainProgram}).
+   */
   private void bindLighting(GL3 gl, int cascades, boolean probes) {
-    this.basic.use(gl);
-    this.basic.set(gl, "uViewProj", this.viewProj);
-    this.basic.set(gl, "uCameraPos", this.cameraPos);
-    this.basic.set(gl, "uAmbient", this.ambient);
-    this.basic.set(gl, "uLightCount", this.lightCount);
-    this.basic.setVec4Array(gl, "uLightPos", this.lightPos, this.lightCount);
-    this.basic.setVec4Array(gl, "uLightColor", this.lightColor, this.lightCount);
-    this.basic.setVec4Array(gl, "uLightSpot", this.lightSpot, this.lightCount);
-    this.basic.setFloatArray(gl, "uLightInner", this.lightInner, this.lightCount);
-    this.basic.setIntArray(gl, "uLightShadow", this.lightShadow, this.lightCount);
-    this.basic.setVec2Array(gl, "uShadowRange", this.shadowRange, this.lightCount);
-    this.basic.setMat4Array(gl, "uSpotShadow", this.spotMatrix, this.lightCount);
-    this.basic.set(gl, "uCascadeCount", cascades);
-    if (cascades > 0) {
-      this.basic.setMat4Array(gl, "uCascadeMatrix", this.cascadeMatrix, cascades);
-      this.basic.setFloatArray(gl, "uCascadeSplit", this.cascadeSplit, cascades);
-      this.basic.setFloatArray(gl, "uCascadeTexel", this.cascadeTexel, cascades);
-    }
-    this.basic.set(gl, "uShadowTexel", 1f / this.shadowMap.size());
-    this.basic.set(gl, "uPointShadowTexel", 1f / this.localShadowMap.size());
-    this.basic.set(gl, "uDebugCascades", this.settings.debugCascades ? 1 : 0);
-    this.basic.set(gl, "uTexture", UNIT_ALBEDO);
-    this.basic.set(gl, "uShadowMap", UNIT_CASCADES);
-    this.basic.set(gl, "uNormalMap", UNIT_NORMAL);
-    this.basic.set(gl, "uSpecularMap", UNIT_SPECULAR);
-    this.basic.set(gl, "uEmissiveMap", UNIT_EMISSIVE);
-    this.basic.set(gl, "uHeightMap", UNIT_HEIGHT);
-    this.basic.set(gl, "uPointShadowMap", UNIT_LOCAL_SHADOWS);
-    this.basic.set(gl, "uMetalRoughMap", UNIT_METAL_ROUGH);
-    this.basic.set(gl, "uOit", 0);
-    this.sky.bindLighting(gl, this.basic, this.settings, UNIT_IRRADIANCE, UNIT_PREFILTERED, UNIT_BRDF);
+    this.passCascades = cascades;
+    this.passProbes = probes;
+    this.lightingSet.clear();
     this.shadowMap.bindTexture(gl, UNIT_CASCADES);
     this.localShadowMap.bindTexture(gl, UNIT_LOCAL_SHADOWS);
-    bindProbes(gl, probes);
+    useMainProgram(gl, this.basic);
   }
+
+  /** Binds a main-pass program, setting the pass's lighting uniforms on it the first time in the pass. */
+  private void useMainProgram(GL3 gl, ShaderProgram program) {
+    program.use(gl);
+    if (this.lightingSet.add(program)) {
+      setLighting(gl, program, this.passCascades, this.passProbes);
+    }
+    program.set(gl, "uOit", this.oit ? 1 : 0);
+  }
+
+  private void setLighting(GL3 gl, ShaderProgram program, int cascades, boolean probes) {
+    program.set(gl, "uViewProj", this.viewProj);
+    program.set(gl, "uCameraPos", this.cameraPos);
+    program.set(gl, "uAmbient", this.ambient);
+    program.set(gl, "uTime", time());
+    program.set(gl, "uLightCount", this.lightCount);
+    program.setVec4Array(gl, "uLightPos", this.lightPos, this.lightCount);
+    program.setVec4Array(gl, "uLightColor", this.lightColor, this.lightCount);
+    program.setVec4Array(gl, "uLightSpot", this.lightSpot, this.lightCount);
+    program.setFloatArray(gl, "uLightInner", this.lightInner, this.lightCount);
+    program.setIntArray(gl, "uLightShadow", this.lightShadow, this.lightCount);
+    program.setVec2Array(gl, "uShadowRange", this.shadowRange, this.lightCount);
+    program.setMat4Array(gl, "uSpotShadow", this.spotMatrix, this.lightCount);
+    program.set(gl, "uCascadeCount", cascades);
+    if (cascades > 0) {
+      program.setMat4Array(gl, "uCascadeMatrix", this.cascadeMatrix, cascades);
+      program.setFloatArray(gl, "uCascadeSplit", this.cascadeSplit, cascades);
+      program.setFloatArray(gl, "uCascadeTexel", this.cascadeTexel, cascades);
+    }
+    program.set(gl, "uShadowTexel", 1f / this.shadowMap.size());
+    program.set(gl, "uPointShadowTexel", 1f / this.localShadowMap.size());
+    program.set(gl, "uDebugCascades", this.settings.debugCascades ? 1 : 0);
+    program.set(gl, "uTexture", UNIT_ALBEDO);
+    program.set(gl, "uShadowMap", UNIT_CASCADES);
+    program.set(gl, "uNormalMap", UNIT_NORMAL);
+    program.set(gl, "uSpecularMap", UNIT_SPECULAR);
+    program.set(gl, "uEmissiveMap", UNIT_EMISSIVE);
+    program.set(gl, "uHeightMap", UNIT_HEIGHT);
+    program.set(gl, "uPointShadowMap", UNIT_LOCAL_SHADOWS);
+    program.set(gl, "uMetalRoughMap", UNIT_METAL_ROUGH);
+    this.sky.bindLighting(gl, program, this.settings, UNIT_IRRADIANCE, UNIT_PREFILTERED, UNIT_BRDF);
+    bindProbes(gl, program, probes);
+  }
+
+  /** Seconds since the renderer started, for shaders' {@code uTime}. */
+  float time() {
+    return (float) ((System.nanoTime() - this.startNanos) * 1e-9 % 86_400.0); // a day, to keep float precision
+  }
+
+  /**
+   * The main-pass program of a material: the engine's, or one built from the material's own shaders (the engine's
+   * shader where it names none). A program that does not compile is logged once and the engine's is used instead.
+   */
+  private ShaderProgram programFor(GL3 gl, Material m) {
+    if (!m.hasCustomShader()) {
+      return this.basic;
+    }
+    final String vertex = m.vertexShader != null ? m.vertexShader : "shaders/basic.vert";
+    final String fragment = m.fragmentShader != null ? m.fragmentShader : "shaders/basic.frag";
+    final String key = vertex + "|" + fragment;
+    final var existing = this.customPrograms.get(key);
+    if (existing != null) {
+      return existing;
+    }
+    if (this.failedPrograms.contains(key)) {
+      return this.basic;
+    }
+    try {
+      final var program = new ShaderProgram(gl, vertex, fragment);
+      this.skinning.prepare(gl, program);
+      this.customPrograms.put(key, program);
+      return program;
+    } catch (IllegalStateException | IllegalArgumentException e) {
+      this.failedPrograms.add(key);
+      log.error("Material shader {} + {} did not compile; drawing with the engine's shader: {}", vertex, fragment,
+          e.getMessage());
+      return this.basic;
+    }
+  }
+
+  /** Lets shaders that failed be tried again (after a hot reload changed files). */
+  void retryFailedShaders() {
+    this.failedPrograms.clear();
+    this.post.retryFailedPasses();
+  }
+
+
 
   // ---- reflection probes -------------------------------------------------------------------------------------
 
@@ -706,23 +792,23 @@ final class GlSceneRenderer {
   }
 
   /** The probe uniforms and cube maps of the main pass (or none, while capturing). */
-  private void bindProbes(GL3 gl, boolean use) {
+  private void bindProbes(GL3 gl, ShaderProgram program, boolean use) {
     final int n = use ? this.activeProbes.size() : 0;
-    this.basic.set(gl, "uProbeCount", n);
+    program.set(gl, "uProbeCount", n);
     for (int i = 0; i < n; i++) {
       final var p = this.activeProbes.get(i);
       p.box(this.boxMin, this.boxMax);
       put(this.probeMin, i, this.boxMin.x, this.boxMin.y, this.boxMin.z, p.fade);
       put(this.probeMax, i, this.boxMax.x, this.boxMax.y, this.boxMax.z, p.intensity);
       p.entity().transform().worldPosition(this.boxMin);
-      this.basic.set(gl, PROBE_POSITIONS[i], this.boxMin);
+      program.set(gl, PROBE_POSITIONS[i], this.boxMin);
     }
     if (n > 0) {
-      this.basic.setVec4Array(gl, "uProbeMin", this.probeMin, n);
-      this.basic.setVec4Array(gl, "uProbeMax", this.probeMax, n);
+      program.setVec4Array(gl, "uProbeMin", this.probeMin, n);
+      program.setVec4Array(gl, "uProbeMax", this.probeMax, n);
     }
     for (int i = 0; i < MAX_PROBES; i++) {
-      this.basic.set(gl, PROBE_SAMPLERS[i], UNIT_PROBES + i);
+      program.set(gl, PROBE_SAMPLERS[i], UNIT_PROBES + i);
       gl.glActiveTexture(GL3.GL_TEXTURE0 + UNIT_PROBES + i);
       gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, i < n ? this.probeTargets.get(this.activeProbes.get(i)).prefiltered
           : this.sky.blackCube());
@@ -762,9 +848,9 @@ final class GlSceneRenderer {
       // the order does not matter: batch them like opaque geometry
       RenderQueue.sortForBatching(this.transparent, true);
       this.post.beginTransparent(gl);
-      this.basic.set(gl, "uOit", 1);
+      this.oit = true;
       drawList(gl, this.transparent);
-      this.basic.set(gl, "uOit", 0);
+      this.oit = false;
       this.post.endTransparent(gl);
     } else {
       RenderQueue.sortBackToFront(this.transparent);
@@ -795,9 +881,13 @@ final class GlSceneRenderer {
         sun >= 0 ? this.linear : null);
   }
 
-  /** Draws a sorted list with the main shader; runs of the same mesh and material become one instanced call. */
+  /**
+   * Draws a sorted list with the main shader (or the materials' own); runs of the same mesh and material become one
+   * instanced call.
+   */
   private void drawList(GL3 gl, List<MeshRenderer> list) {
     final int n = list.size();
+    ShaderProgram current = null;
     int i = 0;
     while (i < n) {
       final var first = list.get(i);
@@ -805,8 +895,13 @@ final class GlSceneRenderer {
       while (j < n && RenderQueue.sameBatch(first, list.get(j), true)) {
         j++;
       }
-      applyMaterial(gl, first.material);
-      drawInstances(gl, this.basic, list, i, j);
+      final var program = programFor(gl, first.material);
+      if (program != current) {
+        useMainProgram(gl, program);
+        current = program;
+      }
+      applyMaterial(gl, program, first.material);
+      drawInstances(gl, program, list, i, j);
       i = j;
     }
   }
@@ -870,7 +965,7 @@ final class GlSceneRenderer {
     this.stats.instances += count;
   }
 
-  private void applyMaterial(GL3 gl, Material m) {
+  private void applyMaterial(GL3 gl, ShaderProgram program, Material m) {
     final var tex = m.texture != null ? (GlTexture) m.texture : this.white;
     tex.bind(gl, UNIT_ALBEDO);
     // unused samplers still get a texture bound, so every sampler stays valid
@@ -879,33 +974,37 @@ final class GlSceneRenderer {
     ((GlTexture) (m.emissiveMap != null ? m.emissiveMap : this.white)).bind(gl, UNIT_EMISSIVE);
     ((GlTexture) (m.heightMap != null ? m.heightMap : this.white)).bind(gl, UNIT_HEIGHT);
     ((GlTexture) (m.metalRoughMap != null ? m.metalRoughMap : this.white)).bind(gl, UNIT_METAL_ROUGH);
-    this.basic.set(gl, "uHasNormalMap", m.normalMap != null ? 1 : 0);
+    program.set(gl, "uHasNormalMap", m.normalMap != null ? 1 : 0);
     if (m.normalMap != null) {
-      this.basic.set(gl, "uNormalScale", m.normalScale);
-      this.basic.set(gl, "uNormalFlipY", m.normalMapFlipY ? -1f : 1f);
+      program.set(gl, "uNormalScale", m.normalScale);
+      program.set(gl, "uNormalFlipY", m.normalMapFlipY ? -1f : 1f);
     }
-    this.basic.set(gl, "uHasSpecularMap", m.specularMap != null ? 1 : 0);
-    this.basic.set(gl, "uHasEmissiveMap", m.emissiveMap != null ? 1 : 0);
-    this.basic.set(gl, "uHasHeightMap", m.heightMap != null && m.heightScale != 0f ? 1 : 0);
-    this.basic.set(gl, "uHeightScale", m.heightScale);
-    this.basic.set(gl, "uEmissive", srgbToLinear(m.emissive, this.linear));
+    program.set(gl, "uHasSpecularMap", m.specularMap != null ? 1 : 0);
+    program.set(gl, "uHasEmissiveMap", m.emissiveMap != null ? 1 : 0);
+    program.set(gl, "uHasHeightMap", m.heightMap != null && m.heightScale != 0f ? 1 : 0);
+    program.set(gl, "uHeightScale", m.heightScale);
+    program.set(gl, "uEmissive", srgbToLinear(m.emissive, this.linear));
     this.linearColor.set(srgbToLinear(m.color.x), srgbToLinear(m.color.y), srgbToLinear(m.color.z), m.color.w);
-    this.basic.set(gl, "uColor", this.linearColor);
-    this.basic.set(gl, "uSpecular", m.specular);
-    this.basic.set(gl, "uShininess", m.shininess);
-    this.basic.set(gl, "uPbr", m.pbr ? 1 : 0);
-    this.basic.set(gl, "uMetallic", m.metallic);
-    this.basic.set(gl, "uRoughness", m.roughness);
-    this.basic.set(gl, "uHasMetalRoughMap", m.metalRoughMap != null ? 1 : 0);
-    this.basic.set(gl, "uReflectance", m.reflectance);
-    this.basic.set(gl, "uMaterialAmbient", srgbToLinear(m.ambient, this.linear));
+    program.set(gl, "uColor", this.linearColor);
+    program.set(gl, "uSpecular", m.specular);
+    program.set(gl, "uShininess", m.shininess);
+    program.set(gl, "uPbr", m.pbr ? 1 : 0);
+    program.set(gl, "uMetallic", m.metallic);
+    program.set(gl, "uRoughness", m.roughness);
+    program.set(gl, "uHasMetalRoughMap", m.metalRoughMap != null ? 1 : 0);
+    program.set(gl, "uReflectance", m.reflectance);
+    program.set(gl, "uMaterialAmbient", srgbToLinear(m.ambient, this.linear));
     this.linearColor.set(m.uvScale.x, m.uvScale.y, m.uvOffset.x, m.uvOffset.y);
-    this.basic.set(gl, "uUvTransform", this.linearColor);
-    this.basic.set(gl, "uClampUv", m.clampUv ? 1 : 0);
-    this.basic.set(gl, "uUnlit", m.unlit ? 1 : 0);
-    this.basic.set(gl, "uGlass", m.glass && m.transparent ? 1 : 0);
-    this.basic.set(gl, "uAlphaCutoff", m.transparent ? 0f : m.alphaCutoff);
-    this.basic.set(gl, "uPointSize", m.pointSize);
+    program.set(gl, "uUvTransform", this.linearColor);
+    program.set(gl, "uClampUv", m.clampUv ? 1 : 0);
+    program.set(gl, "uUnlit", m.unlit ? 1 : 0);
+    program.set(gl, "uGlass", m.glass && m.transparent ? 1 : 0);
+    program.set(gl, "uAlphaCutoff", m.transparent ? 0f : m.alphaCutoff);
+    program.set(gl, "uPointSize", m.pointSize);
+    if (program != this.basic) {
+      final int next = program.setAll(gl, this.settings.shaderGlobals, UNIT_CUSTOM, this.maxTextureUnits);
+      program.setAll(gl, m.params, next, this.maxTextureUnits);
+    }
   }
 
   /**
@@ -996,6 +1095,10 @@ final class GlSceneRenderer {
       disposeProbe(gl, t);
     }
     this.probeTargets.clear();
+    for (final var p : this.customPrograms.values()) {
+      p.dispose(gl);
+    }
+    this.customPrograms.clear();
     if (this.basic != null) {
       this.basic.dispose(gl);
       this.depth.dispose(gl);

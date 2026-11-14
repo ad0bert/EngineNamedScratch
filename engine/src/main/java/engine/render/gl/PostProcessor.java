@@ -1,9 +1,17 @@
 package engine.render.gl;
 
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
 import org.joml.Matrix4f;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.jogamp.opengl.GL3;
 
+import engine.render.PostPass;
 import engine.render.RenderSettings;
 
 /**
@@ -19,9 +27,14 @@ import engine.render.RenderSettings;
  * <li>bloom: the bright parts are downsampled through a chain of half-size targets and added back up;</li>
  * <li>tone mapping (exposure, ACES curve, sRGB) into an 8-bit target, then FXAA into the window.</li>
  * </ol>
+ * The game's {@link PostPass}es run before bloom (stage HDR) and before FXAA (stage DISPLAY), each reading the image so
+ * far and writing it to the other of two targets of that stage.
  * Everything is reallocated when the window size changes.
  */
 final class PostProcessor {
+  private static final Logger log = LoggerFactory.getLogger(PostProcessor.class);
+  /** A post pass's own textures go to this unit and up (0 is the image, 1 the depth). */
+  private static final int UNIT_PASS = 2;
   private static final int MAX_BLOOM_LEVELS = 6;
   private static final float[] CLEAR_ACCUM = { 0f, 0f, 0f, 1f }; // nothing accumulated, fully revealed
   private static final float[] CLEAR_WEIGHTS = { 0f, 0f, 0f, 0f };
@@ -64,6 +77,15 @@ final class PostProcessor {
   private final int[] bloomH = new int[MAX_BLOOM_LEVELS];
   private int bloomLevels;
   private boolean allocated;
+  /** Second targets for the game's passes (made when first needed at this size). */
+  private int hdrSwap;
+  private int hdrSwapFbo;
+  private int ldrSwap;
+  private int ldrSwapFbo;
+  private final Map<String, ShaderProgram> passPrograms = new HashMap<>();
+  private final Set<String> failedPasses = new HashSet<>();
+  private final Matrix4f passInvProj = new Matrix4f();
+  private int maxTextureUnits;
 
   void init(GL3 gl) {
     this.down = new ShaderProgram(gl, "shaders/fullscreen.vert", "shaders/bloom_down.frag");
@@ -77,6 +99,8 @@ final class PostProcessor {
     final int[] ids = new int[1];
     gl.glGenVertexArrays(1, ids, 0);
     this.emptyVao = ids[0];
+    gl.glGetIntegerv(GL3.GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, ids, 0);
+    this.maxTextureUnits = ids[0];
   }
 
   /**
@@ -224,13 +248,17 @@ final class PostProcessor {
     return this.depthCopy;
   }
 
-  /** Bloom, tone mapping and FXAA into the default framebuffer. */
-  void finish(GL3 gl, RenderSettings settings, int defaultFramebuffer) {
+  /**
+   * The game's HDR passes, bloom, tone mapping, the game's display passes and FXAA into the default framebuffer.
+   * {@code proj} is the camera's projection and {@code time} the shaders' {@code uTime}, for the game's passes.
+   */
+  void finish(GL3 gl, RenderSettings settings, int defaultFramebuffer, Matrix4f proj, float time) {
     gl.glDisable(GL3.GL_DEPTH_TEST);
     gl.glDepthMask(false);
+    final int hdr = runPasses(gl, settings, PostPass.Stage.HDR, proj, time);
     final boolean bloom = settings.bloomStrength > 0f && this.bloomLevels > 0;
     if (bloom) {
-      bloom(gl, settings);
+      bloom(gl, settings, hdr);
     }
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, this.ldrFbo);
     gl.glViewport(0, 0, this.width, this.height);
@@ -239,9 +267,10 @@ final class PostProcessor {
     this.tonemap.set(gl, "uBloom", 1);
     this.tonemap.set(gl, "uBloomStrength", bloom ? settings.bloomStrength : 0f);
     this.tonemap.set(gl, "uExposure", settings.exposure);
-    bind(gl, 0, this.sceneColor);
-    bind(gl, 1, bloom ? this.bloomTex[0] : this.sceneColor);
+    bind(gl, 0, hdr);
+    bind(gl, 1, bloom ? this.bloomTex[0] : hdr);
     drawFullscreen(gl);
+    final int ldr = runPasses(gl, settings, PostPass.Stage.DISPLAY, proj, time);
 
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, defaultFramebuffer);
     gl.glViewport(0, 0, this.width, this.height);
@@ -249,18 +278,89 @@ final class PostProcessor {
     this.fxaa.set(gl, "uImage", 0);
     this.fxaa.set(gl, "uTexel", 1f / this.width, 1f / this.height);
     this.fxaa.set(gl, "uEnabled", settings.antiAliasing ? 1 : 0);
-    bind(gl, 0, this.ldrColor);
+    bind(gl, 0, ldr);
     drawFullscreen(gl);
     gl.glDepthMask(true);
     gl.glEnable(GL3.GL_DEPTH_TEST);
   }
 
-  private void bloom(GL3 gl, RenderSettings settings) {
+  /**
+   * Runs the enabled passes of {@code stage} in order, each from the image so far into the stage's other target, and
+   * returns the texture with the result (the stage's own target if there were none).
+   */
+  private int runPasses(GL3 gl, RenderSettings settings, PostPass.Stage stage, Matrix4f proj, float time) {
+    final boolean hdr = stage == PostPass.Stage.HDR;
+    int current = hdr ? this.sceneColor : this.ldrColor;
+    for (PostPass pass : settings.postPasses) {
+      if (!pass.enabled || pass.stage != stage) {
+        continue;
+      }
+      final var program = passProgram(gl, pass.fragmentShader);
+      if (program == null) {
+        continue;
+      }
+      ensureSwapTargets(gl);
+      final int primary = hdr ? this.sceneColor : this.ldrColor;
+      final boolean toSwap = current == primary;
+      gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, hdr ? (toSwap ? this.hdrSwapFbo : this.applyFbo)
+          : (toSwap ? this.ldrSwapFbo : this.ldrFbo));
+      gl.glViewport(0, 0, this.width, this.height);
+      program.use(gl);
+      program.set(gl, "uImage", 0);
+      program.set(gl, "uDepth", 1);
+      program.set(gl, "uTexel", 1f / this.width, 1f / this.height);
+      program.set(gl, "uTime", time);
+      program.set(gl, "uProj", proj);
+      program.set(gl, "uInvProj", proj.invert(this.passInvProj));
+      final int next = program.setAll(gl, settings.shaderGlobals, UNIT_PASS, this.maxTextureUnits);
+      program.setAll(gl, pass.params, next, this.maxTextureUnits);
+      bind(gl, 0, current);
+      bind(gl, 1, this.depth);
+      drawFullscreen(gl);
+      current = toSwap ? (hdr ? this.hdrSwap : this.ldrSwap) : primary;
+    }
+    gl.glActiveTexture(GL3.GL_TEXTURE0);
+    return current;
+  }
+
+  /** The program of a pass's shader; null (logged once) if it does not compile. */
+  private ShaderProgram passProgram(GL3 gl, String fragment) {
+    final var existing = this.passPrograms.get(fragment);
+    if (existing != null || this.failedPasses.contains(fragment)) {
+      return existing;
+    }
+    try {
+      final var program = new ShaderProgram(gl, "shaders/fullscreen.vert", fragment);
+      this.passPrograms.put(fragment, program);
+      return program;
+    } catch (IllegalStateException | IllegalArgumentException e) {
+      this.failedPasses.add(fragment);
+      log.error("Post pass {} did not compile; it is skipped: {}", fragment, e.getMessage());
+      return null;
+    }
+  }
+
+  /** Lets passes that failed be tried again (after a hot reload changed files). */
+  void retryFailedPasses() {
+    this.failedPasses.clear();
+  }
+
+  private void ensureSwapTargets(GL3 gl) {
+    if (this.hdrSwapFbo != 0) {
+      return;
+    }
+    this.hdrSwap = texture(gl, this.width, this.height, GL3.GL_RGBA16F, GL3.GL_RGBA, GL3.GL_FLOAT);
+    this.hdrSwapFbo = framebuffer(gl, 0, this.hdrSwap);
+    this.ldrSwap = texture(gl, this.width, this.height, GL3.GL_RGBA8, GL3.GL_RGBA, GL3.GL_UNSIGNED_BYTE);
+    this.ldrSwapFbo = framebuffer(gl, 0, this.ldrSwap);
+  }
+
+  private void bloom(GL3 gl, RenderSettings settings, int scene) {
     this.down.use(gl);
     this.down.set(gl, "uSource", 0);
     this.down.set(gl, "uLimit", settings.bloomThreshold);
     this.down.set(gl, "uKnee", Math.max(1e-3f, settings.bloomThreshold * 0.5f));
-    int source = this.sceneColor;
+    int source = scene;
     int sw = this.width;
     int sh = this.height;
     for (int i = 0; i < this.bloomLevels; i++) {
@@ -391,6 +491,12 @@ final class PostProcessor {
       gl.glDeleteFramebuffers(1, new int[] { this.bloomFbo[i] }, 0);
       gl.glDeleteTextures(1, new int[] { this.bloomTex[i] }, 0);
     }
+    if (this.hdrSwapFbo != 0) { // made on first use, at the current size
+      gl.glDeleteFramebuffers(2, new int[] { this.hdrSwapFbo, this.ldrSwapFbo }, 0);
+      gl.glDeleteTextures(2, new int[] { this.hdrSwap, this.ldrSwap }, 0);
+      this.hdrSwapFbo = 0;
+      this.ldrSwapFbo = 0;
+    }
     if (this.depthCopyFbo != 0) { // made on first use, at the current size
       gl.glDeleteFramebuffers(1, new int[] { this.depthCopyFbo }, 0);
       gl.glDeleteTextures(1, new int[] { this.depthCopy }, 0);
@@ -409,6 +515,13 @@ final class PostProcessor {
       this.tonemap.dispose(gl);
       this.fxaa.dispose(gl);
       this.composite.dispose(gl);
+      this.ssao.dispose(gl);
+      this.ssaoBlur.dispose(gl);
+      this.ssaoApply.dispose(gl);
+      for (final var p : this.passPrograms.values()) {
+        p.dispose(gl);
+      }
+      this.passPrograms.clear();
       gl.glDeleteVertexArrays(1, new int[] { this.emptyVao }, 0);
     }
   }

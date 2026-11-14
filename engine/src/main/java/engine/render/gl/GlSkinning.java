@@ -37,10 +37,15 @@ final class GlSkinning {
     gl.glActiveTexture(GL3.GL_TEXTURE0);
     gl.glBindBuffer(GL3.GL_TEXTURE_BUFFER, 0);
     for (ShaderProgram p : programs) {
-      p.use(gl);
-      p.set(gl, "uJoints", UNIT);
-      p.set(gl, "uSkinned", 0);
+      prepare(gl, p);
     }
+  }
+
+  /** Points a program's {@code uJoints} sampler at the joint buffer (for programs made later). */
+  void prepare(GL3 gl, ShaderProgram program) {
+    program.use(gl);
+    program.set(gl, "uJoints", UNIT);
+    program.set(gl, "uSkinned", 0);
   }
 
   /** Prepares the bound program for a draw of a renderer with this skin (null: not skinned). */

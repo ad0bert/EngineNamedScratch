@@ -33,7 +33,7 @@ class LagCompensationTest {
     bed.server.spawn("walker", new Vector3f(0, 0.95f, -20), me);
     final var target = bed.server.spawn("target", new Vector3f(-20, 1, 0));
     bed.step(30);
-    client.setCommandSource((tick, dt) -> new InputCommand(tick, 0, 0, 0, 0, 0, -1));
+    client.setCommandSource((tick, dt) -> new StandardCommand(tick, 0, 0, 0, 0, 0, -1));
     final List<Shot> shots = new ArrayList<>();
     final List<String> results = new ArrayList<>();
     bed.host.addStepHook(new StepHook() {

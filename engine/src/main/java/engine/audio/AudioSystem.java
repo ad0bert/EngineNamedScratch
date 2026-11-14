@@ -3,7 +3,6 @@ package engine.audio;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
 
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -11,22 +10,17 @@ import org.joml.Vector3f;
 import engine.ecs.Entity;
 import engine.ecs.ISystem;
 import engine.ecs.Scene;
-import engine.messaging.IMessageReceiver;
-import engine.messaging.MessageObject;
-import engine.physics.CollisionEvent;
 import engine.physics.Rigidbody;
 import lombok.Getter;
 
 /**
- * Drives the sound of a scene: places the listener, follows every {@link AudioSource}, plays one-shots and impact
- * sounds, applies the {@link AudioMixer} and hands the backend's voices to the sounds that matter most (see
+ * Drives the sound of a scene: places the listener, follows every {@link AudioSource}, plays one-shots, applies the {@link AudioMixer} and hands the backend's voices to the sounds that matter most (see
  * {@link VoiceAllocator}). Runs once per fixed step after physics. The per-step work does not allocate.
  *
  * <p>
- * Registered by the engine for collision messages, so entities with an {@link ImpactSound} are heard when they hit
- * something.
+ * Impact sounds ({@link ImpactSound}) are played by {@link ImpactSoundPlugin}, one of the default plugins.
  */
-public class AudioSystem implements ISystem, IMessageReceiver {
+public class AudioSystem implements ISystem {
   /** One-shots playing at the same time at most; a new one replaces the least important if all are busy. */
   public static final int MAX_ONE_SHOTS = 64;
 
@@ -53,7 +47,6 @@ public class AudioSystem implements ISystem, IMessageReceiver {
   private final Vector3f forward = new Vector3f(0f, 0f, -1f);
   private final Vector3f up = new Vector3f(0f, 1f, 0f);
   private final Quaternionf rotation = new Quaternionf();
-  private final Vector3f tmp = new Vector3f();
   /** Tells whether something solid is between the listener and a sound (for {@link AudioSource#occlusion}). */
   @FunctionalInterface
   public interface OcclusionTest {
@@ -471,40 +464,6 @@ public class AudioSystem implements ISystem, IMessageReceiver {
   /** The listener's world position as of the last update. */
   public Vector3f listenerPosition(Vector3f dest) {
     return dest.set(this.listenerPosition);
-  }
-
-  /** Impact sounds: called for collision messages (the engine registers the system for them). */
-  @Override
-  public void receiveMessage(MessageObject message) {
-    if (message.getPayload() instanceof CollisionEvent c && c.started()) {
-      final var ia = c.a().findOrNull(ImpactSound.class);
-      final var ib = c.b().findOrNull(ImpactSound.class);
-      if (ia == null && ib == null) {
-        return;
-      }
-      final float impulse = Math.max(ia != null ? ia.impulse() : 0f, ib != null ? ib.impulse() : 0f);
-      // the faster-changing body is the one that was hit hardest; it makes the sound
-      final var sound = ia == null ? ib : ib == null ? ia : ia.impulse() >= ib.impulse() ? ia : ib;
-      impact(sound, impulse);
-    }
-  }
-
-  private void impact(ImpactSound s, float impulse) {
-    if (!s.isEnabled() || s.clip == null || s.cooldown > 0f) {
-      return;
-    }
-    final float strength = ImpactSound.strength(impulse, s.minImpulse, s.maxImpulse);
-    if (strength <= 0f) {
-      return;
-    }
-    final var body = s.entity().findOrNull(Rigidbody.class);
-    final float mass = body != null ? Math.max(0.01f, body.mass) : 1f;
-    float pitch = s.massPitch > 0f ? (float) Math.pow(mass, -s.massPitch) : 1f;
-    pitch *= 1f + (ThreadLocalRandom.current().nextFloat() * 2f - 1f) * s.pitchVariation;
-    if (play(s.clip, s.entity().transform().worldPosition(this.tmp), s.volume * strength, pitch, AudioBus.EFFECTS,
-        s.priority)) {
-      s.cooldown = s.minInterval;
-    }
   }
 
   /** Stops everything and closes the backend. */

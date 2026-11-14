@@ -24,7 +24,6 @@ import engine.net.Connection;
 import engine.net.NetConfig;
 import engine.net.NetDataException;
 import engine.net.NetListener;
-import engine.physics.CharacterController;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -50,6 +49,8 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
   static final int REDUNDANT_COMMANDS = 8;
   static final int MAX_TYPE = 200;
   static final int MAX_DATA = 64 * 1024;
+  /** How far behind its command a player's view may be, in steps. */
+  static final float MAX_VIEW_LAG = 255f;
 
   final Engine engine;
   private final Map<String, Spawner> spawners = new HashMap<>();
@@ -60,7 +61,8 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
   private final Set<String> warned = new HashSet<>();
   NetListener listener = new NetListener() {
   };
-  Wraparound wraparound;
+  WorldSpace space = WorldSpace.EUCLIDEAN;
+  @SuppressWarnings("rawtypes") CommandCodec codec = StandardCommand.CODEC;
 
   Replication(Engine engine) {
     this.engine = engine;
@@ -94,21 +96,64 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
   }
 
   /**
-   * The box the game's world wraps around in, or null (the default) for open space: copies crossing an edge then
-   * blend the short way, across it, and so do corrections of predicted players and lag compensation. Set the same on
-   * the host and on clients.
+   * The shape of the game's world (default {@link WorldSpace#EUCLIDEAN}): copies blend between snapshots along it, and
+   * corrections of predicted players, lag compensation and relevance measure along it. Set the same on the host and on
+   * clients.
    */
-  public void setWraparound(Wraparound wraparound) {
-    this.wraparound = wraparound;
+  public void setWorldSpace(WorldSpace space) {
+    this.space = space == null ? WorldSpace.EUCLIDEAN : space;
   }
 
-  public Wraparound wraparound() {
-    return this.wraparound;
+  public WorldSpace worldSpace() {
+    return this.space;
   }
 
-  /** The point {@code t} of the way from {@code a} to {@code b}: straight, or the short way in a wraparound world. */
+  /**
+   * How players' {@link InputCommand}s go over the network (default {@link StandardCommand#CODEC}). Set the same on
+   * the host and on clients, before players connect; the command sources and motors must use its command type.
+   */
+  public void setCommandCodec(CommandCodec<?> codec) {
+    this.codec = codec;
+  }
+
+  public CommandCodec<?> commandCodec() {
+    return this.codec;
+  }
+
+  /** The point {@code t} of the way from {@code a} to {@code b}, in the world's space. */
   Vector3f blend(Vector3f a, Vector3f b, float t, Vector3f dest) {
-    return this.wraparound == null ? a.lerp(b, t, dest) : this.wraparound.lerp(a, b, t, dest);
+    return this.space == WorldSpace.EUCLIDEAN ? a.lerp(b, t, dest) : this.space.lerp(a, b, t, dest);
+  }
+
+  /** {@code command} as the network delivers it, after checking it is of the codec's type. */
+  InputCommand quantize(InputCommand command) {
+    checkCommand(command);
+    final var out = new BitWriter(32);
+    writeCommand(this.codec, command, out);
+    return readCommand(this.codec, new BitReader(out.toByteArray()), command.tick());
+  }
+
+  void checkCommand(InputCommand command) {
+    if (!this.codec.type().isInstance(command)) {
+      throw new IllegalStateException("a " + command.getClass().getSimpleName() + " command, but the replication's"
+          + " codec is for " + this.codec.type().getSimpleName() + " (setCommandCodec)");
+    }
+  }
+
+  /** Writes a command without its tick: how far behind its view is, then the codec's part. */
+  @SuppressWarnings({ "rawtypes", "unchecked" })
+  static void writeCommand(CommandCodec codec, InputCommand command, BitWriter out) {
+    final double view = command.viewTick();
+    out.writeBoolean(view >= 0);
+    if (view >= 0) {
+      out.writeFloat((float) (command.tick() - view), 0f, MAX_VIEW_LAG, 16);
+    }
+    codec.write(command, out);
+  }
+
+  static InputCommand readCommand(CommandCodec<?> codec, BitReader in, long tick) {
+    final double view = in.readBoolean() ? tick - in.readFloat(0f, MAX_VIEW_LAG, 16) : -1;
+    return codec.read(in, tick, view);
   }
 
   /** The replicated entity with this network number, or null. */
@@ -208,21 +253,6 @@ public abstract sealed class Replication implements StepHook permits ServerRepli
     this.engine.scene().add(entity);
     this.byNetId.put(netId, entity);
     return entity;
-  }
-
-  static void writeCharacter(BitWriter out, CharacterController.State s) {
-    out.writeVector(s.position).writeVector(s.velocity).writeFloat(s.walk.x).writeFloat(s.walk.z)
-        .writeBoolean(s.grounded).writeFloat(s.airTime);
-  }
-
-  static CharacterController.State readCharacter(BitReader in) {
-    final var s = new CharacterController.State();
-    in.readVector(s.position);
-    in.readVector(s.velocity);
-    s.walk.set(in.readFloat(), 0f, in.readFloat());
-    s.grounded = in.readBoolean();
-    s.airTime = in.readFloat();
-    return s;
   }
 
   static byte[] stateOf(Entity entity) {

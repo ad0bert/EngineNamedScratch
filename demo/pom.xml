@@ -30,6 +30,11 @@
       <groupId>io.github.ad0bert</groupId>
       <artifactId>engine-named-scratch</artifactId>
     </dependency>
+    <!-- optional pieces from the kits module: cel shading for one object, outlines with -Ddemo.outline=true -->
+    <dependency>
+      <groupId>io.github.ad0bert</groupId>
+      <artifactId>engine-named-scratch-kits</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.projectlombok</groupId>
       <artifactId>lombok</artifactId>

@@ -16,6 +16,8 @@
   <modules>
     <!-- the library a game depends on -->
     <module>engine</module>
+    <!-- optional pieces for kinds of games, built on the engine's public API; published next to it -->
+    <module>kits</module>
     <!-- the demo game: an example of using the engine and the CI smoke test; not published -->
     <module>demo</module>
   </modules>
@@ -53,6 +55,11 @@
       <dependency>
         <groupId>io.github.ad0bert</groupId>
         <artifactId>engine-named-scratch</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.github.ad0bert</groupId>
+        <artifactId>engine-named-scratch-kits</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

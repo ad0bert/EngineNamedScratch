@@ -84,17 +84,14 @@ class ConfigTest {
 
   @Test
   void theDebugOverlayCanStartHiddenAndBeSwitched() {
-    final var config = new EngineConfig("Test", "1", 8, 8, 1 / 60.0);
-    final var shown = new Engine(config, e -> {
-    });
-    assertTrue(shown.isDebugOverlayVisible(), "visible by default");
-    shown.setDebugOverlayVisible(false);
-    assertFalse(shown.isDebugOverlayVisible());
+    final var shown = new engine.debug.DebugOverlayPlugin();
+    assertTrue(shown.isVisible(), "visible by default");
+    shown.setVisible(false);
+    assertFalse(shown.isVisible());
 
     System.setProperty("engine.debugOverlay", "false");
     try {
-      assertFalse(new Engine(config, e -> {
-      }).isDebugOverlayVisible());
+      assertFalse(new engine.debug.DebugOverlayPlugin().isVisible());
     } finally {
       System.clearProperty("engine.debugOverlay");
     }

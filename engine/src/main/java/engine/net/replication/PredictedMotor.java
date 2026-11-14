@@ -14,8 +14,9 @@ import engine.net.BitWriter;
 /**
  * Moves a player's entity from {@link InputCommand}s, the same way on the host and on the client that owns it, so that
  * the client can move its own player at once and check later what the host made of the same commands (client-side
- * prediction; see {@link ClientReplication}). {@link CharacterMotor} walks a character, {@link FlightMotor} flies a
- * ship; games can write their own for other movement.
+ * prediction; see {@link ClientReplication}). {@link CharacterMotor} walks a character; games write their own for
+ * other movement (flying, driving, ...), for {@link StandardCommand}s or for commands of their own (the type parameter,
+ * which must match the replication's {@link Replication#setCommandCodec codec}).
  *
  * <p>
  * A motor must follow three rules: the movement of a step depends only on its state and the step's command (no random
@@ -29,30 +30,51 @@ import engine.net.BitWriter;
  * the client puts the motor in the host's state and replays the commands since; the {@link #visual} child then slides
  * back into place over a few steps instead of jumping.
  */
-public abstract class PredictedMotor extends Component {
+public abstract class PredictedMotor<C extends InputCommand> extends Component {
+  private final Class<C> commandType;
+
   /**
    * The child that is drawn (meshes, the camera): moved by the remaining error of a correction, which fades out in
    * about a tenth of a second. Null: corrections show at once.
    */
   public Entity visual;
 
-  private InputCommand last = InputCommand.NONE;
-  private InputCommand previous = InputCommand.NONE;
+  private C last;
+  private C previous;
   private final Vector3f visualHome = new Vector3f();
   private final Vector3f visualOffset = new Vector3f();
   private boolean visualHomeKnown;
   private boolean predictedHere;
   private boolean replaying;
 
+  /** A motor for commands of type {@code commandType}. */
+  protected PredictedMotor(Class<C> commandType) {
+    this.commandType = commandType;
+  }
+
+  /** The type of command this motor moves with. */
+  public Class<C> commandType() {
+    return this.commandType;
+  }
+
   /** Uses {@code command} for the coming step of {@code dt} seconds: the subclass's {@link #move}. */
   final void drive(InputCommand command, float dt) {
+    final C typed = cast(command);
     this.previous = this.last;
-    this.last = command;
-    move(command, dt);
+    this.last = typed;
+    move(typed, dt);
+  }
+
+  private C cast(InputCommand command) {
+    if (!this.commandType.isInstance(command)) {
+      throw new IllegalStateException(getClass().getSimpleName() + " moves with " + this.commandType.getSimpleName()
+          + " commands, not " + command.getClass().getSimpleName() + " (see Replication.setCommandCodec)");
+    }
+    return this.commandType.cast(command);
   }
 
   /** Applies a command for the coming step of {@code dt} seconds (before the systems run). */
-  protected abstract void move(InputCommand command, float dt);
+  protected abstract void move(C command, float dt);
 
   /**
    * During a replay, after {@link #move}: what the engine's systems do to this entity in a step of {@code dt}
@@ -84,19 +106,19 @@ public abstract class PredictedMotor extends Component {
     return Arrays.equals(mine, host);
   }
 
-  /** The command in use. */
-  public InputCommand lastCommand() {
+  /** The command in use; null before the first. */
+  public C lastCommand() {
     return this.last;
   }
 
   /** Whether the buttons are down in the command in use. */
   public boolean isDown(int buttons) {
-    return this.last.isDown(buttons);
+    return this.last != null && this.last.isDown(buttons);
   }
 
   /** Whether the buttons went down with the command in use (they were not all down in the one before). */
   public boolean pressed(int buttons) {
-    return this.last.isDown(buttons) && !this.previous.isDown(buttons);
+    return isDown(buttons) && (this.previous == null || !this.previous.isDown(buttons));
   }
 
   /** Whether this is the predicting client's own player (as opposed to the host's, or a copy). */
@@ -117,13 +139,13 @@ public abstract class PredictedMotor extends Component {
   }
 
   /** Replaces the command in use without moving, e.g. with what a copy received about its player's look. */
-  protected void setLastCommand(InputCommand command) {
+  protected void setLastCommand(C command) {
     this.last = command;
   }
 
   /** For replaying after a correction: what the command before the replayed one was. */
   void restoreLast(InputCommand command) {
-    this.last = command;
+    this.last = cast(command);
   }
 
   void setPredictedHere(boolean value) {

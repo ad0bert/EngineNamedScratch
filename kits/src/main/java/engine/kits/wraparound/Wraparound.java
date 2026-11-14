@@ -1,7 +1,9 @@
-package engine.net.replication;
+package engine.kits.wraparound;
 
 import org.joml.Vector3f;
 import org.joml.Vector3fc;
+
+import engine.net.replication.WorldSpace;
 
 /**
  * A box of space that wraps around on every side: what leaves it on one side comes back in on the opposite one (an
@@ -9,12 +11,13 @@ import org.joml.Vector3fc;
  * from one point to another is the shortest one, which may cross an edge.
  *
  * <p>
- * Give it to the replication on the host and on clients ({@link Replication#setWraparound}) so that copies crossing
- * an edge blend the short way instead of sweeping through the whole box, corrections of predicted players are
- * measured the short way, and lag compensation and {@link RelevanceFilter#byDistance(float, Wraparound)} measure
- * the same way. {@link FlightMotor#wraparound} keeps a flying player inside it.
+ * It is a {@link WorldSpace}: give it to the replication on the host and on clients
+ * ({@code replication.setWorldSpace(box)}) so that copies crossing an edge blend the short way instead of sweeping
+ * through the whole box, corrections of predicted players are measured the short way, and lag compensation and
+ * {@code RelevanceFilter.byDistance(radius, box)} measure the same way. {@code FlightMotor.space} keeps a flying player
+ * inside it.
  */
-public final class Wraparound {
+public final class Wraparound implements WorldSpace {
   private final Vector3f min = new Vector3f();
   private final Vector3f max = new Vector3f();
   private final Vector3f size = new Vector3f();
@@ -53,13 +56,26 @@ public final class Wraparound {
     return point;
   }
 
+  /** Same as {@link #wrap}. */
+  @Override
+  public Vector3f normalize(Vector3f point) {
+    return wrap(point);
+  }
+
+  @Override
+  public boolean wraps() {
+    return true;
+  }
+
   /** The shortest offset from {@code from} to {@code to}, crossing edges where that is shorter. */
+  @Override
   public Vector3f delta(Vector3fc from, Vector3fc to, Vector3f dest) {
     return dest.set(shortest(to.x() - from.x(), this.size.x), shortest(to.y() - from.y(), this.size.y),
         shortest(to.z() - from.z(), this.size.z));
   }
 
   /** The shortest distance between two points, squared. */
+  @Override
   public float distanceSquared(Vector3fc a, Vector3fc b) {
     final float x = shortest(b.x() - a.x(), this.size.x);
     final float y = shortest(b.y() - a.y(), this.size.y);
@@ -68,6 +84,7 @@ public final class Wraparound {
   }
 
   /** The point {@code t} of the way from {@code a} to {@code b} the short way, inside the box. */
+  @Override
   public Vector3f lerp(Vector3fc a, Vector3fc b, float t, Vector3f dest) {
     final float x = a.x() + shortest(b.x() - a.x(), this.size.x) * t;
     final float y = a.y() + shortest(b.y() - a.y(), this.size.y) * t;

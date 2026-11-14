@@ -10,6 +10,27 @@ import org.joml.Vector4f;
  * painted); lighting happens in linear space. Optional maps: a tangent-space normal map, a
  * specular map (scales {@link #specular}), an emissive map (scales {@link #emissive}) and a height map for parallax
  * occlusion mapping (white is high). All maps use the mesh's texture coordinates.
+ *
+ * <p>
+ * <b>Shaders of its own.</b> {@link #fragmentShader} and {@link #vertexShader} replace the engine's for this material
+ * in the main pass (resource paths, looked up in the asset directories first, then on the classpath). They get the
+ * engine's lighting from {@code shaders/lib/lighting.glsl} and the standard material from
+ * {@code shaders/lib/surface.glsl}, so a shader usually changes only what it needs:
+ *
+ * <pre>{@code
+ * #version 330 core
+ * #include "lib/surface.glsl"
+ * uniform float uPulse;                       // from material.params
+ * void main() {
+ *   Surface s = standardSurface();            // this material's colour, maps, model
+ *   s.emissive += s.albedo * uPulse * (0.5 + 0.5 * sin(uTime * 4.0));
+ *   shade(s);                                 // lights, shadows, sky, transparency
+ * }
+ * }</pre>
+ *
+ * Values for the shader's own uniforms go in {@link #params}. Shadow maps are drawn with the engine's shaders, so a
+ * vertex shader that moves vertices does not move their shadows. A shader that does not compile is logged and the
+ * material is drawn with the engine's shader instead (until hot reloading brings a version that compiles).
  */
 public class Material {
   private static final AtomicInteger NEXT_KEY = new AtomicInteger();
@@ -73,6 +94,12 @@ public class Material {
    */
   public boolean glass;
   public float pointSize = 6f;
+  /** The fragment shader of the main pass, a resource path such as {@code "shaders/water.frag"}; null: the engine's. */
+  public String fragmentShader;
+  /** The vertex shader of the main pass (see {@code shaders/lib/vertex.glsl}); null: the engine's. */
+  public String vertexShader;
+  /** Values for the custom shaders' own uniforms, by name. */
+  public final ShaderParams params = new ShaderParams();
 
   public Material() {
   }
@@ -105,6 +132,24 @@ public class Material {
   public Material transparent() {
     this.transparent = true;
     return this;
+  }
+
+  /** Draws this material with its own fragment shader (and the engine's vertex shader). */
+  public Material shader(String fragment) {
+    this.fragmentShader = fragment;
+    return this;
+  }
+
+  /** Draws this material with its own vertex and fragment shaders (either may be null for the engine's). */
+  public Material shader(String vertex, String fragment) {
+    this.vertexShader = vertex;
+    this.fragmentShader = fragment;
+    return this;
+  }
+
+  /** Whether it is drawn with a shader of its own. */
+  public boolean hasCustomShader() {
+    return this.fragmentShader != null || this.vertexShader != null;
   }
 
   /** Makes this {@link #glass}: see-through with {@code alpha} where it is looked at head-on, reflections in full. */

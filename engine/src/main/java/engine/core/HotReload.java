@@ -56,7 +56,8 @@ final class HotReload {
 
   void apply(String path) {
     int changed = this.resources.reload(path);
-    if ((path.endsWith(".vert") || path.endsWith(".frag")) && this.backend.reloadShaders(path) == 0) {
+    if ((path.endsWith(".vert") || path.endsWith(".frag") || path.endsWith(".glsl"))
+        && this.backend.reloadShaders(path) == 0) {
       changed++; // a shader that failed was logged by the backend and keeps its old version
     }
     if (changed > 0) {
