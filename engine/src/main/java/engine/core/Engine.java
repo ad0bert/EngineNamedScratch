@@ -5,6 +5,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,13 +18,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import javax.imageio.ImageIO;
 
 import org.joml.Vector3f;
 
 import com.jogamp.newt.MonitorMode;
-import com.jogamp.newt.event.KeyEvent;
 import com.jogamp.newt.event.MouseAdapter;
 import com.jogamp.newt.event.MouseEvent;
 import com.jogamp.newt.event.WindowAdapter;
@@ -42,19 +43,16 @@ import engine.animation.AnimationSystem;
 import engine.audio.AudioSystem;
 import engine.audio.NullAudioBackend;
 import engine.audio.al.AlAudioBackend;
-import engine.debug.DebugOverlay;
 import engine.debug.Profiler;
 import engine.ecs.ComponentUpdateSystem;
 import engine.ecs.Entity;
 import engine.ecs.ISystem;
 import engine.ecs.Scene;
-import engine.input.FirstPersonController;
 import engine.input.GamepadBackend;
 import engine.input.InputListener;
 import engine.input.InputState;
 import engine.input.jinput.JInputGamepads;
 import engine.messaging.IMessageService;
-import engine.messaging.MessageQueue;
 import engine.messaging.MessageService;
 import engine.physics.PhysicsSystem;
 import engine.physics.RayHit;
@@ -64,6 +62,7 @@ import engine.render.RenderBackend;
 import engine.render.gl.GlBackend;
 import engine.resources.Assets;
 import engine.resources.ResourceManager;
+import engine.serialization.ComponentRegistry;
 import engine.serialization.SerializationContext;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -84,8 +83,12 @@ import lombok.extern.slf4j.Slf4j;
  * {@code engine.screenshotFrame=N}, frame N. A screenshot can also be requested with {@link #saveScreenshot}.
  * {@code engine.audio=false} turns sound off; without a sound device it is off anyway (the engine never fails to
  * start because of sound). {@code engine.gamepads=false} skips looking for gamepads. {@code engine.fullscreen} and
- * {@code engine.vsync} override the config. {@code engine.debugOverlay=false} starts with the debug text (F3)
- * hidden.
+ * {@code engine.vsync} override the config.
+ *
+ * <p>
+ * The engine itself holds the core: scene, systems, rendering, physics, sound, input, resources and game states.
+ * Everything else comes as {@link EnginePlugin}s that the game chooses ({@link Game#plugins()}); by default
+ * {@link EnginePlugins#defaults()}: Esc frees the mouse, first-person bindings, collision sounds and the F3 debug text.
  *
  * <p>
  * A game either builds everything in {@link Game#init}, or pushes {@link GameState}s (title screen, levels, pause
@@ -112,6 +115,8 @@ public class Engine {
   private final List<ISystem> systems = new CopyOnWriteArrayList<>();
   private final List<Overlay> overlays = new CopyOnWriteArrayList<>();
   private final List<StepHook> hooks = new CopyOnWriteArrayList<>();
+  private final List<EnginePlugin> plugins = new CopyOnWriteArrayList<>();
+  private volatile ComponentRegistry components;
   /** The overlays and, last, the game states' drawing. */
   private volatile List<Overlay> drawn = List.of();
   /** The game's screens and modes (title, levels, pause menu). */
@@ -122,7 +127,6 @@ public class Engine {
   /** Per-user directories for settings and saves, named after {@link EngineConfig#id()}. */
   @Getter private final UserDirs userDirs;
   private volatile boolean paused;
-  private volatile boolean debugOverlay = Boolean.parseBoolean(System.getProperty("engine.debugOverlay", "true"));
   private volatile boolean vsync;
   private volatile boolean fullscreen;
   private volatile int startWidth;
@@ -366,17 +370,65 @@ public class Engine {
     this.drawn = List.copyOf(list);
   }
 
-  /**
-   * Shows or hides the debug text (FPS, entities, draw statistics; F3 toggles it). Visible by default, unless
-   * {@code -Dengine.debugOverlay=false}; a game for players usually hides it in {@link Game#init}. Safe to call from
-   * any thread, also before {@link #run}.
-   */
-  public void setDebugOverlayVisible(boolean value) {
-    this.debugOverlay = value;
+  /** The installed plugins, in install order (empty before the engine starts). */
+  public List<EnginePlugin> plugins() {
+    return Collections.unmodifiableList(this.plugins);
   }
 
-  public boolean isDebugOverlayVisible() {
-    return this.debugOverlay;
+  /** The installed plugin of this class, if any. */
+  public <T extends EnginePlugin> Optional<T> plugin(Class<T> type) {
+    for (EnginePlugin p : this.plugins) {
+      if (type.isInstance(p)) {
+        return Optional.of(type.cast(p));
+      }
+    }
+    return Optional.empty();
+  }
+
+  /** Whether a plugin with this {@link EnginePlugin#id() id} is installed. */
+  public boolean hasPlugin(String id) {
+    return this.plugins.stream().anyMatch(p -> p.id().equals(id));
+  }
+
+  /**
+   * The {@link EnginePlugin#networked() networked} plugins as text ({@code id@version,...}, in install order), for
+   * telling apart builds that cannot play together; {@code NetConfig.forGame(engine)} puts it into the protocol id.
+   */
+  public String pluginSignature() {
+    return this.plugins.stream().filter(EnginePlugin::networked)
+        .map(p -> p.version().isEmpty() ? p.id() : p.id() + "@" + p.version()).collect(Collectors.joining(","));
+  }
+
+  /**
+   * The component types scenes and prefabs can hold here: the engine's core ones ({@link ComponentRegistry#core()})
+   * and those of the installed plugins. Before the engine starts, those of {@link ComponentRegistry#defaults()}.
+   */
+  public ComponentRegistry components() {
+    final var r = this.components;
+    return r != null ? r : ComponentRegistry.defaults();
+  }
+
+  private void installPlugins() {
+    final List<EnginePlugin> list = List.copyOf(this.game.plugins());
+    EnginePlugins.check(list);
+    final var registry = ComponentRegistry.core();
+    for (EnginePlugin p : list) {
+      p.install(this);
+      this.plugins.add(p);
+      p.registerComponents(registry);
+    }
+    this.components = registry;
+  }
+
+  private void uninstallPlugins() {
+    for (int i = this.plugins.size() - 1; i >= 0; i--) {
+      try {
+        this.plugins.get(i).uninstall(this);
+      } catch (RuntimeException e) {
+        log.error("Plugin {} failed to uninstall", this.plugins.get(i).id(), e);
+      }
+    }
+    this.plugins.clear();
   }
 
   /**
@@ -640,9 +692,6 @@ public class Engine {
     }
     this.messages.dispatchPending();
     this.gamepads.poll(this.input);
-    if (this.input.wasActionPressed("release_mouse")) {
-      captureMouse(false);
-    }
     runHooks(now, dt, true);
     final boolean simulate = !isPaused();
     for (ISystem s : this.systems) {
@@ -804,16 +853,11 @@ public class Engine {
       final var pads = JInputGamepads.open(this.input);
       this.gamepads = pads != null ? pads : GamepadBackend.NONE;
     }
-    this.input.bind("release_mouse", KeyEvent.VK_ESCAPE);
-    FirstPersonController.bindDefaults(this.input);
     addSystem(new ComponentUpdateSystem());
     addSystem(new AnimationSystem()); // before physics: animated kinematic bodies push others
     addSystem(this.physics);
     addSystem(this.audio); // after physics: sounds follow the bodies' new positions
-    this.messages.register(this.audio, MessageQueue.COLLISION);
-    final var debug = new DebugOverlay(this);
-    addSystem(debug);
-    addOverlay(debug);
+    installPlugins();
     this.game.init(this);
     this.states.applyPending();
     this.scene.flush();
@@ -827,6 +871,7 @@ public class Engine {
   private void tearDown() {
     this.states.exitAll();
     this.game.shutdown(this);
+    uninstallPlugins();
     this.gamepads.dispose();
     if (this.hotReload != null) {
       this.hotReload.close();

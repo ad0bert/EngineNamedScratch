@@ -3,6 +3,7 @@ package engine.net.replication;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 import engine.core.Engine;
 import engine.core.EngineConfig;
@@ -23,15 +24,16 @@ import engine.physics.CapsuleCollider;
 import engine.physics.CharacterController;
 import engine.physics.Rigidbody;
 
-/** A host and guests, each a headless engine, on a loopback network with a clock moved one step at a time. */
-final class ReplicationBed {
-  static final double STEP = 1 / 60.0;
-  static final EngineConfig GAME = new EngineConfig("Replication test", "1", 8, 8, STEP);
-  /** The space ships fly in. */
-  static final Wraparound SPACE = Wraparound.cube(20f);
+/**
+ * A host and guests, each a headless engine, on a loopback network with a clock moved one step at a time. Public (and
+ * shipped in the engine's test jar) so that add-on modules can test their networked parts on it.
+ */
+public final class ReplicationBed {
+  public static final double STEP = 1 / 60.0;
+  public static final EngineConfig GAME = new EngineConfig("Replication test", "1", 8, 8, STEP);
 
   /** Replicated game state for the tests. */
-  static final class Health extends Component implements NetState {
+  public static final class Health extends Component implements NetState {
     int hp = 100;
 
     @Override
@@ -68,17 +70,26 @@ final class ReplicationBed {
     }
   }
 
-  final AtomicLong time = new AtomicLong(1_000_000_000_000L);
-  final LoopbackNetwork network = new LoopbackNetwork(this.time::get, 3);
+  public final AtomicLong time = new AtomicLong(1_000_000_000_000L);
+  public final LoopbackNetwork network = new LoopbackNetwork(this.time::get, 3);
   final NetConfig config = NetConfig.forGame(GAME);
-  final Engine host;
-  final ServerReplication server;
+  public final Engine host;
+  public final ServerReplication server;
   final Events hostEvents = new Events();
-  final List<Engine> guests = new ArrayList<>();
-  final List<ClientReplication> clients = new ArrayList<>();
+  public final List<Engine> guests = new ArrayList<>();
+  public final List<ClientReplication> clients = new ArrayList<>();
   final List<Events> guestEvents = new ArrayList<>();
+  /** Set up every replication, host and guests, after the bed's own spawners. */
+  private final Consumer<Replication> setup;
 
-  ReplicationBed() {
+  public ReplicationBed() {
+    this(r -> {
+    });
+  }
+
+  /** {@code setup} registers more spawners (or sets a codec, a world space) on the host and on every guest. */
+  public ReplicationBed(Consumer<Replication> setup) {
+    this.setup = setup;
     final var netServer = new NetServer(this.network.open(27015), this.config, this.time::get);
     this.host = new Engine(GAME, e -> {
     });
@@ -86,6 +97,7 @@ final class ReplicationBed {
     scenery(this.host);
     this.server = new ServerReplication(this.host, netServer);
     register(this.server);
+    setup.accept(this.server);
     this.server.setListener(this.hostEvents);
     this.host.addStepHook(this.server);
   }
@@ -108,14 +120,6 @@ final class ReplicationBed {
     r.registerSpawner("target", ctx -> { // a solid box moved by code
       final var e = new Entity("target");
       e.add(new BoxCollider(0.5f, 0.5f, 0.5f));
-      return e;
-    });
-    r.registerSpawner("ship", ctx -> { // flies in a cube of 40 m that wraps around
-      final var e = new Entity("ship " + ctx.owner());
-      final var motor = e.add(new FlightMotor());
-      motor.wraparound = SPACE;
-      motor.brakeButton = InputCommand.button(1);
-      e.add(new Health());
       return e;
     });
     r.registerSpawner("walker", ctx -> {
@@ -141,7 +145,7 @@ final class ReplicationBed {
   }
 
   /** A guest engine with its replication, connecting now. */
-  ClientReplication addGuest() {
+  public ClientReplication addGuest() {
     final var engine = new Engine(GAME, e -> {
     });
     engine.startHeadless();
@@ -149,6 +153,7 @@ final class ReplicationBed {
     final var client = new ClientReplication(engine,
         new NetClient(this.network.open(), this.server.server().address(), this.config, this.time::get));
     register(client);
+    this.setup.accept(client);
     final var events = new Events();
     client.setListener(events);
     engine.addStepHook(client);
@@ -160,7 +165,7 @@ final class ReplicationBed {
   }
 
   /** {@code n} steps of every engine, the host first. */
-  void step(int n) {
+  public void step(int n) {
     for (int i = 0; i < n; i++) {
       this.time.addAndGet((long) (STEP * 1e9));
       this.host.runTicks(1);
@@ -170,7 +175,7 @@ final class ReplicationBed {
     }
   }
 
-  void connectAll() {
+  public void connectAll() {
     for (int i = 0; i < 600 && !this.clients.stream().allMatch(c -> c.client().isConnected()); i++) {
       step(1);
     }
@@ -180,7 +185,7 @@ final class ReplicationBed {
   }
 
   /** The copy of {@code hostEntity} on guest {@code i}, or null. */
-  Entity copy(int i, Entity hostEntity) {
+  public Entity copy(int i, Entity hostEntity) {
     return this.clients.get(i).entity(hostEntity.get(NetworkIdentity.class).netId());
   }
 }

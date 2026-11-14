@@ -218,6 +218,7 @@ class AudioTest {
 
     final var backend = new NullAudioBackend(4);
     final var audio = new AudioSystem(backend);
+    final var impacts = ImpactSoundPlugin.receiver(audio);
     final var scene = sceneWithListener();
     final var clip = backend.createClip("thud", AudioData.mono(1000, new float[300]));
     final var crate = new Entity("crate");
@@ -233,7 +234,7 @@ class AudioTest {
     body.velocity.set(0f, -6f, 0f);
     impact.update(DT); // the velocity before the step
     body.velocity.set(0f, 0.5f, 0f); // the step stopped it
-    audio.receiveMessage(MessageObject.builder().queue(MessageQueue.COLLISION)
+    impacts.receiveMessage(MessageObject.builder().queue(MessageQueue.COLLISION)
         .payload(new CollisionEvent(crate, ground, true)).build());
     audio.update(scene, DT);
     assertEquals(1, audio.audibleCount());
@@ -248,7 +249,7 @@ class AudioTest {
     body.velocity.set(0f, -0.3f, 0f);
     impact.update(DT);
     body.velocity.zero();
-    audio.receiveMessage(MessageObject.builder().queue(MessageQueue.COLLISION)
+    impacts.receiveMessage(MessageObject.builder().queue(MessageQueue.COLLISION)
         .payload(new CollisionEvent(crate, ground, true)).build());
     audio.update(scene, DT);
     assertEquals(0, audio.audibleCount());

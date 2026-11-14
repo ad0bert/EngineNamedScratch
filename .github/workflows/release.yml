@@ -1,7 +1,8 @@
 name: release
 # Push a tag like v0.8.0 to publish the engine at that version: the jar (with sources and javadoc) goes to GitHub
-# Packages as io.github.ad0bert:engine-named-scratch, and a GitHub release gets the jars, the runnable demo (needs
-# Java 25) and the demo packaged with its own Java runtime for Linux, macOS and Windows (jpackage app images).
+# Packages as io.github.ad0bert:engine-named-scratch (the kits as engine-named-scratch-kits), and a GitHub release
+# gets the jars, the runnable demo (needs Java 25) and the demo packaged with its own Java runtime for Linux, macOS
+# and Windows (jpackage app images).
 # Title and description come from builds/release-notes/<tag>.md (see the README there).
 #
 # Safe to run again for the same tag (Actions > release > Run workflow, with the tag): a version already in GitHub
@@ -68,7 +69,9 @@ jobs:
             [ -s release-notes.md ] || echo "Release $version" > release-notes.md
           fi
           files=(engine/target/engine-named-scratch-$version.jar engine/target/engine-named-scratch-$version-sources.jar
-            engine/target/engine-named-scratch-$version-javadoc.jar "demo-$version.zip")
+            engine/target/engine-named-scratch-$version-javadoc.jar
+            kits/target/engine-named-scratch-kits-$version.jar kits/target/engine-named-scratch-kits-$version-sources.jar
+            kits/target/engine-named-scratch-kits-$version-javadoc.jar "demo-$version.zip")
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "::notice::Release $TAG exists; updating its title, notes and files"
             gh release edit "$TAG" --title "${title:-$TAG}" --notes-file release-notes.md

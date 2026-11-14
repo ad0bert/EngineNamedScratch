@@ -70,7 +70,7 @@ class DeltaAndInterestTest {
     final var jump = new BitWriter();
     jumped.write(jump, b);
     assertEquals(jumped, QState.read(new BitReader(jump.toByteArray()), b));
-    assertEquals(1, QState.read(new BitReader(jump.toByteArray()), b).jumps());
+    assertEquals(1, QState.read(new BitReader(jump.toByteArray()), b).teleports());
   }
 
   @Test

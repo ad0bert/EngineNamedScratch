@@ -27,10 +27,12 @@ import engine.audio.ReverbZone;
 import engine.core.Engine;
 import engine.core.Game;
 import engine.core.Settings;
+import engine.debug.DebugOverlayPlugin;
 import engine.ecs.Entity;
 import engine.ecs.Spinner;
 import engine.input.FirstPersonController;
 import engine.input.Gamepad;
+import engine.input.MouseReleasePlugin;
 import engine.input.Rebinder;
 import engine.messaging.IMessageReceiver;
 import engine.navigation.NavAgent;
@@ -629,8 +631,8 @@ public class DemoGame implements Game {
     }
     g.beginScroll("controls", 160f);
     for (String action : input.actions()) {
-      if (action.equals("release_mouse") || action.equals("toggle_debug")) {
-        continue; // the engine's own
+      if (action.equals(MouseReleasePlugin.ACTION) || action.equals(DebugOverlayPlugin.ACTION)) {
+        continue; // the engine plugins' own
       }
       final var keys = input.describe(action);
       if (g.button(action + ": " + (keys.isEmpty() ? "-" : keys) + "##" + action)) {

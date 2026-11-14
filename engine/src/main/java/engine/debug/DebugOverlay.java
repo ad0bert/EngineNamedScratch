@@ -6,8 +6,6 @@ import java.util.Locale;
 
 import org.joml.Vector3f;
 
-import com.jogamp.newt.event.KeyEvent;
-
 import engine.core.Engine;
 import engine.ecs.ISystem;
 import engine.ecs.Scene;
@@ -19,18 +17,27 @@ import engine.render.UiFont;
 
 /**
  * On-screen debug text: FPS, entities, draw statistics and camera position, then the {@link Profiler}: a graph of the
- * last frame times (the line is 60 fps) and the sections that took longest on average. Toggle with F3; whether it
- * shows is {@link Engine#setDebugOverlayVisible} (start hidden with {@code -Dengine.debugOverlay=false}).
+ * last frame times (the line is 60 fps) and the sections that took longest on average. Installed by
+ * {@link DebugOverlayPlugin}, which also binds F3 to switch it.
  */
 public class DebugOverlay implements ISystem, Overlay {
   private final Engine engine;
   private String text = "";
   private int lines = 1;
   private double sinceUpdate = 1;
+  private volatile boolean visible = true;
 
   public DebugOverlay(Engine engine) {
     this.engine = engine;
-    engine.input().bind("toggle_debug", KeyEvent.VK_F3);
+  }
+
+  /** Shows or hides the text (the "toggle_debug" action switches it). Safe to call from any thread. */
+  public void setVisible(boolean value) {
+    this.visible = value;
+  }
+
+  public boolean isVisible() {
+    return this.visible;
   }
 
   @Override
@@ -40,8 +47,8 @@ public class DebugOverlay implements ISystem, Overlay {
 
   @Override
   public void update(Scene scene, double dt) {
-    if (this.engine.input().wasActionPressed("toggle_debug")) {
-      this.engine.setDebugOverlayVisible(!this.engine.isDebugOverlayVisible());
+    if (this.engine.input().wasActionPressed(DebugOverlayPlugin.ACTION)) {
+      this.visible = !this.visible;
     }
     this.sinceUpdate += dt;
     if (this.sinceUpdate < 0.25) {
@@ -86,7 +93,7 @@ public class DebugOverlay implements ISystem, Overlay {
 
   @Override
   public void draw(UiCanvas ui, int width, int height) {
-    if (!this.engine.isDebugOverlayVisible()) {
+    if (!this.visible) {
       return;
     }
     final float pad = 6f;

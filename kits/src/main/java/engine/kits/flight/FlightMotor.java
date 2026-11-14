@@ -1,24 +1,24 @@
-package engine.net.replication;
+package engine.kits.flight;
 
-import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import engine.net.BitReader;
 import engine.net.BitWriter;
+import engine.net.replication.PredictedMotor;
+import engine.net.replication.WorldSpace;
 
 /**
- * Flies an entity through empty space from {@link InputCommand}s: it turns to the command's orientation
- * ({@link InputCommand#aim}, or yaw and pitch), the command's moves push it along its own axes (forward, sideways, up),
- * and it keeps drifting when they stop, as far as {@link #drag} lets it. Nothing in the world stops it: collisions are
- * the game's business, on the host. With a {@link #wraparound} it comes back in on the far side of the box when it
- * leaves it.
+ * Flies an entity through empty space from {@link FlightCommand}s: it turns to the command's orientation, the
+ * command's moves push it along its own axes (forward, sideways, up), and it keeps drifting when they stop, as far as
+ * {@link #drag} lets it. Nothing in the world stops it: collisions are the game's business, on the host. In a
+ * {@link #space} that wraps around (a {@code Wraparound}) it comes back in on the far side when it leaves.
  *
  * <p>
- * Like every {@link PredictedMotor} it can be predicted: spawn the ship owned by a client and give that client's
- * replication a command source that makes flying commands ({@link InputCommand#flying}). It moves itself, so it needs
- * no rigid body or collider.
+ * Like every {@link PredictedMotor} it can be predicted: set {@link FlightCommand#CODEC} on the replications, spawn
+ * the ship owned by a client and give that client's replication a command source that makes flight commands. It
+ * moves itself, so it needs no rigid body or collider.
  */
-public class FlightMotor extends PredictedMotor {
+public class FlightMotor extends PredictedMotor<FlightCommand> {
   /** Acceleration at full push, m/s². */
   public float thrust = 12f;
   /** Fraction of {@link #thrust} for pushing sideways, up and down, and backwards. */
@@ -29,15 +29,18 @@ public class FlightMotor extends PredictedMotor {
   public float drag = 0f;
   /** Deceleration in m/s² while {@link #brakeButton} is down; never below a stop. */
   public float brake = 15f;
-  /** The command button bits that brake ({@link InputCommand#button}); 0 for no brake. */
+  /** The command button bits that brake ({@link FlightCommand#button}); 0 for no brake. */
   public int brakeButton = 0;
-  /** The box the ship lives in, or null for open space. */
-  public Wraparound wraparound;
+  /** The space the ship lives in: positions are kept inside it and compared along it. */
+  public WorldSpace space = WorldSpace.EUCLIDEAN;
 
   private final Vector3f velocity = new Vector3f();
   private final Vector3f push = new Vector3f();
   private final Vector3f before = new Vector3f();
-  private final Quaternionf orientation = new Quaternionf();
+
+  public FlightMotor() {
+    super(FlightCommand.class);
+  }
 
   /** The ship's velocity in m/s (world space); change it to push the ship, on the host. */
   public Vector3f velocity() {
@@ -45,16 +48,15 @@ public class FlightMotor extends PredictedMotor {
   }
 
   @Override
-  protected void move(InputCommand command, float dt) {
+  protected void move(FlightCommand command, float dt) {
     final var t = entity().transform();
-    command.orientation(this.orientation);
-    t.rotation().set(this.orientation);
+    t.rotation().set(command.aim());
     final float forward = command.moveZ() >= 0 ? command.moveZ() : command.moveZ() * this.sideThrust;
     this.push.set(command.moveX() * this.sideThrust, command.moveY() * this.sideThrust, -forward);
     if (this.push.lengthSquared() > 1f) {
       this.push.normalize();
     }
-    this.orientation.transform(this.push).mul(this.thrust * dt);
+    command.aim().transform(this.push).mul(this.thrust * dt);
     this.velocity.add(this.push);
     if (this.drag > 0f) {
       this.velocity.mul((float) Math.exp(-this.drag * dt));
@@ -69,9 +71,9 @@ public class FlightMotor extends PredictedMotor {
     }
     final var position = t.position();
     position.fma(dt, this.velocity);
-    if (this.wraparound != null) {
+    if (this.space.wraps()) {
       this.before.set(position);
-      this.wraparound.wrap(position);
+      this.space.normalize(position);
       if (!this.before.equals(position) && !isReplaying()) {
         t.shiftPrevious(this.before.sub(position).negate()); // smooth across the edge, not a sweep
       }
@@ -97,7 +99,6 @@ public class FlightMotor extends PredictedMotor {
     final var hin = new BitReader(host);
     final var b = hin.readVector(new Vector3f());
     final var vb = hin.readVector(new Vector3f());
-    final float d = this.wraparound != null ? this.wraparound.distanceSquared(a, b) : a.distanceSquared(b);
-    return d < 1e-6f && va.distanceSquared(vb) < 1e-4f;
+    return this.space.distanceSquared(a, b) < 1e-6f && va.distanceSquared(vb) < 1e-4f;
   }
 }

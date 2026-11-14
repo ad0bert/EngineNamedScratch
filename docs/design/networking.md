@@ -2,7 +2,8 @@
 
 Status: phases 1 (headless engine, step numbers, step hooks), 2 (transport and sessions, package `engine.net`) and 3
 (replication, package `engine.net.replication`), 4 (prediction and clock sync), 5 (delta snapshots, relevance,
-bandwidth) and 6 (lag compensation, encryption and passwords) are done. Host migration was decided against (see
+bandwidth), 6 (lag compensation, encryption and passwords), 7 (any movement, teleports) and 8 (the game's own
+commands and world shape; genre code moved to the kits module) are done. Host migration was decided against (see
 phase 6 below). This note looks at how a
 network stack would fit the engine as it was at 0.9.0, what it would cost, and in which order to build it.
 
@@ -271,6 +272,26 @@ messages; a lockstep game uses session + its own input exchange.
 - The wire format of commands, snapshot entries and spawns changed; old and new builds of a game must not connect
   (`NetConfig.forGame` keys on the game's version, so bump it).
 
+*Revised (phase 8): genre code out of the core.* Phase 7 put a ship model, an arcade topology and flight fields of
+the command into `engine.net.replication`. They are now extension points in the engine and implementations in the
+`kits` module (see [plugins.md](plugins.md)):
+
+- `InputCommand` is an interface (the step, the view step, `at(tick, view)`, optional `buttons`). The replication
+  writes the step and how far behind the view is; a `CommandCodec` (set on both sides with `setCommandCodec`) writes
+  the rest. `StandardCommand` is the default: phase 4's walking command (moves, yaw, pitch) with eight game buttons and
+  no built-in jump bit (`CharacterMotor.jumpButton`, button 0 by default, which `ActionCommandSource` maps to "jump").
+  The flight fields moved to `engine.kits.flight.FlightCommand`. `PredictedMotor<C>` names its command type and
+  refuses others with a message that points at `setCommandCodec`.
+- `WorldSpace` (delta, distance, lerp, normalize, `wraps`) replaces the `Wraparound` parameter everywhere:
+  `Replication.setWorldSpace`, `RelevanceFilter.byDistance(radius, space)`, prediction errors, lag compensation.
+  `WorldSpace.EUCLIDEAN` is the default and costs nothing; `engine.kits.wraparound.Wraparound` implements it.
+- `CopyHook`s prepare copies on clients. The kinematic bodies and disabled character controllers are
+  `CopyHook.PHYSICS`, installed by default and removable; games add hooks for their own components.
+- The teleport counter is called that (it was "jumps", next to a jump button).
+- `ActionCommandSource` takes its action names from the game (`setMoveActions`, `setButton`, `clearButtons`).
+- Wire format: commands are as in phase 4 again (62 bits plus the view), except for 8 game buttons instead of a jump
+  bit and 7 buttons.
+
 ## Changes to the existing engine
 
 In the order they would be needed:
@@ -318,6 +339,7 @@ The engine's tests run without a GPU, and the network stack should too:
 | 5 (done) | Per-client snapshots as changes from acknowledged baselines, `Quantize`d positions and rotations, `RelevanceFilter` (by distance, always relevant), bandwidth limit with priorities | Larger levels, more players |
 | 6 (done, partly) | Lag compensation (`raycastAsSeenBy`, `raycastAt`), encryption by default (X25519 + AES-256-GCM), passwords; not auth tokens or host migration (see above) | Public games, shooting |
 | 7 (done) | `PredictedMotor` (prediction for any movement; `CharacterMotor` is one), `FlightMotor` (free flight with drift), flying `InputCommand`s (`moveY`, a full `aim` orientation), `Wraparound` worlds (short-way interpolation, corrections, lag compensation and relevance), `ServerReplication.teleported` (jumps that copies do not slide across), `Transform.shiftPrevious` | Space and flight games, arenas that wrap around |
+| 8 (done) | Genre code out of the core: `InputCommand` interface + `CommandCodec` (`StandardCommand` by default), `WorldSpace`, `CopyHook`s; `FlightMotor`/`FlightCommand` and `Wraparound` moved to the kits module | Any game's own input and world shape |
 
 Phases 1 and 2 are a self-contained first release; each later phase is usable on its own.
 

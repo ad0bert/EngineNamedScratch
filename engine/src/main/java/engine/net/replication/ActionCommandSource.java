@@ -1,20 +1,25 @@
 package engine.net.replication;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Arrays;
 
 import org.joml.Vector2f;
 
 import engine.input.InputState;
 
 /**
- * Makes {@link InputCommand}s from the input bindings, like {@link engine.input.FirstPersonController}: the mouse (and
- * the right stick) turn, "forward", "back", "left" and "right" (and the left stick) move, "jump" jumps. Game buttons
- * are added with {@link #addButton}.
+ * Makes {@link StandardCommand}s from the input bindings: the mouse (and the right stick) turn, the movement actions
+ * (and the left stick) move, and each button of the command is down while its action is. The action names default to
+ * those {@link engine.input.FirstPersonController} uses ("forward", "back", "left", "right", and "jump" on button 0,
+ * which {@link CharacterMotor} jumps with); a game with other bindings sets its own ({@link #setMoveActions},
+ * {@link #setButton}).
  */
 public final class ActionCommandSource implements CommandSource {
   private final InputState input;
-  private final List<String> buttons = new ArrayList<>();
+  private final String[] buttons = new String[StandardCommand.BUTTONS];
+  private String forward = "forward";
+  private String back = "back";
+  private String left = "left";
+  private String right = "right";
   public float sensitivityDegPerPixel = 0.12f;
   public float stickDegreesPerSecond = 150f;
   /** Use the first connected gamepad as well. */
@@ -25,15 +30,34 @@ public final class ActionCommandSource implements CommandSource {
 
   public ActionCommandSource(InputState input) {
     this.input = input;
+    this.buttons[0] = "jump";
   }
 
-  /** Maps action {@code action} to game button {@code index} (0..6, {@link InputCommand#button(int)}). */
+  /** The actions that move forward, back, left and right (null: none). */
+  public ActionCommandSource setMoveActions(String forwardAction, String backAction, String leftAction,
+      String rightAction) {
+    this.forward = forwardAction;
+    this.back = backAction;
+    this.left = leftAction;
+    this.right = rightAction;
+    return this;
+  }
+
+  /** Presses button {@code index} (0..7, {@link StandardCommand#button(int)}) while {@code action} is down; null: never. */
+  public ActionCommandSource setButton(int index, String action) {
+    StandardCommand.button(index);
+    this.buttons[index] = action;
+    return this;
+  }
+
+  /** Same as {@link #setButton}. */
   public ActionCommandSource addButton(int index, String action) {
-    InputCommand.button(index);
-    while (this.buttons.size() <= index) {
-      this.buttons.add(null);
-    }
-    this.buttons.set(index, action);
+    return setButton(index, action);
+  }
+
+  /** Unmaps every button, including the default "jump" on button 0. */
+  public ActionCommandSource clearButtons() {
+    Arrays.fill(this.buttons, null);
     return this;
   }
 
@@ -44,7 +68,7 @@ public final class ActionCommandSource implements CommandSource {
   }
 
   @Override
-  public InputCommand sample(long tick, double dt) {
+  public StandardCommand sample(long tick, double dt) {
     final var pad = this.gamepad ? this.input.firstGamepad() : null;
     this.yaw -= this.input.consumeMouseDx() * this.sensitivityDegPerPixel;
     this.pitch -= this.input.consumeMouseDy() * this.sensitivityDegPerPixel;
@@ -59,26 +83,29 @@ public final class ActionCommandSource implements CommandSource {
       z += move.y;
     }
     this.pitch = Math.clamp(this.pitch, -89f, 89f);
-    if (this.input.isActionDown("forward")) {
+    if (down(this.forward)) {
       z += 1f;
     }
-    if (this.input.isActionDown("back")) {
+    if (down(this.back)) {
       z -= 1f;
     }
-    if (this.input.isActionDown("right")) {
+    if (down(this.right)) {
       x += 1f;
     }
-    if (this.input.isActionDown("left")) {
+    if (down(this.left)) {
       x -= 1f;
     }
-    int bits = this.input.isActionDown("jump") ? InputCommand.JUMP : 0; // bound to Space and the pad's Y
-    for (int i = 0; i < this.buttons.size(); i++) {
-      final String action = this.buttons.get(i);
-      if (action != null && this.input.isActionDown(action)) {
-        bits |= InputCommand.button(i);
+    int bits = 0;
+    for (int i = 0; i < this.buttons.length; i++) {
+      if (down(this.buttons[i])) {
+        bits |= StandardCommand.button(i);
       }
     }
-    return new InputCommand(tick, Math.clamp(x, -1f, 1f), Math.clamp(z, -1f, 1f), this.yaw, this.pitch, bits,
+    return new StandardCommand(tick, Math.clamp(x, -1f, 1f), Math.clamp(z, -1f, 1f), this.yaw, this.pitch, bits,
         -1); // the replication fills in what the player sees
+  }
+
+  private boolean down(String action) {
+    return action != null && this.input.isActionDown(action);
   }
 }

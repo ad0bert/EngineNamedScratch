@@ -8,7 +8,8 @@ import engine.physics.Rigidbody;
 /**
  * Plays a sound when the entity's rigidbody hits something, louder for harder impacts. The impulse is estimated from
  * the change of the body's velocity over the physics step in which the contact started ({@code mass * |dv|}), so it
- * needs a dynamic {@link Rigidbody} on the same entity; {@link AudioSystem} listens for the collision events.
+ * needs a dynamic {@link Rigidbody} on the same entity; {@link ImpactSoundPlugin} (a default plugin) listens for the
+ * collision events.
  */
 public class ImpactSound extends Component {
   public AudioClip clip;

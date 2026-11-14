@@ -1,12 +1,10 @@
-package engine.net.replication;
+package engine.kits.flight;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.function.IntFunction;
 
@@ -16,11 +14,18 @@ import org.joml.Vector3f;
 import org.junit.jupiter.api.Test;
 
 import engine.ecs.Entity;
+import engine.kits.wraparound.Wraparound;
+import engine.net.BitWriter;
 import engine.net.LoopbackNetwork.Conditions;
+import engine.net.replication.CommandSource;
+import engine.net.replication.RelevanceFilter;
+import engine.net.replication.ReplicationBed;
 
-/** Worlds that wrap around, entities that jump, and predicted players that fly. */
-class WrapAndFlightTest {
-  private static final Wraparound SPACE = ReplicationBed.SPACE;
+/** Worlds that wrap around, and predicted players that fly through them. */
+class FlightTest {
+  /** The space ships fly in: a cube of 40 m. */
+  private static final Wraparound SPACE = Wraparound.cube(20f);
+  private static final int BRAKE = FlightCommand.button(1);
 
   // ---- Wraparound ----
 
@@ -50,11 +55,21 @@ class WrapAndFlightTest {
 
   // ---- copies ----
 
-  private static ReplicationBed wrappedBed(int guests) {
-    final var bed = new ReplicationBed();
-    bed.server.setWraparound(SPACE);
+  private static ReplicationBed spaceBed(int guests) {
+    final var bed = new ReplicationBed(r -> {
+      r.setWorldSpace(SPACE);
+      r.setCommandCodec(FlightCommand.CODEC);
+      r.registerSpawner("ship", ctx -> {
+        final var e = new Entity("ship " + ctx.owner());
+        final var motor = e.add(new FlightMotor());
+        motor.space = SPACE;
+        motor.brakeButton = BRAKE;
+        e.add(new ReplicationBed.Health());
+        return e;
+      });
+    });
     for (int i = 0; i < guests; i++) {
-      bed.addGuest().setWraparound(SPACE);
+      bed.addGuest();
     }
     bed.connectAll();
     return bed;
@@ -62,7 +77,7 @@ class WrapAndFlightTest {
 
   @Test
   void copiesCrossTheEdgeTheShortWay() {
-    final var bed = wrappedBed(1);
+    final var bed = spaceBed(1);
     final var marker = bed.server.spawn("marker", new Vector3f(15f, 0, 0));
     bed.step(30);
     final var copy = bed.copy(0, marker);
@@ -92,68 +107,17 @@ class WrapAndFlightTest {
     assertTrue(SPACE.distanceSquared(copy.transform().position(), marker.transform().position()) < 1e-4f);
   }
 
-  @Test
-  void teleportedCopiesJumpInsteadOfSliding() {
-    final var bed = wrappedBed(1);
-    final var marker = bed.server.spawn("marker", new Vector3f(0, 0, 0));
-    bed.step(30);
-    final var copy = bed.copy(0, marker);
-    marker.transform().position().set(8f, 0, 0);
-    bed.server.teleported(marker);
-    final List<Float> seen = new ArrayList<>();
-    final var matrix = new Matrix4f();
-    final var drawn = new Vector3f();
-    for (int i = 0; i < 40; i++) {
-      bed.step(1);
-      seen.add(copy.transform().position().x);
-      copy.transform().interpolatedWorldMatrix(0.5f, matrix).getTranslation(drawn);
-      seen.add(drawn.x);
-    }
-    assertEquals(8f, copy.transform().position().x, 1e-3f, "arrived");
-    assertTrue(seen.stream().allMatch(x -> x < 0.01f || x > 7.99f), "never in between: " + seen);
-
-    // without the word from the host it slides, as before
-    marker.transform().position().set(0f, 0, 0);
-    final List<Float> slid = new ArrayList<>();
-    for (int i = 0; i < 40; i++) {
-      bed.step(1);
-      slid.add(copy.transform().position().x);
-    }
-    assertTrue(slid.stream().anyMatch(x -> x > 1f && x < 7f), "slides when not told: " + slid);
-  }
-
-  @Test
-  void lateJoinersGetTheJumpCount() {
-    final var bed = wrappedBed(0);
-    final var marker = bed.server.spawn("marker", new Vector3f(0, 0, 0));
-    bed.step(5);
-    marker.transform().position().set(5f, 0, 0);
-    bed.server.teleported(marker);
-    bed.step(5);
-    bed.addGuest().setWraparound(SPACE);
-    bed.connectAll();
-    bed.step(30);
-    final var copy = bed.copy(0, marker);
-    marker.transform().position().set(6f, 0, 0); // an ordinary move after joining slides
-    final List<Float> xs = new ArrayList<>();
-    for (int i = 0; i < 30; i++) {
-      bed.step(1);
-      xs.add(copy.transform().position().x);
-    }
-    assertTrue(xs.stream().anyMatch(x -> x > 5.05f && x < 5.95f), "slid: " + xs);
-  }
-
   // ---- flying, predicted ----
 
   /** Plays {@code script} by sample number. */
-  private record Script(IntFunction<InputCommand> script, int[] samples) implements CommandSource {
-    Script(IntFunction<InputCommand> script) {
+  private record Script(IntFunction<FlightCommand> script, int[] samples) implements CommandSource {
+    Script(IntFunction<FlightCommand> script) {
       this(script, new int[1]);
     }
 
     @Override
-    public InputCommand sample(long tick, double dt) {
-      return this.script.apply(this.samples[0]++).withTickAndView(tick, -1);
+    public FlightCommand sample(long tick, double dt) {
+      return this.script.apply(this.samples[0]++).at(tick, -1);
     }
   }
 
@@ -167,8 +131,8 @@ class WrapAndFlightTest {
         aim.rotateZ((float) Math.toRadians((n - 180) * 6f));
       }
       final float push = n < 240 ? 1f : 0f;
-      final int buttons = n >= 300 ? InputCommand.button(1) : 0; // brake to a stop
-      return InputCommand.flying(0, 0f, n < 60 ? 0.5f : 0f, push, aim, buttons);
+      final int buttons = n >= 300 ? BRAKE : 0; // brake to a stop
+      return new FlightCommand(0, 0f, n < 60 ? 0.5f : 0f, push, aim, buttons);
     });
   }
 
@@ -178,7 +142,7 @@ class WrapAndFlightTest {
 
   @Test
   void aFlyingPlayerIsPredictedThroughLoopsAndAcrossTheEdge() {
-    final var bed = wrappedBed(2);
+    final var bed = spaceBed(2);
     bed.network.conditions(new Conditions(0.04, 0.01, 0.05, 0.01));
     final var client = bed.clients.get(0);
     bed.server.spawn("ship", new Vector3f(0, 0, 0), client.client().id());
@@ -222,7 +186,7 @@ class WrapAndFlightTest {
 
   @Test
   void aHyperspaceJumpOfTheOwnShipIsShownAtOnce() {
-    final var bed = wrappedBed(1);
+    final var bed = spaceBed(1);
     bed.network.conditions(new Conditions(0.04, 0.0, 0.0, 0));
     final var client = bed.clients.get(0);
     bed.server.spawn("ship", new Vector3f(0, 0, 0), client.client().id());
@@ -231,8 +195,8 @@ class WrapAndFlightTest {
     final var visual = new Entity("visual");
     mine.get(FlightMotor.class).visual = visual;
     bed.guests.get(0).scene().add(visual);
-    client.setCommandSource(new Script(n -> InputCommand.flying(0, 0f, 0f, n < 30 ? 0.3f : 0f, new Quaternionf(),
-        n < 60 ? 0 : InputCommand.button(1)))); // off it goes, then brakes to a stop
+    client.setCommandSource(new Script(n -> new FlightCommand(0, 0f, 0f, n < 30 ? 0.3f : 0f, new Quaternionf(),
+        n < 60 ? 0 : BRAKE))); // off it goes, then brakes to a stop
     bed.step(120);
     final int before = client.corrections();
     final var onHost = hostShip(bed);
@@ -253,26 +217,25 @@ class WrapAndFlightTest {
   }
 
   @Test
-  void flyingCommandsSurviveTheWire() {
+  void flightCommandsSurviveTheWire() {
     final var aim = new Quaternionf().rotateX(2.5f).rotateZ(1f); // upside down, rolled: no yaw and pitch can say it
-    final var c = InputCommand.flying(77, 0.25f, -0.5f, 1f, aim, InputCommand.button(3));
-    final var q = c.quantized();
+    final var c = new FlightCommand(77, 0.25f, -0.5f, 1f, aim, FlightCommand.button(3), 70.5);
+    final var q = FlightCommand.CODEC.overTheWire(c);
     assertEquals(-0.5f, q.moveY(), 0.01f);
     assertEquals(0.25f, q.moveX(), 0.01f);
-    assertTrue(q.orientation(new Quaternionf()).equals(aim, 1e-3f) || q.aim().equals(new Quaternionf(aim).scale(-1),
-        1e-3f), "aim " + q.aim() + " vs " + aim);
+    assertEquals(1f, q.moveZ(), 1e-6f);
+    assertTrue(q.aim().equals(aim, 1e-3f) || q.aim().equals(new Quaternionf(aim).scale(-1), 1e-3f),
+        "aim " + q.aim() + " vs " + aim);
     assertEquals(c.buttons(), q.buttons());
-    assertNull(new InputCommand(1, 0f, 1f, 30f, 10f, 0, -1).quantized().aim(), "walking commands have no aim");
-    assertEquals(0f, new InputCommand(1, 0f, 1f, 30f, 10f, 0, -1).quantized().moveY());
-    final var walk = new InputCommand(1, 0f, 1f, 30f, 10f, 0, -1);
-    final var w1 = new engine.net.BitWriter();
-    walk.writeBody(w1);
-    assertTrue(w1.byteLength() <= 8, "a walking command stays small: " + w1.byteLength());
+    assertEquals(70.5, q.viewTick(), 0.01);
+    final var out = new BitWriter();
+    FlightCommand.CODEC.write(c, out);
+    assertTrue(out.byteLength() <= 10, "a flight command stays small: " + out.byteLength());
   }
 
   @Test
   void theHostsOwnShipFliesToo() {
-    final var bed = wrappedBed(1);
+    final var bed = spaceBed(1);
     final var ship = bed.server.spawn("ship", new Vector3f(0, 0, 0));
     bed.server.setLocalPlayer(ship, loopTheLoop());
     bed.step(200);

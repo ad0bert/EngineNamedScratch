@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -21,8 +22,6 @@ import engine.net.DisconnectReason;
 import engine.net.NetClient;
 import engine.net.NetDataException;
 import engine.net.NetListener;
-import engine.physics.CharacterController;
-import engine.physics.Rigidbody;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -38,17 +37,18 @@ import lombok.extern.slf4j.Slf4j;
  *
  * Copies are shown a little in the past ({@link #setInterpolationDelay}, 0.1 s by default): between the two snapshots
  * around that moment, so their motion stays smooth when snapshots arrive unevenly or some are lost. {@link NetState}s
- * are applied when that moment reaches the snapshot they came in. Copies' rigid bodies are made kinematic and their
- * character controllers are turned off: the host moves them.
+ * are applied when that moment reaches the snapshot they came in. The host moves copies, so {@link CopyHook}s make
+ * them stand still here: by default ({@link CopyHook#PHYSICS}) rigid bodies are made kinematic and character
+ * controllers are turned off; games add hooks for their own components ({@link #addCopyHook}).
  *
  * <p>
- * <b>Jumps and wraparound.</b> Where the host said an entity jumped ({@link ServerReplication#teleported}) its copy
- * goes straight to the new place instead of sliding there. In a world that wraps around
- * ({@link #setWraparound}) copies blend the short way, across the edge.
+ * <b>Teleports and world shape.</b> Where the host said an entity was teleported ({@link ServerReplication#teleported})
+ * its copy goes straight to the new place instead of sliding there. Copies blend along the world's
+ * {@link #setWorldSpace space}: the short way across an edge in a world that wraps around.
  *
  * <p>
  * <b>Prediction.</b> This client's own players (owned by it, with a {@link PredictedMotor} such as a
- * {@link CharacterMotor} or a {@link FlightMotor}) are not copies: with a {@link #setCommandSource command source},
+ * {@link CharacterMotor}) are not copies: with a {@link #setCommandSource command source},
  * every step makes an {@link InputCommand} for a host step a little ahead of the host, applies it here at once and
  * sends it to the host, which applies it when it gets to that step. When the host's result for a step differs from
  * what was predicted, the player is put where the host had it and the commands since are replayed
@@ -59,7 +59,7 @@ import lombok.extern.slf4j.Slf4j;
 public final class ClientReplication extends Replication {
   private static final int MAX_SAMPLES = 64;
 
-  private record Sample(long tick, Vector3f position, Quaternionf rotation, int jumps, byte[] state) {
+  private record Sample(long tick, Vector3f position, Quaternionf rotation, int teleports, byte[] state) {
   }
 
   private static final class Copy {
@@ -67,8 +67,8 @@ public final class ClientReplication extends Replication {
     final List<Sample> samples = new ArrayList<>();
     long appliedStateTick;
     byte[] lastState = new byte[0];
-    /** The jump count of the place shown. */
-    int shownJumps;
+    /** The teleport count of the place shown. */
+    int shownTeleports;
 
     Copy(Entity entity) {
       this.entity = entity;
@@ -76,8 +76,8 @@ public final class ClientReplication extends Replication {
   }
 
   private static final double TARGET_LEAD = 2.0;
-  /** Corrections further than this (metres) are jumps, not prediction errors: shown at once. */
-  private static final float JUMP_DISTANCE = 2f;
+  /** Corrections further than this (metres) are teleports, not prediction errors: shown at once. */
+  private static final float SNAP_DISTANCE = 2f;
   private static final int HISTORY = 256;
 
   private static final class Step {
@@ -92,12 +92,12 @@ public final class ClientReplication extends Replication {
 
   private static final class Predicted {
     final Entity entity;
-    final PredictedMotor motor;
+    final PredictedMotor<?> motor;
     final TreeMap<Long, Step> history = new TreeMap<>();
     long reconciledTick = -1;
     byte[] lastState = new byte[0];
 
-    Predicted(Entity entity, PredictedMotor motor) {
+    Predicted(Entity entity, PredictedMotor<?> motor) {
       this.entity = entity;
       this.motor = motor;
     }
@@ -115,6 +115,7 @@ public final class ClientReplication extends Replication {
   private boolean ackDue;
   private long lastPrune;
   private final Map<Integer, Predicted> predicted = new HashMap<>();
+  private final List<CopyHook> copyHooks = new CopyOnWriteArrayList<>(List.of(CopyHook.PHYSICS));
   private CommandSource commandSource;
   private double predictionOffset;
   private boolean predicting;
@@ -191,6 +192,18 @@ public final class ClientReplication extends Replication {
     this.commandSource = source;
   }
 
+  /**
+   * Adds a hook that prepares copies of host entities (after the engine's {@link CopyHook#PHYSICS}, which can be
+   * removed with {@link #removeCopyHook}). Hooks run in the order added.
+   */
+  public void addCopyHook(CopyHook hook) {
+    this.copyHooks.add(hook);
+  }
+
+  public void removeCopyHook(CopyHook hook) {
+    this.copyHooks.remove(hook);
+  }
+
   /** How many times the host's result differed from the prediction and the character was corrected. */
   public int corrections() {
     return this.corrections;
@@ -254,8 +267,7 @@ public final class ClientReplication extends Replication {
       this.predicting = true;
     }
     final long commandTick = Math.max(this.lastCommandTick + 1, Math.round(tick + this.predictionOffset));
-    final var command = this.commandSource.sample(commandTick, dt).withTickAndView(commandTick, this.renderTick)
-        .quantized();
+    final var command = quantize(this.commandSource.sample(commandTick, dt).at(commandTick, this.renderTick));
     this.lastCommandTick = commandTick;
     this.recentCommands.addFirst(command);
     while (this.recentCommands.size() > REDUNDANT_COMMANDS) {
@@ -282,7 +294,7 @@ public final class ClientReplication extends Replication {
       if (previous >= 0) {
         out.writeVarInt((int) Math.min(Integer.MAX_VALUE, previous - c.tick() - 1));
       }
-      c.writeBody(out);
+      writeCommand(this.codec, c, out);
       previous = c.tick();
     }
     this.client.send(out.toByteArray(), Delivery.UNRELIABLE);
@@ -342,9 +354,8 @@ public final class ClientReplication extends Replication {
       mine.state = hostState.clone();
     }
     final var after = transform.position();
-    final var error = this.wraparound == null ? this.scratchOffset.set(this.before).sub(after)
-        : this.wraparound.delta(after, this.before, this.scratchOffset);
-    if (error.lengthSquared() > JUMP_DISTANCE * JUMP_DISTANCE) {
+    final var error = this.space.delta(after, this.before, this.scratchOffset);
+    if (error.lengthSquared() > SNAP_DISTANCE * SNAP_DISTANCE) {
       transform.snapshot(); // the host moved it on purpose (a teleport): show it there, no smear
       p.motor.addCorrection(error); // too far to slide: the visual goes home
       return;
@@ -354,22 +365,23 @@ public final class ClientReplication extends Replication {
   }
 
   /**
-   * In a wraparound world, after moving {@code transform} from {@code old}: if it went the long way (wrapped around an
-   * edge), moves its previous position for render interpolation along, so that it does not sweep across the world.
+   * In a world that wraps around, after moving {@code transform} from {@code old}: if it went the long way (wrapped
+   * around an edge), moves its previous position for render interpolation along, so that it does not sweep across the
+   * world.
    */
   private void keepSmooth(Transform transform, Vector3f old) {
-    if (this.wraparound == null) {
+    if (!this.space.wraps()) {
       return;
     }
     final var now = transform.position();
-    this.wraparound.delta(old, now, this.scratchOffset); // the short way
+    this.space.delta(old, now, this.scratchOffset); // the short way
     this.scratchOffset.add(old).negate().add(now); // what wrapping added to it
     if (this.scratchOffset.lengthSquared() > 0f) {
       transform.shiftPrevious(this.scratchOffset);
     }
   }
 
-  /** Keeps the commands arriving {@link #TARGET_LEAD} steps early: a jump if far off, else a slightly faster clock. */
+  /** Keeps the commands arriving {@link #TARGET_LEAD} steps early: a leap if far off, else a slightly faster clock. */
   private void adjustClock(float reportedLead) {
     if (!this.predicting) {
       return;
@@ -422,7 +434,7 @@ public final class ClientReplication extends Replication {
     final long tick = in.readLong();
     final var position = in.readVector(new Vector3f());
     final var rotation = in.readRotation(new Quaternionf());
-    final int jumps = (int) in.readBits(QState.JUMP_BITS);
+    final int teleports = (int) in.readBits(QState.TELEPORT_BITS);
     final byte[] data = in.readBytes(MAX_DATA);
     final byte[] state = in.readBytes(MAX_DATA);
     if (this.copies.containsKey(netId)) {
@@ -444,19 +456,14 @@ public final class ClientReplication extends Replication {
       observeHostTick(tick);
       return;
     }
-    for (int i = 0; i < entity.componentCount(); i++) {
-      switch (entity.componentAt(i)) {
-        case Rigidbody body -> body.kinematic = true;
-        case CharacterController walker -> walker.setEnabled(false);
-        default -> {
-        }
-      }
+    for (CopyHook hook : this.copyHooks) {
+      hook.prepare(entity);
     }
     applyState(entity, state);
     final var copy = new Copy(entity);
-    copy.samples.add(new Sample(tick, position, rotation, jumps, null));
+    copy.samples.add(new Sample(tick, position, rotation, teleports, null));
     copy.appliedStateTick = tick;
-    copy.shownJumps = jumps;
+    copy.shownTeleports = teleports;
     copy.lastState = state;
     this.copies.put(netId, copy);
     observeHostTick(tick);
@@ -498,7 +505,7 @@ public final class ClientReplication extends Replication {
       history.headMap(tick - HISTORY_TICKS).clear();
       final var copy = this.copies.get(netId);
       if (copy != null) {
-        insert(copy, new Sample(tick, q.position(new Vector3f()), q.orientation(new Quaternionf()), q.jumps(),
+        insert(copy, new Sample(tick, q.position(new Vector3f()), q.orientation(new Quaternionf()), q.teleports(),
             q.state()));
       } else if (this.predicted.containsKey(netId)) {
         final var own = this.predicted.get(netId);
@@ -557,7 +564,7 @@ public final class ClientReplication extends Replication {
   }
 
   /**
-   * Keeps {@code offset} (host tick minus this engine's tick) at the newest snapshot seen: it jumps up when a snapshot
+   * Keeps {@code offset} (host tick minus this engine's tick) at the newest snapshot seen: it teleports up when a snapshot
    * is ahead of the estimate (packets that came quickly) and drifts down slowly otherwise (clocks running apart).
    */
   private void observeHostTick(long hostTick) {
@@ -604,19 +611,19 @@ public final class ClientReplication extends Replication {
       }
       if (before < 0) {
         final var first = samples.getFirst();
-        place(copy, first.position, first.rotation, first.jumps);
+        place(copy, first.position, first.rotation, first.teleports);
         continue;
       }
       final var a = samples.get(before);
-      if (before + 1 < samples.size() && samples.get(before + 1).jumps == a.jumps) {
+      if (before + 1 < samples.size() && samples.get(before + 1).teleports == a.teleports) {
         final var b = samples.get(before + 1);
         final float t = (float) ((renderTick - a.tick) / (b.tick - a.tick));
         blend(a.position, b.position, t, this.scratchPosition);
         a.rotation.slerp(b.rotation, t, this.scratchRotation);
-        place(copy, this.scratchPosition, this.scratchRotation, a.jumps);
+        place(copy, this.scratchPosition, this.scratchRotation, a.teleports);
       } else {
-        // nothing newer yet, or it jumps before the next one: wait where the last snapshot was
-        place(copy, a.position, a.rotation, a.jumps);
+        // nothing newer yet, or it teleports before the next one: wait where the last snapshot was
+        place(copy, a.position, a.rotation, a.teleports);
       }
       if (before > 0) {
         samples.subList(0, before).clear();
@@ -624,15 +631,15 @@ public final class ClientReplication extends Replication {
     }
   }
 
-  /** Shows a copy at a place: straight there after a jump, else smoothly (across an edge, in a wraparound world). */
-  private void place(Copy copy, Vector3f position, Quaternionf rotation, int jumps) {
+  /** Shows a copy at a place: straight there after a teleport, else smoothly (across an edge, if the world wraps). */
+  private void place(Copy copy, Vector3f position, Quaternionf rotation, int teleports) {
     final var transform = copy.entity.transform();
     this.scratchOld.set(transform.position());
     transform.position().set(position);
     transform.rotation().set(rotation);
-    if (jumps != copy.shownJumps) {
-      copy.shownJumps = jumps;
-      transform.snapshot(); // no smear from where it jumped from
+    if (teleports != copy.shownTeleports) {
+      copy.shownTeleports = teleports;
+      transform.snapshot(); // no smear from where it was teleported from
     } else {
       keepSmooth(transform, this.scratchOld);
     }

@@ -66,8 +66,8 @@ public final class ServerReplication extends Replication {
     boolean removed;
     boolean alwaysRelevant;
     float priority = 1f;
-    /** How often the game said it jumped ({@link #teleported}). */
-    int jumps;
+    /** How often the game said it was teleported ({@link #teleported}). */
+    int teleports;
     /** Where it was after recent steps, oldest first, for lag compensation (entities with colliders only). */
     final java.util.ArrayDeque<Pose> poses = new java.util.ArrayDeque<>();
 
@@ -106,7 +106,7 @@ public final class ServerReplication extends Replication {
   private record SentEntry(int netId, QState state) {
   }
 
-  private record Pose(long tick, Vector3f position, Quaternionf rotation, int jumps) {
+  private record Pose(long tick, Vector3f position, Quaternionf rotation, int teleports) {
   }
 
   private static final int POSE_HISTORY = 64;
@@ -138,7 +138,8 @@ public final class ServerReplication extends Replication {
   /** A client's commands waiting for their step, and the one in use. */
   private static final class Pilot {
     final java.util.TreeMap<Long, InputCommand> pending = new java.util.TreeMap<>();
-    InputCommand last = InputCommand.NONE;
+    /** Null until the first step after the client connected. */
+    InputCommand last;
     /** The newest step that ran a command the client sent for it (not a repeat), or -1. */
     long ack = -1;
     long newest = -1;
@@ -344,8 +345,8 @@ public final class ServerReplication extends Replication {
       if (before == null) {
         position.set(p.position());
         rotation.set(p.rotation());
-      } else if (before.jumps() != p.jumps()) {
-        position.set(before.position()); // it jumped in between: it was in one place or the other, never between
+      } else if (before.teleports() != p.teleports()) {
+        position.set(before.position()); // teleported in between: it was in one place or the other, never between
         rotation.set(before.rotation());
       } else {
         final float f = (float) ((tick - before.tick()) / (p.tick() - before.tick()));
@@ -369,7 +370,7 @@ public final class ServerReplication extends Replication {
       }
       final var transform = t.entity.transform();
       t.poses.addLast(new Pose(tick, new Vector3f(transform.position()), new Quaternionf(transform.rotation()),
-          t.jumps));
+          t.teleports));
       while (t.poses.size() > POSE_HISTORY) {
         t.poses.removeFirst();
       }
@@ -416,7 +417,8 @@ public final class ServerReplication extends Replication {
   }
 
   /**
-   * Tells clients that the entity jumped this step instead of moving there (a teleport, a respawn, a hyperspace jump):
+   * Tells clients that the entity was teleported this step instead of moving there (a respawn, a portal, a jump to
+   * hyperspace):
    * their copies go straight to the new place when they get to this step instead of sliding across the world to it,
    * and lag compensation does not put it anywhere in between. Call it on the host, in the step the game moved it. A
    * client's own predicted player is corrected at once either way.
@@ -424,7 +426,7 @@ public final class ServerReplication extends Replication {
   public void teleported(Entity entity) {
     final var t = this.tracked.get(entity);
     if (t != null) {
-      t.jumps = (t.jumps + 1) & 0xFF;
+      t.teleports = (t.teleports + 1) & 0xFF;
     }
   }
 
@@ -463,7 +465,7 @@ public final class ServerReplication extends Replication {
     if (this.localPlayer != null && this.localSource != null) {
       final var motor = this.localPlayer.findOrNull(PredictedMotor.class);
       if (motor != null && this.engine.scene().contains(this.localPlayer)) {
-        motor.drive(this.localSource.sample(tick, dt).quantized(), (float) dt);
+        motor.drive(quantize(this.localSource.sample(tick, dt)), (float) dt);
       }
     }
     for (Pilot p : this.pilots.values()) {
@@ -473,7 +475,8 @@ public final class ServerReplication extends Replication {
         p.last = command;
         p.ack = tick;
       } else {
-        p.last = p.last.withTick(tick); // nothing in time: keep doing what it did
+        // nothing in time: keep doing what it did
+        p.last = p.last == null ? this.codec.idle(tick) : p.last.repeatedAt(tick);
       }
     }
     for (Tracked t : this.tracked.values()) {
@@ -491,7 +494,7 @@ public final class ServerReplication extends Replication {
   /** The command in use for client {@code clientId}'s characters (its last one if a step's did not come in time). */
   public InputCommand commandOf(int clientId) {
     final var p = this.pilots.get(clientId);
-    return p == null ? InputCommand.NONE : p.last;
+    return p == null || p.last == null ? this.codec.idle(this.engine.tick()) : p.last;
   }
 
   @Override
@@ -557,7 +560,7 @@ public final class ServerReplication extends Replication {
       if (i > 0) {
         tick -= in.readVarInt() + 1L;
       }
-      final var command = InputCommand.readBody(in, tick);
+      final var command = readCommand(this.codec, in, tick);
       // only steps still to come, and not absurdly far ahead
       if (tick >= now && tick <= now + 600 && pilot.pending.size() < 256) {
         pilot.pending.putIfAbsent(tick, command);
@@ -732,7 +735,7 @@ public final class ServerReplication extends Replication {
         .writeLong(tick)
         .writeVector(transform.position())
         .writeRotation(transform.rotation())
-        .writeBits(t.jumps, QState.JUMP_BITS)
+        .writeBits(t.teleports, QState.TELEPORT_BITS)
         .writeBytes(t.identity.spawnData())
         .writeBytes(stateOf(t.entity))
         .toByteArray();
@@ -752,7 +755,7 @@ public final class ServerReplication extends Replication {
     final Map<Tracked, QState> current = new java.util.HashMap<>();
     for (Tracked t : this.tracked.values()) {
       if (t.announced) {
-        current.put(t, QState.of(t.entity, t.jumps));
+        current.put(t, QState.of(t.entity, t.teleports));
       }
     }
     final int budget = (int) Math.max(1, this.bandwidthLimit * this.engine.config().updateStep()
