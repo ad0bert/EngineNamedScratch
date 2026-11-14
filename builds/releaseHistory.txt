@@ -1,5 +1,5 @@
 Version 0.10.0
-Networking for co-op games, and an engine without a window. Contains:
+Networking for co-op games, an engine without a window, plugins and custom shaders. Contains:
 - Engine without a window: Engine.runHeadless (real time), startHeadless + runTicks (as fast as wanted, for tests),
   -Dengine.headless=true; NullRenderBackend
 - Engine.tick(): the number of the current fixed step; StepHook (beforeSystems / afterStep, also while paused);
@@ -22,6 +22,22 @@ Networking for co-op games, and an engine without a window. Contains:
   most setMaxRewind); PhysicsSystem.raycast over given colliders
 - Security: connections encrypted and authenticated by default (X25519, AES-256-GCM), optional password
   (NetConfig.withPassword, DisconnectReason.WRONG_PASSWORD), authenticated disconnects; LoopbackNetwork.Interceptor
+- Prediction for any movement: PredictedMotor<C> (CharacterMotor is one); a game's own commands with InputCommand
+  (interface) and CommandCodec (Replication.setCommandCodec), StandardCommand by default (8 buttons,
+  CharacterMotor.jumpButton); WorldSpace (Replication.setWorldSpace, RelevanceFilter.byDistance(radius, space));
+  ServerReplication.teleported; CopyHook (ClientReplication.addCopyHook, CopyHook.PHYSICS); ActionCommandSource
+  action names; Transform.shiftPrevious
+- Plugins: EnginePlugin, Game.plugins(), EnginePlugins (defaults, defaultsWithout, defaultsAnd, check);
+  MouseReleasePlugin, FirstPersonInputPlugin, ImpactSoundPlugin, DebugOverlayPlugin (what the engine always did,
+  now optional); Engine.plugin / hasPlugin / plugins / components / pluginSignature; NetConfig.forGame(engine);
+  ComponentRegistry.core(). Engine.setDebugOverlayVisible moved to DebugOverlayPlugin.setVisible
+- Custom shaders: shader library (shaders/lib: lighting.glsl with Surface and shade, surface.glsl with
+  standardSurface, vertex.glsl, post.glsl), #include in shaders, Material.fragmentShader / vertexShader / params
+  (ShaderParams, saved with scenes), RenderSettings.postPasses (PostPass, stages HDR and DISPLAY) and shaderGlobals,
+  uTime; hot reloading follows included files
+- Kits module (engine-named-scratch-kits): engine.kits.flight (FlightCommand, FlightMotor), engine.kits.wraparound
+  (Wraparound), engine.kits.toon (ToonShading, ToonPlugin)
+- Demo: a material with its own shaders, a vignette pass, cel shading, -Ddemo.outline=true
 
 Version 0.9.0
 Characters, navigation and a richer world. Contains:
