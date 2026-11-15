@@ -426,6 +426,13 @@ class PauseMenu implements GameState {
   and where, so a saved glTF instance moves on where it was; any component with public
   fields can opt in with one line (`FieldSerializer`), others with a `ComponentSerializer`. A `Prefab` is such a file
   used as a template, instantiated as often as needed (the instances share materials, so they still batch).
+  Material files (`materials/steel.json`: the fields of a material, custom shaders and their parameters included)
+  are shared by every scene and prefab that names them (`"materials": ["materials/steel.json"]`), can start from
+  another file and change a few fields (`{"file": "materials/steel.json", "roughness": 0.9}`), and are saved as
+  their path again; `engine.material(path)` gets the same instance in code. Prefabs nest: an entity entry with
+  `"prefab": "prefabs/lamp.json"` is an instance of that file with its own name, parent and transform, components
+  added to its root, and `overrides` by entity name that change single properties of the prefab's components (or
+  remove them). Changed material files apply in place with hot reloading.
 - **UI:** immediate-mode drawing with any number of fonts (any installed or logical Java font, proportional or fixed,
   glyphs rasterized on demand at the size they are drawn, so any character the font has works and scaled text stays
   sharp), clipping, and immediate-mode widgets (`engine.ui.Gui`): panels, labels, buttons, checkboxes, sliders,
@@ -538,7 +545,7 @@ How it works:
 | `engine.animation` | `Track`, `Easing`, `Channel`, `AnimationClip`, `Animator` (layers, blending), `AnimationSystem` |
 | `engine.audio` | Backend-agnostic: `AudioBackend`, `AudioClip`/`AudioVoice` handles, `AudioSource`, `AudioListener`, `ImpactSound` (+ `ImpactSoundPlugin`), `AudioMixer`/`AudioBus`, `Rolloff`, `VoiceAllocator`, `AudioSystem`, `NullAudioBackend` |
 | `engine.audio.al` | The OpenAL (JOAL) implementation of `AudioBackend` (buffers, sources, streaming) |
-| `engine.serialization` | `Json`, `SceneSerializer`, `Prefab`, `ComponentRegistry`, `ComponentSerializer`/`FieldSerializer`, `SerializationContext` |
+| `engine.serialization` | `Json`, `SceneSerializer`, `Prefab`, `AssetLibrary` (material and prefab files), `ComponentRegistry`, `ComponentSerializer`/`FieldSerializer`, `SerializationContext` |
 | `engine.ui` | `Gui`: immediate-mode widgets on any `UiCanvas`; `TextEdit` (text editing model), `Clipboard` (system or in-memory), `TextWrap` |
 | `engine.resources` | `Assets` (asset directories, then the classpath), `AssetWatcher` (changed files), `ResourceManager` (cached meshes/textures/models/sounds, generated resources, keys for scene files, scopes that release a level's resources), `ObjLoader`, `MtlLoader`, `GltfLoader`/`GltfModel`, `ImageLoader` (ImageIO), `HdrLoader` (Radiance `.hdr`), `AudioLoader`/`VorbisDecoder`, `NormalMaps` (height field to normal map), `Model` |
 | `engine.spatial` | `SpatialGrid` (used by physics, physics queries and static-geometry culling) |
@@ -577,7 +584,8 @@ widgets from grabbing the mouse. Sound: `entity.add(new AudioSource(res.sound("a
 or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(new Animator()).play(clip)`, or
 `res.gltf("models/hero.glb").instantiate(scene)` and play its clips by name. Saving:
 `new SceneSerializer().save(scene, engine.serialization(), path)`; prefabs: `Prefab.load("prefabs/x.json", serializer)
-.instantiate(scene, engine.serialization(), position, null)`.
+.instantiate(scene, engine.serialization(), position, null)`; shared materials: `engine.material("materials/x.json")`
+(the format is described in `AssetLibrary`, nested prefabs in `SceneSerializer`).
 
 ## Known limitations
 
@@ -624,6 +632,9 @@ or `engine.audio().play(clip, position)` for one-shots. Animation: `entity.add(n
   through JInput's rumblers, which many pads and platforms do not offer (`GamepadState.canRumble()`); gamepad axis
   bindings are not part of the saved text. On
   Linux the user needs read access to `/dev/input/event*`.
+- Nested prefab instances are saved as plain entities (the link to the prefab file is not kept), and a changed prefab
+  file reaches only instances created after the change. A material file's shared instance is saved as its path, so
+  changes the game makes to it at run time are not saved.
 - Scene files keep resources by key: meshes and textures generated without a key (`res.mesh(data)`) are left out,
   and generated ones with a key must be generated again before loading. Animation channels with a custom target
   (code) are not saved, nor are one-shot sounds (`engine.audio().play`).

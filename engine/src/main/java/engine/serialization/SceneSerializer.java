@@ -37,6 +37,25 @@ import lombok.extern.slf4j.Slf4j;
  *
  * Entities are referred to by their index in {@code entities} (parents, joint partners). Resources are referred to by
  * their {@link engine.resources.ResourceManager#keyOf key}. Components without a registered serializer are skipped.
+ *
+ * <p>
+ * An entry of {@code materials} can be the path of a material file instead ({@code "materials/steel.json"}), or start
+ * from one ({@code {"file": "materials/steel.json", "roughness": 0.9}}); see {@link AssetLibrary}. An entity can be an
+ * instance of another prefab file, with its own name, parent, transform and changes:
+ *
+ * <pre>
+ * { "name": "lamp-1", "parent": 0, "prefab": "prefabs/lamp-post.json",
+ *   "transform": { "position": [4, 0, 2], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+ *   "components": [ { "type": "Rigidbody", "properties": { "mass": 20 } } ],
+ *   "overrides": { "lamp-head": { "components": [ { "type": "Light", "properties": { "intensity": 2 } },
+ *                                                 { "type": "MeshRenderer", "properties": { "material": "materials/red.json" } } ] } } }
+ * </pre>
+ *
+ * The entry stands for the prefab's root (its index is the root's); the prefab's other entities follow it in the
+ * result of {@link #read}. A component listed for the root or under {@code overrides} (by entity name) changes the
+ * properties it names on the prefab's component of that type ({@code "removed": true} takes it away) or is added if
+ * there is none; material and entity indices in it are the prefab file's. Saving writes nested instances out in full
+ * (as plain entities).
  */
 @Slf4j
 public class SceneSerializer {
@@ -158,8 +177,8 @@ public class SceneSerializer {
   }
 
   /**
-   * Creates the entities of a scene file (not yet added to any scene), in file order, with their hierarchy and
-   * components.
+   * Creates the entities of a scene file (not yet added to any scene), in file order (the entities of a nested prefab
+   * right after its root), with their hierarchy and components.
    *
    * @throws IllegalArgumentException if the text is not a scene file or a component cannot be created
    */
@@ -180,18 +199,34 @@ public class SceneSerializer {
         root.containsKey("clips") ? Json.asList(root.get("clips")) : List.of(),
         root.containsKey("skins") ? Json.asList(root.get("skins")) : List.of());
     final var list = Json.asList(root.get("entities"));
+    final List<Entity> byIndex = new ArrayList<>(list.size());
     final List<Entity> out = new ArrayList<>(list.size());
     for (int i = 0; i < list.size(); i++) {
       final var m = Json.asObject(list.get(i));
-      final var e = new Entity((String) m.get("name"));
+      final Entity e;
+      if (m.get("prefab") != null) {
+        final var nested = ctx.nestedPrefab((String) m.get("prefab"), m, this);
+        e = nested.get(0);
+        out.addAll(nested);
+      } else {
+        e = new Entity((String) m.get("name"));
+        out.add(e);
+      }
       ctx.registerEntity(i, e);
-      out.add(e);
+      byIndex.add(e);
     }
     for (int i = 0; i < list.size(); i++) {
       final var m = Json.asObject(list.get(i));
-      final var e = out.get(i);
+      final var e = byIndex.get(i);
       if (m.get("parent") != null) {
-        e.transform().setParent(out.get(Json.asInt(m.get("parent"))).transform());
+        final int parent = Json.asInt(m.get("parent"));
+        if (parent < 0 || parent >= byIndex.size()) {
+          throw new IllegalArgumentException(e.name() + ": parent " + parent + " is not in the file");
+        }
+        e.transform().setParent(byIndex.get(parent).transform());
+      }
+      if (m.get("prefab") != null) {
+        continue; // its transform and components went into the nested prefab's root
       }
       if (m.get("transform") != null) {
         final var tm = Json.asObject(m.get("transform"));

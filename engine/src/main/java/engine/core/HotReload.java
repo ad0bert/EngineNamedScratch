@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import engine.render.RenderBackend;
 import engine.resources.AssetWatcher;
 import engine.resources.ResourceManager;
+import engine.serialization.AssetLibrary;
 
 /**
  * Applies changed asset files while the game runs: shaders are compiled again, textures and meshes loaded again in
@@ -56,6 +57,7 @@ final class HotReload {
 
   void apply(String path) {
     int changed = this.resources.reload(path);
+    changed += AssetLibrary.of(this.resources).reload(path, this.resources); // material and prefab files
     if ((path.endsWith(".vert") || path.endsWith(".frag") || path.endsWith(".glsl"))
         && this.backend.reloadShaders(path) == 0) {
       changed++; // a shader that failed was logged by the backend and keeps its old version

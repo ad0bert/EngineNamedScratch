@@ -38,11 +38,15 @@ import lombok.extern.slf4j.Slf4j;
 public class SerializationContext {
   @Getter private final ResourceManager resources;
   @Getter private final InputState input;
+  /** The material and prefab files of these resources. */
+  @Getter private final AssetLibrary library;
+  /** The prefab files being read around this one (to refuse a prefab that contains itself). */
+  private final Set<String> prefabChain;
 
   // writing
   private final Map<Entity, Integer> ids = new IdentityHashMap<>();
   private final Map<Material, Integer> materialIds = new IdentityHashMap<>();
-  private final List<Map<String, Object>> materialData = new ArrayList<>();
+  private final List<Object> materialData = new ArrayList<>();
   private final Map<AnimationClip, Integer> clipIds = new IdentityHashMap<>();
   private final List<Map<String, Object>> clipData = new ArrayList<>();
   private final Map<Skin, Integer> skinIds = new IdentityHashMap<>();
@@ -62,8 +66,14 @@ public class SerializationContext {
 
   /** @param resources may be null (then no mesh, texture or sound can be saved or loaded) */
   public SerializationContext(ResourceManager resources, InputState input) {
+    this(resources, input, Set.of());
+  }
+
+  private SerializationContext(ResourceManager resources, InputState input, Set<String> prefabChain) {
     this.resources = resources;
     this.input = input;
+    this.library = AssetLibrary.of(resources);
+    this.prefabChain = prefabChain;
   }
 
   // ----- writing
@@ -80,7 +90,10 @@ public class SerializationContext {
     return e == null ? null : this.ids.get(e);
   }
 
-  /** Writes the material once and returns its index. */
+  /**
+   * Writes the material once and returns its index. A material from a material file is written as its path (or as the
+   * path and the fields it changes, see {@link AssetLibrary}).
+   */
   public int materialId(Material m) {
     final var id = this.materialIds.get(m);
     if (id != null) {
@@ -88,6 +101,11 @@ public class SerializationContext {
     }
     final int next = this.materialData.size();
     this.materialIds.put(m, next);
+    final var reference = this.library.reference(m, this);
+    if (reference != null) {
+      this.materialData.add(reference);
+      return next;
+    }
     final Map<String, Object> data = new LinkedHashMap<>();
     this.materialData.add(data); // reserved before writing, in case fields refer back
     Fields.write(m, data, this, Set.of("sortKey"));
@@ -101,7 +119,7 @@ public class SerializationContext {
    * Shader parameters as JSON: floats as numbers, vectors as arrays, ints as {@code {"int": n}}, matrices as
    * {@code {"mat4": [16]}}, textures as {@code {"texture": key}} (left out without a key).
    */
-  private Map<String, Object> writeParams(ShaderParams params) {
+  Map<String, Object> writeParams(ShaderParams params) {
     final Map<String, Object> out = new LinkedHashMap<>();
     params.forEach((name, value) -> {
       switch (value) {
@@ -124,7 +142,7 @@ public class SerializationContext {
     return out;
   }
 
-  private void readParams(Object json, ShaderParams params) {
+  void readParams(Object json, ShaderParams params) {
     for (var e : Json.asObject(json).entrySet()) {
       final String name = e.getKey();
       final Object v = e.getValue();
@@ -153,7 +171,7 @@ public class SerializationContext {
     }
   }
 
-  List<Map<String, Object>> materialData() {
+  List<Object> materialData() {
     return this.materialData;
   }
 
@@ -288,10 +306,16 @@ public class SerializationContext {
     this.links.clear();
   }
 
-  /** The material with this index, created on first use. */
+  /**
+   * The material with this index in the file's {@code materials}, created on first use; a string is the path of a
+   * material file (its shared instance, see {@link AssetLibrary}).
+   */
   public Material material(Object id) {
     if (id == null) {
       return null;
+    }
+    if (id instanceof String path) {
+      return this.library.material(path, this);
     }
     final int i = Json.asInt(id);
     while (this.materials.size() <= i) {
@@ -299,15 +323,133 @@ public class SerializationContext {
     }
     var m = this.materials.get(i);
     if (m == null) {
-      m = new Material();
-      this.materials.set(i, m);
-      final var data = Json.asObject(this.materialSource.get(i));
-      Fields.read(m, data, this);
-      if (data.containsKey("params")) {
-        readParams(data.get("params"), m.params);
+      if (i >= this.materialSource.size()) {
+        throw new IllegalArgumentException("material " + i + " is not in the file");
       }
+      final var source = this.materialSource.get(i);
+      if (source instanceof String path) {
+        m = this.library.material(path, this);
+      } else {
+        final var data = Json.asObject(source);
+        if (data.get("file") instanceof String path) {
+          m = this.library.derived(path, data, this);
+        } else {
+          m = new Material();
+          Fields.read(m, data, this);
+          if (data.containsKey("params")) {
+            readParams(data.get("params"), m.params);
+          }
+        }
+      }
+      this.materials.set(i, m);
     }
     return m;
+  }
+
+  /**
+   * Creates the entities of a nested prefab (root first, not yet added to a scene) for an entry of a scene file that
+   * has {@code "prefab": path}. The entry's {@code name}, {@code transform} and {@code components} apply to the
+   * prefab's root, and {@code overrides} (by entity name) to its other entities: a listed component changes the
+   * properties it names on the prefab's component of that type ({@code "removed": true} takes it away), or is added
+   * if there is none. Material and entity indices in overrides are those of the prefab file; a material may also be
+   * given as the path of a material file.
+   */
+  List<Entity> nestedPrefab(String path, Map<String, Object> entry, SceneSerializer serializer) {
+    final var p = AssetLibrary.normalize(path);
+    if (this.prefabChain.contains(p)) {
+      throw new IllegalArgumentException("prefab " + p + " contains itself (" + this.prefabChain + ")");
+    }
+    try {
+      final var template = Json.asObject(copy(this.library.prefab(p, this)));
+      if (!(template.get("entities") instanceof List<?> list) || list.isEmpty()) {
+        throw new IllegalArgumentException("it has no entities");
+      }
+      final var entities = Json.asList(template.get("entities"));
+      final var root = Json.asObject(entities.get(0));
+      if (entry.get("name") != null) {
+        root.put("name", entry.get("name"));
+      }
+      override(root, entry);
+      if (entry.get("overrides") != null) {
+        for (var e : Json.asObject(entry.get("overrides")).entrySet()) {
+          override(byName(entities, e.getKey()), Json.asObject(e.getValue()));
+        }
+      }
+      final Set<String> chain = new java.util.LinkedHashSet<>(this.prefabChain);
+      chain.add(p);
+      return serializer.read(template, new SerializationContext(this.resources, this.input, chain),
+          this.library.prefabMaterials(p));
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("prefab " + p + ": " + e.getMessage(), e);
+    }
+  }
+
+  private static Map<String, Object> byName(List<Object> entities, String name) {
+    for (Object o : entities) {
+      final var m = Json.asObject(o);
+      if (name.equals(m.get("name"))) {
+        return m;
+      }
+    }
+    throw new IllegalArgumentException("no entity named " + name + " to override");
+  }
+
+  /** Applies an override's transform and components to an entity of a prefab template. */
+  private static void override(Map<String, Object> entity, Map<String, Object> changes) {
+    if (changes.get("transform") != null) {
+      entity.put("transform", copy(changes.get("transform")));
+    }
+    if (changes.get("components") == null) {
+      return;
+    }
+    final List<Object> components = entity.get("components") != null ? Json.asList(entity.get("components"))
+        : new ArrayList<>();
+    entity.put("components", components);
+    for (Object o : Json.asList(changes.get("components"))) {
+      final var change = Json.asObject(o);
+      final var type = change.get("type");
+      Map<String, Object> existing = null;
+      for (Object c : components) {
+        if (java.util.Objects.equals(Json.asObject(c).get("type"), type)) {
+          existing = Json.asObject(c);
+          break;
+        }
+      }
+      if (Boolean.TRUE.equals(change.get("removed"))) {
+        if (existing != null) {
+          components.remove(existing);
+        }
+      } else if (existing == null) {
+        components.add(copy(change));
+      } else {
+        if (change.containsKey("enabled")) {
+          existing.put("enabled", change.get("enabled"));
+        }
+        if (change.get("properties") != null) {
+          final Map<String, Object> properties = existing.get("properties") != null
+              ? Json.asObject(existing.get("properties"))
+              : new LinkedHashMap<>();
+          properties.putAll(Json.asObject(copy(change.get("properties"))));
+          existing.put("properties", properties);
+        }
+      }
+    }
+  }
+
+  /** A deep copy of parsed JSON (maps and lists; other values are immutable). */
+  @SuppressWarnings("unchecked")
+  private static Object copy(Object json) {
+    if (json instanceof Map<?, ?> m) {
+      final Map<String, Object> out = new LinkedHashMap<>();
+      ((Map<String, Object>) m).forEach((k, v) -> out.put(k, copy(v)));
+      return out;
+    }
+    if (json instanceof List<?> l) {
+      final List<Object> out = new ArrayList<>(l.size());
+      l.forEach(v -> out.add(copy(v)));
+      return out;
+    }
+    return json;
   }
 
   public GpuMesh mesh(String key) {

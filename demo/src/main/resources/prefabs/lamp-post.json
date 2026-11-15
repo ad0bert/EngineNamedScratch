@@ -2,12 +2,7 @@
   "format": "engine-scene",
   "version": 1,
   "materials": [
-    {
-      "color": [0.22, 0.22, 0.25, 1],
-      "pbr": true,
-      "metallic": 0.9,
-      "roughness": 0.35
-    },
+    "materials/dark-metal.json",
     {
       "color": [1, 0.95, 0.85, 1],
       "emissive": [3, 2.6, 2],

@@ -56,12 +56,14 @@ import engine.messaging.IMessageService;
 import engine.messaging.MessageService;
 import engine.physics.PhysicsSystem;
 import engine.physics.RayHit;
+import engine.render.Material;
 import engine.render.NullRenderBackend;
 import engine.render.Overlay;
 import engine.render.RenderBackend;
 import engine.render.gl.GlBackend;
 import engine.resources.Assets;
 import engine.resources.ResourceManager;
+import engine.serialization.AssetLibrary;
 import engine.serialization.ComponentRegistry;
 import engine.serialization.SerializationContext;
 import lombok.Getter;
@@ -224,6 +226,16 @@ public class Engine {
   /** A context for saving or loading scenes and prefabs with this engine's resources and input. */
   public SerializationContext serialization() {
     return new SerializationContext(this.resources, this.input);
+  }
+
+  /**
+   * The shared material of a material file such as {@code materials/steel.json} (see {@link AssetLibrary}); every
+   * caller and every scene file that names it gets the same instance.
+   *
+   * @throws IllegalArgumentException if the file cannot be read or is not a material file
+   */
+  public Material material(String path) {
+    return AssetLibrary.of(this.resources).material(path, serialization());
   }
 
   /** Looks for newly plugged-in gamepads at the next update (also done whenever the window regains focus). */

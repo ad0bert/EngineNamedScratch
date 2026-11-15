@@ -1,0 +1,8 @@
+{
+  "format": "engine-material",
+  "version": 1,
+  "color": [0.22, 0.22, 0.25, 1],
+  "pbr": true,
+  "metallic": 0.9,
+  "roughness": 0.35
+}
